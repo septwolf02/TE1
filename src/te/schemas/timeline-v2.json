@@ -1,0 +1,377 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://te.local/schemas/timeline-v2.json",
+  "title": "TE timeline v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project_id",
+    "captions",
+    "placements",
+    "blocks",
+    "intros",
+    "transitions",
+    "music",
+    "headline",
+    "source_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^prj_[0-9a-f]{32}$"
+    },
+    "captions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "segment_id",
+          "text",
+          "start_ms",
+          "end_ms"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-f]{32}$"
+          },
+          "segment_id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "placements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "media_id",
+          "section",
+          "start_ms",
+          "end_ms",
+          "segment_id",
+          "effects"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^plc_[0-9a-f]{32}$"
+          },
+          "media_id": {
+            "type": "string",
+            "pattern": "^med_[0-9a-f]{32}$"
+          },
+          "section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "segment_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^seg_[0-9a-f]{32}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effects": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "segment_id",
+          "section",
+          "start_ms",
+          "end_ms",
+          "audio_path",
+          "media_id",
+          "visual_status",
+          "caption_ids",
+          "effect",
+          "effect_locked",
+          "visual_locked",
+          "video_policy",
+          "transition"
+        ],
+        "properties": {
+          "segment_id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "audio_path": {
+            "type": "string"
+          },
+          "media_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^med_[0-9a-f]{32}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "visual_status": {
+            "enum": [
+              "ready",
+              "missing"
+            ]
+          },
+          "caption_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^cap_[0-9a-f]{32}$"
+            }
+          },
+          "effect": {
+            "enum": [
+              "none",
+              "slow_zoom_in",
+              "slow_zoom_out",
+              "pan_left",
+              "pan_right",
+              "pan_up",
+              "pan_down"
+            ]
+          },
+          "effect_locked": {
+            "type": "boolean"
+          },
+          "visual_locked": {
+            "type": "boolean"
+          },
+          "video_policy": {
+            "enum": [
+              "trim_to_segment",
+              "loop_to_segment",
+              "freeze_last_frame",
+              "keep_original"
+            ]
+          },
+          "transition": {
+            "enum": [
+              "cut",
+              "fade",
+              "crossfade"
+            ]
+          }
+        }
+      }
+    },
+    "intros": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "section",
+          "media_id",
+          "start_ms",
+          "end_ms",
+          "duration_policy"
+        ],
+        "properties": {
+          "section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "media_id": {
+            "type": "string",
+            "pattern": "^med_[0-9a-f]{32}$"
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "duration_policy": {
+            "enum": [
+              "keep_original",
+              "trim"
+            ]
+          }
+        }
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from_section",
+          "to_section",
+          "at_ms",
+          "preset"
+        ],
+        "properties": {
+          "from_section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "to_section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "preset": {
+            "enum": [
+              "cut",
+              "fade",
+              "crossfade"
+            ]
+          }
+        }
+      }
+    },
+    "music": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "section",
+          "path",
+          "volume",
+          "fade_in_ms",
+          "fade_out_ms"
+        ],
+        "properties": {
+          "section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "volume": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "fade_in_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fade_out_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "headline": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "position",
+        "darkening"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "position": {
+          "type": "string"
+        },
+        "darkening": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "source_fingerprint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

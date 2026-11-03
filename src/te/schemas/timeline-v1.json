@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://te.local/schemas/timeline-v1.json",
+  "title": "TE timeline v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project_id",
+    "captions",
+    "placements"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^prj_[0-9a-f]{32}$"
+    },
+    "captions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "segment_id",
+          "text",
+          "start_ms",
+          "end_ms"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-f]{32}$"
+          },
+          "segment_id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "placements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "media_id",
+          "section",
+          "start_ms",
+          "end_ms",
+          "segment_id",
+          "effects"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^plc_[0-9a-f]{32}$"
+          },
+          "media_id": {
+            "type": "string",
+            "pattern": "^med_[0-9a-f]{32}$"
+          },
+          "section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "segment_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^seg_[0-9a-f]{32}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effects": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    }
+  }
+}

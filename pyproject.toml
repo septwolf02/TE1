@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "te-sports-editor"
+version = "0.1.0"
+description = "Local-first Japanese sports video editor foundation"
+requires-python = ">=3.12,<4"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "jsonschema>=4,<5"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+te = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

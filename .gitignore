@@ -218,3 +218,23 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# TE local work and generated output
+projects/
+media/
+audio/
+cache/
+renders/
+output/
+*.mp4
+*.wav
+*.mp3
+*.m4a
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.webp
+project.json
+timeline.json
+!.env.example

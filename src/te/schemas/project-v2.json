@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://te.local/schemas/project-v2.json",
+  "title": "TE project v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "sections",
+    "segments",
+    "media",
+    "timeline_file"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^prj_[0-9a-f]{32}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeline_file": {
+      "const": "timeline.json"
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "section",
+          "number",
+          "japanese_text",
+          "vietnamese_reference",
+          "notes",
+          "status",
+          "audio_ref",
+          "caption_refs",
+          "media_placement_refs"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "japanese_text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "vietnamese_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "audio_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caption_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^cap_[0-9a-f]{32}$"
+            }
+          },
+          "media_placement_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^plc_[0-9a-f]{32}$"
+            }
+          }
+        }
+      }
+    },
+    "media": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "path",
+          "section"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^med_[0-9a-f]{32}$"
+          },
+          "kind": {
+            "enum": [
+              "image",
+              "video",
+              "key_image",
+              "section_intro_video"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "section": {
+            "anyOf": [
+              {
+                "enum": [
+                  "P1",
+                  "P2",
+                  "P3",
+                  "P4"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
