@@ -238,3 +238,4 @@ output/
 project.json
 timeline.json
 !.env.example
+demo/test/
