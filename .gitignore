@@ -221,11 +221,12 @@ __marimo__/
 
 # TE local work and generated output
 projects/
-media/
-audio/
-cache/
-renders/
-output/
+/media/
+/audio/
+/cache/
+/renders/
+/output/
+generated/
 *.mp4
 *.wav
 *.mp3
