@@ -46,7 +46,7 @@ def test_split_exact_text_stable_ids_mapping_and_sync(tmp_path):
         caption = next(c for c in timeline.captions if c.id == next(x.id for x in captions if x.sentence_id == unit.id))
         assert TimelineService.get_sentence_range(project, timeline, unit.id) == (caption.start_ms, caption.end_ms)
     assert TimelineService.get_sentence_range(project, timeline, result[second.id][0][0].id)[0] >= timeline.blocks[1].start_ms
-    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v7.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v8.json").read_text(encoding="utf-8"))
     jsonschema.validate(json.loads((directory / "project.json").read_text(encoding="utf-8")), schema)
 
 
@@ -93,7 +93,7 @@ def test_v6_project_migrates_without_deleting_legacy_audio(tmp_path):
         caption.pop("sentence_id", None)
     (directory / "project.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     reopened = manager.open(directory)
-    assert reopened.schema_version == 7 and reopened.sentence_units == []
+    assert reopened.schema_version == 8 and reopened.sentence_units == []
     assert old_file.is_file() and reopened.audio_records[0].path == str(old_file)
     SentenceSpeechService().sync_segment(reopened, directory, first.id, rebuild_timeline=False)
     assert old_file.is_file()

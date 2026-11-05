@@ -50,6 +50,10 @@ class SentenceSpeechService:
         active = {unit.id for unit in project.sentence_units}
         project.sentence_audio_records = [record for record in project.sentence_audio_records
                                           if record.sentence_id in active]
+        for placement in project.key_placements:
+            unit = next((unit for unit in project.sentence_units if unit.id == placement.sentence_id), None)
+            if unit is None or not unit.mapping_confirmed or unit.vietnamese_reference != placement.confirmed_vietnamese_text:
+                placement.status = "manual_review"
         surviving = {unit.id: unit.order for unit in replacement}
         captions = [c for c in project.subtitle_captions if c.segment_id == segment_id]
         if any(c.sentence_id and c.sentence_id not in surviving for c in captions):
@@ -71,6 +75,9 @@ class SentenceSpeechService:
             raise KeyError(sentence_id)
         unit.vietnamese_reference = vietnamese_text
         unit.mapping_confirmed = True
+        for placement in project.key_placements:
+            if placement.sentence_id == sentence_id and placement.confirmed_vietnamese_text != vietnamese_text:
+                placement.status = "manual_review"
         project.validate()
 
     @staticmethod

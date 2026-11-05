@@ -22,7 +22,7 @@ def test_create_edit_save_open_and_schema(tmp_path):
     assert opened.segments[0].japanese_text == "改訂した文。"
     assert [s.id for s in opened.sections] == list(SectionName)
     schemas = Path(__file__).resolve().parents[1] / "src" / "te" / "schemas"
-    for name, schema_name in [("project.json", "project-v7.json"), ("timeline.json", "timeline-v2.json")]:
+    for name, schema_name in [("project.json", "project-v8.json"), ("timeline.json", "timeline-v2.json")]:
         data = json.loads((folder / name).read_text(encoding="utf-8"))
         schema = json.loads((schemas / schema_name).read_text(encoding="utf-8"))
         jsonschema.validate(data, schema)
@@ -65,11 +65,11 @@ def test_reject_unknown_version_and_broken_reference(tmp_path):
     folder = tmp_path / "story"
     project = manager.create(folder, "Story")
     data = json.loads((folder / "project.json").read_text(encoding="utf-8"))
-    data["schema_version"] = 8
+    data["schema_version"] = 9
     (folder / "project.json").write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="version"):
         manager.open(folder)
-    data["schema_version"] = 7
+    data["schema_version"] = 8
     (folder / "project.json").write_text(json.dumps(data), encoding="utf-8")
     timeline = Timeline(project.id, captions=[Caption(new_id("cap"), new_id("seg"), "文", 0, 100)])
     (folder / "timeline.json").write_text(json.dumps(timeline.to_dict()), encoding="utf-8")

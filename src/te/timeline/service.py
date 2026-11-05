@@ -4,10 +4,11 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+from dataclasses import replace
 
 from te.media import MediaAssignmentService
 from te.project.manager import _write_json
-from te.project.models import MediaType, Project, SectionName
+from te.project.models import MediaType, Project, SectionName, new_id
 from te.subtitles import SubtitleService
 from te.tts import TTSService
 from .models import (Caption, EFFECTS, IntroEvent, Placement, SectionMusic, SegmentBlock,
@@ -108,6 +109,34 @@ class TimelineService:
                 timeline.captions.append(Caption(caption.id, segment.id, caption.text,
                     start + caption.start_ms, start + caption.end_ms))
             cursor = end
+        from te.media.key_service import KeyPlacementService
+        intervals: list[tuple[int, int]] = []
+        for key in project.key_placements:
+            if key.status != "ready":
+                warnings.append(f"KEY placement {key.id} needs manual review")
+                continue
+            asset = media[key.media_id]
+            if not asset.available:
+                warnings.append(f"KEY image unavailable: {asset.path}")
+                continue
+            start, end = KeyPlacementService.resolve(project, timeline, key)
+            if any(start < old_end and old_start < end for old_start, old_end in intervals):
+                raise ValueError("KEY image placements overlap")
+            intervals.append((start, end))
+            unit = next(unit for unit in project.sentence_units if unit.id == key.sentence_id)
+            for base in list(timeline.placements):
+                if base.segment_id != unit.segment_id or base.end_ms <= start or base.start_ms >= end:
+                    continue
+                timeline.placements.remove(base)
+                if base.start_ms < start:
+                    timeline.placements.append(replace(base, end_ms=start))
+                if end < base.end_ms:
+                    timeline.placements.append(replace(base,
+                        id=new_id("plc") if base.start_ms < start else base.id, start_ms=end))
+            segment = next(segment for segment in project.segments if segment.id == unit.segment_id)
+            timeline.placements.append(Placement(key.id, key.media_id, segment.section,
+                start, end, segment.id))
+        timeline.placements.sort(key=lambda placement: (placement.start_ms, placement.end_ms))
         timeline.source_fingerprint = self._fingerprint(project)
         timeline.validate(project)
         _write_json(Path(directory) / project.timeline_file, timeline.to_dict())
@@ -133,7 +162,19 @@ class TimelineService:
         timeline.validate(project)
         if self.detect_stale_timeline(project, timeline):
             raise ValueError("Stale timeline")
+        from te.media.key_service import KeyPlacementService
+        for key in project.key_placements:
+            actual = [placement for placement in timeline.placements if placement.media_id == key.media_id]
+            if key.status != "ready" or not next(m for m in project.media if m.id == key.media_id).available:
+                if actual:
+                    raise ValueError("Unavailable or unreviewed KEY image appears in timeline")
+                continue
+            expected = KeyPlacementService.resolve(project, timeline, key)
+            if len(actual) != 1 or (actual[0].start_ms, actual[0].end_ms) != expected:
+                raise ValueError("KEY image reveal differs from confirmed sentence timing")
         warnings = [f"Missing visual for segment {b.segment_id}" for b in timeline.blocks if b.visual_status == "missing"]
+        warnings.extend(f"KEY placement {key.id} needs manual review"
+                        for key in project.key_placements if key.status == "manual_review")
         return tuple(warnings)
 
     @staticmethod

@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import UUID, uuid4
 
-PROJECT_VERSION = 7
+PROJECT_VERSION = 8
 SUPPORTED_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 SUPPORTED_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm"})
 
@@ -52,6 +52,7 @@ class MediaCategory(StrEnum):
 
 class AssignmentType(StrEnum):
     MANUAL = "manual"
+    RANDOM = "random"
     KEY = "key"
     SECTION_INTRO = "section_intro"
     FUTURE_AI = "future_ai"
@@ -104,6 +105,19 @@ class MediaAssignment:
     assignment_type: AssignmentType
     locked: bool = False
     effect_preference: str | None = None
+    notes: str = ""
+
+
+@dataclass(slots=True)
+class KeyPlacement:
+    id: str
+    media_id: str
+    sentence_id: str
+    confirmed_vietnamese_text: str
+    offset_ms: int = 0
+    duration_ms: int | None = None
+    locked: bool = True
+    status: str = "ready"
     notes: str = ""
 
 
@@ -209,6 +223,8 @@ class Project:
     media: list[MediaAsset] = field(default_factory=list)
     media_library_path: str | None = None
     media_assignments: list[MediaAssignment] = field(default_factory=list)
+    key_placements: list[KeyPlacement] = field(default_factory=list)
+    random_seed: int = 0
     section_intros: dict[str, str | None] = field(
         default_factory=lambda: {section.value: None for section in SectionName}
     )
@@ -296,6 +312,8 @@ class Project:
             raise ValueError("Media library path must be absolute")
         if self.media_reuse_distance < 0:
             raise ValueError("Media reuse distance cannot be negative")
+        if not isinstance(self.random_seed, int) or self.random_seed < 0:
+            raise ValueError("Invalid random seed")
         assignment_ids: set[str] = set()
         assigned_segments: set[str] = set()
         media_by_id = {asset.id: asset for asset in self.media}
@@ -376,6 +394,32 @@ class Project:
             sentence_ids.add(unit.id)
             sentence_by_id[unit.id] = unit
             sentence_order[unit.segment_id] = unit.order
+        key_ids: set[str] = set()
+        placed_key_media: set[str] = set()
+        for placement in self.key_placements:
+            if not valid_id(placement.id, "plc") or placement.id in key_ids or placement.id in assignment_ids:
+                raise ValueError("Invalid or duplicate KEY placement ID")
+            asset = media_by_id.get(placement.media_id)
+            if asset is None or asset.category != MediaCategory.KEY or asset.media_type != MediaType.IMAGE:
+                raise ValueError("KEY placement requires a registered KEY image")
+            if placement.media_id in placed_key_media:
+                raise ValueError("A KEY image can have only one sentence reveal")
+            if any(assignment.media_id == placement.media_id for assignment in self.media_assignments):
+                raise ValueError("Sentence KEY image cannot also have a segment assignment")
+            if not valid_id(placement.sentence_id, "sen") or not isinstance(placement.offset_ms, int):
+                raise ValueError("Invalid KEY sentence or timing offset")
+            if placement.duration_ms is not None and (not isinstance(placement.duration_ms, int) or placement.duration_ms <= 0):
+                raise ValueError("Invalid KEY duration")
+            if placement.status not in ("ready", "manual_review") or not isinstance(placement.locked, bool):
+                raise ValueError("Invalid KEY status or lock")
+            if not placement.confirmed_vietnamese_text.strip() or not isinstance(placement.notes, str):
+                raise ValueError("Invalid KEY mapping or notes")
+            unit = sentence_by_id.get(placement.sentence_id)
+            if placement.status == "ready" and (unit is None or not unit.mapping_confirmed or
+                    unit.vietnamese_reference != placement.confirmed_vietnamese_text):
+                raise ValueError("KEY placement requires current confirmed VN-JP mapping")
+            key_ids.add(placement.id)
+            placed_key_media.add(placement.media_id)
         seen_sentence_audio: set[str] = set()
         for record in self.sentence_audio_records:
             if record.sentence_id not in sentence_ids or record.sentence_id in seen_sentence_audio:
@@ -437,7 +481,7 @@ class Project:
     def from_dict(cls, data: dict) -> Project:
         try:
             version = data["schema_version"]
-            if version not in (1, 2, 3, 4, 5, 6, PROJECT_VERSION):
+            if version not in (1, 2, 3, 4, 5, 6, 7, PROJECT_VERSION):
                 raise ValueError("Unsupported project version")
             project = cls(
                 id=data["id"], name=data["name"], schema_version=PROJECT_VERSION,
@@ -458,6 +502,8 @@ class Project:
                     assignment_type=AssignmentType(a["assignment_type"]), locked=a.get("locked", False),
                     effect_preference=a.get("effect_preference"), notes=a.get("notes", ""),
                 ) for a in data.get("media_assignments", [])],
+                key_placements=[KeyPlacement(**placement) for placement in data.get("key_placements", [])],
+                random_seed=data.get("random_seed", 0),
                 section_intros=data.get("section_intros", {section.value: None for section in SectionName}),
                 media_reuse_distance=data.get("media_reuse_distance", 3),
                 tts_settings=TTSSettings(**data.get("tts_settings", {})),
@@ -476,6 +522,11 @@ class Project:
             )
             for asset in project.media:
                 asset.available = Path(asset.path).is_file()
+            units = {unit.id: unit for unit in project.sentence_units}
+            for placement in project.key_placements:
+                unit = units.get(placement.sentence_id)
+                if unit is None or not unit.mapping_confirmed or unit.vietnamese_reference != placement.confirmed_vietnamese_text:
+                    placement.status = "manual_review"
             project.validate()
             return project
         except (KeyError, TypeError, ValueError) as exc:

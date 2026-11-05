@@ -81,3 +81,24 @@ Remove-Item Env:\TE_VOICEVOX_INTEGRATION
 The smoke command creates a new project under `demo\test\`, prints each sentence ID and measured local/absolute timing, builds a timeline, and renders a 960×540 MP4. Its final line gives the exact output path. Pass `--voice "剣崎雌雄"` or `--voice "後鬼"` to try another installed voice; use `--style`, `--host`, `--port`, `--text`, and `--p2-text` as needed. If Japanese font discovery fails, add `--font-path "C:\path\to\NotoSansCJKjp-Regular.otf"`. Project schema v7 keeps old v1–v6 projects readable and does not delete legacy audio or media. The sentence WAVs live under `generated\audio\sentences\`; the renderer continues to use the assembled `generated\audio\<segment_id>.wav`. The default pause between sentences is 120 ms; set `project.sentence_pause_ms` or pass `--pause-ms` in the smoke command to change it.
 
 For application code, call `SentenceSpeechService().sync_all(project, project_dir)`. Call `confirm_vietnamese_mapping(project, sentence_id, vietnamese_text)` only after reviewing the pairing; segmentation never guesses a Vietnamese sentence boundary. Captions may be edited separately from the text sent to VOICEVOX. `TimelineService.get_sentence_range(project, timeline, sentence_id)` returns the absolute spoken start/end milliseconds for a future KEY placement workflow.
+
+## TTS-3 VOICEVOX KEY reveal demo
+
+Start VOICEVOX Engine and run these commands in PowerShell from the repository:
+
+```powershell
+git switch te-v1-render-test
+git pull origin te-v1-render-test
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+.\.venv\Scripts\python.exe -m pytest -q
+$env:TE_VOICEVOX_INTEGRATION = "1"
+.\.venv\Scripts\python.exe -m pytest tests\test_key_placement.py -q
+Remove-Item Env:\TE_VOICEVOX_INTEGRATION
+.\.venv\Scripts\python.exe -m te.tts.key_demo --voice "青山龍星" --target-order 2 --confirm-mapping --vn-text "Ohtani đánh cú home run lội ngược dòng!" --offset-ms 0
+$video = Get-ChildItem ".\demo\test" -Recurse -Filter preview.mp4 | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+Start-Process $video
+```
+
+The demo prints the Japanese target, its parent Vietnamese segment, the spoken sentence interval, the KEY interval and the exact MP4 path. `--confirm-mapping` is an explicit editor action; `--vn-text` is the Vietnamese sentence you confirm, and `--target-order` selects the Japanese sentence within P2. The demo uses a blue/teal ordinary image before reveal and a bright pink KEY image at reveal. `--offset-ms` accepts positive or negative values within the target narration segment; `--duration-ms` sets an explicit visible duration. By default KEY lasts for the spoken sentence duration, capped at the end of its segment. Add `--font-path "C:\path\to\NotoSansCJKjp-Regular.otf"` if font discovery fails, or use the `TE_JAPANESE_FONT_PATH` environment variable. The demo writes only under `demo\test\` and never modifies personal media.
+
+In application code, inspect a candidate with `KeyPlacementService.context(project, sentence_id)`, call `confirm_mapping(project, project_dir, sentence_id, vietnamese_text)` only after the editor verifies the pair, then mark a local image KEY with `MediaLibraryService.mark_key(...)` and call `assign_key(...)`. `resolve(...)` uses the current audio-driven timeline. `assign_random_images(...)` uses the project seed, excludes KEY media and retains saved assignments. If a sentence disappears or its confirmed mapping changes, the KEY placement becomes `manual_review`; an editor can confirm a new mapping and explicitly call `retarget_key(...)`. Project v8 migrates v1–v7 data without deleting old WAV or source media.

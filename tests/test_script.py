@@ -99,7 +99,7 @@ def test_old_module0_project_loads_and_saves_as_v3(tmp_path):
     assert opened.segments[0].id == project.segments[0].id
     assert opened.segments[0].notes == '' and opened.segments[0].status == 'draft'
     manager.save(folder, opened)
-    assert json.loads(path.read_text(encoding="utf-8"))['schema_version'] == 7
+    assert json.loads(path.read_text(encoding="utf-8"))['schema_version'] == 8
 
 
 def test_add_move_delete_and_validation(tmp_path):

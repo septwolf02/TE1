@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -35,6 +36,16 @@ class RenderSettings:
     font_family: str = "Noto Sans CJK JP"
     font_path: str | None = None
     transition_ms: int = 250
+
+
+@dataclass(frozen=True)
+class _VisualEvent:
+    start_ms: int
+    end_ms: int
+    media_id: str | None
+    effect: str = "none"
+    video_policy: str = "trim_to_segment"
+    is_key: bool = False
 
 
 class RenderService:
@@ -135,10 +146,42 @@ class RenderService:
         for block in timeline.blocks:
             if block.media_id and block.visual_status == "ready" and not Path(media[block.media_id].path).is_file():
                 raise ValueError(f"Visual file missing: {block.media_id}")
+        for placement in timeline.placements:
+            if not Path(media[placement.media_id].path).is_file():
+                raise ValueError(f"Visual file missing: {placement.media_id}")
         for music in timeline.music:
             if not Path(music.path).is_file():
                 raise ValueError(f"Music file missing: {music.path}")
         return warnings
+
+    @staticmethod
+    def _visual_events(project: Project, timeline: Timeline) -> list[tuple[int, int, str, object]]:
+        key_ids = {placement.id for placement in project.key_placements}
+        events: list[tuple[int, int, str, object]] = []
+        for block in timeline.blocks:
+            placements = sorted((placement for placement in timeline.placements
+                if placement.segment_id == block.segment_id), key=lambda p: p.start_ms)
+            cursor = block.start_ms
+            for placement in placements:
+                if placement.start_ms < cursor or placement.end_ms > block.end_ms:
+                    raise ValueError("Visual placements overlap or exceed narration block")
+                if placement.start_ms > cursor:
+                    empty = _VisualEvent(cursor, placement.start_ms, None)
+                    events.append((cursor, placement.start_ms, "visual", empty))
+                effect = placement.effects[0].get("name", "none") if placement.effects else "none"
+                visual = _VisualEvent(placement.start_ms, placement.end_ms,
+                    placement.media_id, effect, block.video_policy, placement.id in key_ids)
+                events.append((visual.start_ms, visual.end_ms, "visual", visual))
+                cursor = placement.end_ms
+            if cursor < block.end_ms:
+                empty = _VisualEvent(cursor, block.end_ms, None)
+                events.append((cursor, block.end_ms, "visual", empty))
+        events.extend((intro.start_ms, intro.end_ms, "intro", intro) for intro in timeline.intros)
+        events.sort(key=lambda event: event[0])
+        if events and (events[0][0] != 0 or any(events[index][1] != events[index + 1][0]
+                   for index in range(len(events) - 1))):
+            raise ValueError("Visual events have a gap or overlap")
+        return events
 
     def _run(self, command: list[str], stage: str, log_dir: Path) -> None:
         if self._cancel.is_set():
@@ -229,10 +272,14 @@ class RenderService:
             raise FileExistsError(output)
         partial = output_dir / ("preview.partial.mp4" if preview else "final.partial.mp4")
         manifest = output_dir / ("preview.manifest.json" if preview else "final.manifest.json")
-        events = sorted([(b.start_ms, b.end_ms, "block", b) for b in timeline.blocks] +
-                        [(i.start_ms, i.end_ms, "intro", i) for i in timeline.intros], key=lambda item: item[0])
+        events = self._visual_events(project, timeline)
         media = {asset.id: asset for asset in project.media}
         transitions = {event.at_ms: event.preset for event in timeline.transitions}
+        key_starts = {start for start, _, kind, event in events
+                      if kind == "visual" and event.is_key}
+        def frame_at(ms: int) -> int:
+            position = ms * settings.fps / 1000
+            return math.ceil(position) if ms in key_starts else round(position)
         used: list[Path] = []
         stage = "preparing"
         try:
@@ -241,32 +288,36 @@ class RenderService:
                 emit(f"rendering segment {index}/{len(events)}")
                 asset = media.get(event.media_id)
                 duration = (end - start) / 1000
-                frames = max(1, round(duration * settings.fps))
+                frames = frame_at(end) - frame_at(start)
+                if frames <= 0:
+                    if kind == "visual" and event.is_key:
+                        raise ValueError("KEY duration is shorter than one rendered frame")
+                    continue
                 signature = json.dumps([kind, asdict(event), asdict(settings), info["version"],
-                    transitions.get(start), transitions.get(end), settings.transition_ms,
+                    transitions.get(start), transitions.get(end), settings.transition_ms, frames,
                     (asset.path, Path(asset.path).stat().st_size, Path(asset.path).stat().st_mtime_ns) if asset and Path(asset.path).exists() else None], sort_keys=True, default=str)
                 clip = cache / f"{sha256(signature.encode()).hexdigest()}.mp4"
                 if not clip.exists():
-                    effect = event.effect if kind == "block" else "none"
+                    effect = event.effect if kind == "visual" else "none"
                     filter_text = self._visual_filter(effect, settings.width, settings.height, settings.fps, frames)
                     fade_duration = min(settings.transition_ms / 1000, duration / 2)
                     if transitions.get(start) in ("fade", "crossfade") and fade_duration:
                         filter_text += f",fade=t=in:st=0:d={fade_duration}"
                     if transitions.get(end) in ("fade", "crossfade") and fade_duration:
                         filter_text += f",fade=t=out:st={duration-fade_duration}:d={fade_duration}"
-                    if kind == "block" and event.visual_status == "missing":
-                        command = [info["ffmpeg"], "-y", "-f", "lavfi", "-i", f"color=c=black:s={settings.width}x{settings.height}:r={settings.fps}:d={duration}"]
+                    if kind == "visual" and asset is None:
+                        command = [info["ffmpeg"], "-y", "-f", "lavfi", "-i", f"color=c=black:s={settings.width}x{settings.height}:r={settings.fps}:d={(frames + 1)/settings.fps}"]
                     elif asset.media_type == MediaType.IMAGE:
                         command = [info["ffmpeg"], "-y", "-loop", "1", "-framerate", str(settings.fps), "-i", asset.path]
                     else:
-                        if (kind == "block" and event.video_policy in ("trim_to_segment", "keep_original")
+                        if (kind == "visual" and event.video_policy in ("trim_to_segment", "keep_original")
                                 and asset.duration_seconds is not None and asset.duration_seconds + 0.001 < duration):
                             raise ValueError("Video is shorter than segment; use loop_to_segment or freeze_last_frame")
                         command = [info["ffmpeg"], "-y"]
-                        if kind == "block" and event.video_policy == "loop_to_segment":
+                        if kind == "visual" and event.video_policy == "loop_to_segment":
                             command += ["-stream_loop", "-1"]
                         command += ["-i", asset.path]
-                        if kind == "block" and event.video_policy == "freeze_last_frame":
+                        if kind == "visual" and event.video_policy == "freeze_last_frame":
                             filter_text += f",tpad=stop_mode=clone:stop_duration={duration}"
                     command += ["-an", "-vf", filter_text, "-frames:v", str(frames), "-r", str(settings.fps),
                         "-c:v", "libx264", "-preset", settings.preset, "-crf", str(settings.crf),
