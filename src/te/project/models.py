@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import UUID, uuid4
 
-PROJECT_VERSION = 6
+PROJECT_VERSION = 7
 SUPPORTED_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 SUPPORTED_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm"})
 
@@ -149,6 +149,35 @@ class AudioRecord:
 
 
 @dataclass(slots=True)
+class SentenceUnit:
+    id: str
+    segment_id: str
+    order: int
+    synthesis_text: str
+    vietnamese_reference: str | None = None
+    mapping_confirmed: bool = False
+
+
+@dataclass(slots=True)
+class SentenceAudioRecord:
+    sentence_id: str
+    path: str | None
+    settings: TTSSettings
+    text_hash: str
+    duration_seconds: float | None
+    status: str
+    generated_at: str | None
+    generation_version: int
+    error: str | None = None
+    speaker_uuid: str | None = None
+    style_id: int | None = None
+    credit: str | None = None
+    license_reference: str | None = None
+    license_text: str | None = None
+    audio_hash: str | None = None
+
+
+@dataclass(slots=True)
 class SubtitleCaption:
     id: str
     segment_id: str
@@ -168,6 +197,7 @@ class SubtitleCaption:
     audio_fingerprint: str | None = None
     split_hash: str | None = None
     source_text_hash: str | None = None
+    sentence_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -186,6 +216,9 @@ class Project:
     tts_settings: TTSSettings = field(default_factory=TTSSettings)
     voice_presets: dict[str, TTSSettings] = field(default_factory=dict)
     audio_records: list[AudioRecord] = field(default_factory=list)
+    sentence_units: list[SentenceUnit] = field(default_factory=list)
+    sentence_audio_records: list[SentenceAudioRecord] = field(default_factory=list)
+    sentence_pause_ms: int = 120
     subtitle_captions: list[SubtitleCaption] = field(default_factory=list)
     subtitle_style: dict = field(default_factory=lambda: {
         "canvas_width": 1920, "canvas_height": 1080, "position": "bottom_center",
@@ -327,6 +360,38 @@ class Project:
                 raise ValueError("Segment audio reference does not match record")
             self._validate_tts_settings(record.settings)
             seen_audio.add(record.segment_id)
+        if not 0 <= self.sentence_pause_ms <= 1000:
+            raise ValueError("Invalid sentence pause")
+        sentence_ids: set[str] = set()
+        sentence_order: dict[str, int] = {}
+        sentence_by_id: dict[str, SentenceUnit] = {}
+        for unit in self.sentence_units:
+            if not valid_id(unit.id, "sen") or unit.id in sentence_ids or unit.segment_id not in segment_by_id:
+                raise ValueError("Invalid or duplicate sentence ID")
+            expected = sentence_order.get(unit.segment_id, 0) + 1
+            if unit.order != expected or not unit.synthesis_text.strip():
+                raise ValueError("Invalid sentence order or text")
+            if unit.mapping_confirmed and unit.vietnamese_reference is None:
+                raise ValueError("Confirmed sentence mapping requires Vietnamese text")
+            sentence_ids.add(unit.id)
+            sentence_by_id[unit.id] = unit
+            sentence_order[unit.segment_id] = unit.order
+        seen_sentence_audio: set[str] = set()
+        for record in self.sentence_audio_records:
+            if record.sentence_id not in sentence_ids or record.sentence_id in seen_sentence_audio:
+                raise ValueError("Invalid or duplicate sentence audio reference")
+            if record.status not in ("ready", "failed") or record.generation_version < 1 or len(record.text_hash) != 64:
+                raise ValueError("Invalid sentence audio metadata")
+            if record.path is not None and not Path(record.path).is_absolute():
+                raise ValueError("Sentence audio path must be absolute")
+            if record.status == "ready" and (not record.path or not record.duration_seconds or record.duration_seconds <= 0):
+                raise ValueError("Ready sentence audio requires path and duration")
+            if record.status == "failed" and not record.error:
+                raise ValueError("Failed sentence audio requires error")
+            if record.audio_hash is not None and len(record.audio_hash) != 64:
+                raise ValueError("Invalid sentence audio hash")
+            self._validate_tts_settings(record.settings)
+            seen_sentence_audio.add(record.sentence_id)
         caption_ids: set[str] = set()
         order_by_segment: dict[str, int] = {}
         for caption in self.subtitle_captions:
@@ -335,6 +400,9 @@ class Project:
             parent = segment_by_id.get(caption.segment_id)
             if parent is None or caption.section != parent.section:
                 raise ValueError("Missing or mismatched caption parent segment")
+            if caption.sentence_id is not None and (caption.sentence_id not in sentence_by_id or
+                    sentence_by_id[caption.sentence_id].segment_id != caption.segment_id):
+                raise ValueError("Invalid caption sentence reference")
             expected = order_by_segment.get(caption.segment_id, 0) + 1
             if caption.order != expected or not caption.text.strip():
                 raise ValueError("Invalid caption order or empty text")
@@ -369,7 +437,7 @@ class Project:
     def from_dict(cls, data: dict) -> Project:
         try:
             version = data["schema_version"]
-            if version not in (1, 2, 3, 4, 5, PROJECT_VERSION):
+            if version not in (1, 2, 3, 4, 5, 6, PROJECT_VERSION):
                 raise ValueError("Unsupported project version")
             project = cls(
                 id=data["id"], name=data["name"], schema_version=PROJECT_VERSION,
@@ -397,6 +465,10 @@ class Project:
                 audio_records=[AudioRecord(
                     **{**a, "settings": TTSSettings(**a["settings"])}
                 ) for a in data.get("audio_records", [])],
+                sentence_units=[SentenceUnit(**s) for s in data.get("sentence_units", [])],
+                sentence_audio_records=[SentenceAudioRecord(**{**a, "settings": TTSSettings(**a["settings"])})
+                    for a in data.get("sentence_audio_records", [])],
+                sentence_pause_ms=data.get("sentence_pause_ms", 120),
                 subtitle_captions=[SubtitleCaption(**{
                     **c, "section": SectionName(c["section"])
                 }) for c in data.get("subtitle_captions", [])],

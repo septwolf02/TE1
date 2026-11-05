@@ -62,3 +62,22 @@ Remove-Item Env:\TE_VOICEVOX_INTEGRATION
 The normal suite mocks VOICEVOX and works without a running engine. The opt-in integration test above synthesizes a short WAV against the local engine. Sample WAV files under `voicevox-samples/` are ignored by Git.
 
 To use VOICEVOX in a project, set `project.tts_settings` to `TTSSettings(provider="voicevox", voice_id="青山龍星", style="ノーマル", sample_rate=24000)` and save with `ProjectManager.save(...)`. `TTSService.generate_all(...)` then creates segment-addressed WAV files under the project's `generated/audio/`. The provider resolves speaker and style IDs from `/speakers` at generation time. Each audio record stores the selected speaker UUID, style ID, credit name, and that speaker's policy text and local `/speaker_info` reference. Review each speaker's current terms before publishing. Channel presets can be saved with `TTSService.save_voice_preset(project, project_dir, "channel-name", settings)` and applied with `apply_voice_preset(project, project_dir, "channel-name")`; a segment can have its own preset by passing its segment ID as the final argument. Changing text, provider, voice, style, or synthesis settings marks audio stale until regenerated.
+
+## TTS-2 sentence-level VOICEVOX smoke test
+
+With VOICEVOX Engine running, use these commands in PowerShell from the repository:
+
+```powershell
+git switch te-v1-render-test
+git pull origin te-v1-render-test
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+.\.venv\Scripts\python.exe -m pytest -q
+$env:TE_VOICEVOX_INTEGRATION = "1"
+.\.venv\Scripts\python.exe -m pytest tests\test_sentence_speech.py tests\test_voicevox.py -q
+Remove-Item Env:\TE_VOICEVOX_INTEGRATION
+.\.venv\Scripts\python.exe -m te.tts.smoke --voice "青山龍星" --pause-ms 120
+```
+
+The smoke command creates a new project under `demo\test\`, prints each sentence ID and measured local/absolute timing, builds a timeline, and renders a 960×540 MP4. Its final line gives the exact output path. Pass `--voice "剣崎雌雄"` or `--voice "後鬼"` to try another installed voice; use `--style`, `--host`, `--port`, `--text`, and `--p2-text` as needed. If Japanese font discovery fails, add `--font-path "C:\path\to\NotoSansCJKjp-Regular.otf"`. Project schema v7 keeps old v1–v6 projects readable and does not delete legacy audio or media. The sentence WAVs live under `generated\audio\sentences\`; the renderer continues to use the assembled `generated\audio\<segment_id>.wav`. The default pause between sentences is 120 ms; set `project.sentence_pause_ms` or pass `--pause-ms` in the smoke command to change it.
+
+For application code, call `SentenceSpeechService().sync_all(project, project_dir)`. Call `confirm_vietnamese_mapping(project, sentence_id, vietnamese_text)` only after reviewing the pairing; segmentation never guesses a Vietnamese sentence boundary. Captions may be edited separately from the text sent to VOICEVOX. `TimelineService.get_sentence_range(project, timeline, sentence_id)` returns the absolute spoken start/end milliseconds for a future KEY placement workflow.

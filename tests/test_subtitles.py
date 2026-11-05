@@ -46,7 +46,7 @@ def test_43_segments_make_129_captions_and_persist(tmp_path):
     reopened = manager.open(folder)
     assert len(reopened.subtitle_captions) == 129
     assert all(not service.detect_stale_alignment(reopened, s.id) for s in reopened.segments)
-    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v6.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v7.json").read_text(encoding="utf-8"))
     jsonschema.validate(json.loads((folder / "project.json").read_text(encoding="utf-8")), schema)
 
 
@@ -125,6 +125,6 @@ def test_v1_to_v4_project_migration(tmp_path, old_version):
                 segment.pop(key)
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     opened = manager.open(folder)
-    assert opened.schema_version == 6 and opened.subtitle_captions == []
+    assert opened.schema_version == 7 and opened.subtitle_captions == []
     manager.save(folder, opened)
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 6
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 7

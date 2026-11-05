@@ -180,10 +180,10 @@ def test_module1_v2_project_migrates_to_v3(tmp_path):
         old.pop(key)
     path.write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
     opened = manager.open(folder)
-    assert opened.schema_version == 6 and opened.media_library_path is None
+    assert opened.schema_version == 7 and opened.media_library_path is None
     assert opened.section_intros == {section.value: None for section in SectionName}
     manager.save(folder, opened)
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 6
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 7
 
 
 @pytest.mark.parametrize(

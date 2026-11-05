@@ -130,7 +130,7 @@ def test_project_presets_stale_and_migration(tmp_path, engine):
         old["audio_records"][0].pop(key)
     (folder / "project.json").write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
     migrated = manager.open(folder)
-    assert migrated.schema_version == 6 and migrated.audio_records[0].credit is None
+    assert migrated.schema_version == 7 and migrated.audio_records[0].credit is None
 
 
 def test_unknown_voice_and_connection_errors(tmp_path, engine, monkeypatch):

@@ -22,7 +22,7 @@ Media can be registered with `manager.add_media(project, MediaKind.KEY_IMAGE, pa
 
 ## Data contracts
 
-The current contracts are [project v6](src/te/schemas/project-v6.json) and [timeline v2](src/te/schemas/timeline-v2.json). IDs use `prj_`, `seg_`, `med_`, `cap_`, and `plc_` plus a 32-character UUID hex value. IDs remain stable when segment text, order, or indexed media metadata changes. Segment numbers are positive and unique across the project; sections are exactly P1–P4. Captions point to segments; placements point to registered media. Timing uses integer milliseconds, with inclusive start and exclusive end. Project v1–v4 and timeline v1 files are migrated in memory.
+The current contracts are [project v7](src/te/schemas/project-v7.json) and [timeline v2](src/te/schemas/timeline-v2.json). IDs use `prj_`, `seg_`, `med_`, `cap_`, and `plc_` plus a 32-character UUID hex value. IDs remain stable when segment text, order, or indexed media metadata changes. Segment numbers are positive and unique across the project; sections are exactly P1–P4. Captions point to segments; placements point to registered media. Timing uses integer milliseconds, with inclusive start and exclusive end. Project v1–v4 and timeline v1 files are migrated in memory.
 
 `te.interfaces` defines the ports for script parsing, speech synthesis, media listing/selection, subtitle alignment, timeline building, effects and rendering. All selectors output the same `Placement` objects, so timeline and rendering do not depend on selection method. Implementations will be added later. Project data stores references and editing intent, while the timeline stores timed output decisions.
 
@@ -81,3 +81,7 @@ Run `python -m te.demo` to create a new self-contained project under `demo/test/
 ## TTS-1: local VOICEVOX
 
 `VoicevoxProvider` uses the locally running VOICEVOX Engine HTTP API. Speaker and style names resolve dynamically through `/speakers`; the selected speaker credit, policy text and `/speaker_info` reference are saved with each audio record. Project v6 adds voice presets, segment overrides and synthesis settings; v1–v5 projects migrate on load. Audio becomes stale when narration, provider, voice, style or settings change. Fake TTS remains available. See [Windows setup](docs/windows-setup.md#voicevox-tts-on-windows) for PowerShell check, list and sample commands.
+
+## TTS-2: sentence-level narration
+
+`SentenceSpeechService` splits each segment without rewriting its Japanese text, assigns stable `sen_` IDs, generates/reuses one WAV per sentence, and assembles an exact-duration segment WAV for the existing renderer. Project v7 stores sentence units, confirmed Vietnamese references, per-sentence audio metadata, and a configurable inter-sentence pause. Captions retain editable text but follow measured sentence audio boundaries; the timeline exposes absolute sentence ranges through `TimelineService.get_sentence_range`. Existing project v1–v6 data is migrated on load. See [Windows setup](docs/windows-setup.md#tts-2-sentence-level-voicevox-smoke-test).

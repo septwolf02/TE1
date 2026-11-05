@@ -141,6 +141,21 @@ class TimelineService:
         return next(block for block in timeline.blocks if block.segment_id == segment_id)
 
     @staticmethod
+    def get_sentence_range(project: Project, timeline: Timeline, sentence_id: str) -> tuple[int, int]:
+        """Absolute spoken interval in milliseconds for a stable sentence ID."""
+        unit = next((unit for unit in project.sentence_units if unit.id == sentence_id), None)
+        if unit is None:
+            raise KeyError(sentence_id)
+        caption = next((caption for caption in project.subtitle_captions
+                        if caption.sentence_id == sentence_id), None)
+        if caption is None:
+            raise ValueError(f"Sentence {sentence_id} has no aligned caption")
+        placed = next((item for item in timeline.captions if item.id == caption.id), None)
+        if placed is None:
+            raise ValueError(f"Sentence {sentence_id} is missing from timeline")
+        return placed.start_ms, placed.end_ms
+
+    @staticmethod
     def get_section_range(timeline: Timeline, section: SectionName) -> tuple[int, int] | None:
         starts = [b.start_ms for b in timeline.blocks if b.section == section]
         ends = [b.end_ms for b in timeline.blocks if b.section == section]

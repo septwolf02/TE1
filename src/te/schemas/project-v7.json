@@ -1,0 +1,1166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://te.local/schemas/project-v7.json",
+  "title": "TE project v7",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "sections",
+    "segments",
+    "media",
+    "media_library_path",
+    "media_assignments",
+    "section_intros",
+    "media_reuse_distance",
+    "timeline_file",
+    "tts_settings",
+    "audio_records",
+    "subtitle_captions",
+    "subtitle_style",
+    "voice_presets",
+    "sentence_units",
+    "sentence_audio_records",
+    "sentence_pause_ms"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 7
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^prj_[0-9a-f]{32}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeline_file": {
+      "const": "timeline.json"
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "section",
+          "number",
+          "japanese_text",
+          "vietnamese_reference",
+          "notes",
+          "status",
+          "audio_ref",
+          "caption_refs",
+          "media_placement_refs",
+          "tts_override"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "japanese_text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "vietnamese_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "audio_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caption_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^cap_[0-9a-f]{32}$"
+            }
+          },
+          "media_placement_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^plc_[0-9a-f]{32}$"
+            }
+          },
+          "tts_override": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "provider",
+                  "voice_id",
+                  "speaking_rate",
+                  "style",
+                  "output_format",
+                  "sample_rate",
+                  "pitch",
+                  "intonation",
+                  "volume",
+                  "host",
+                  "port"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "voice_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "speaking_rate": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "style": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "output_format": {
+                    "const": "wav"
+                  },
+                  "sample_rate": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "pitch": {
+                    "type": "number",
+                    "minimum": -0.15,
+                    "maximum": 0.15
+                  },
+                  "intonation": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "volume": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "host": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "media_library_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "media": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "path",
+          "section",
+          "media_type",
+          "category",
+          "filename",
+          "extension",
+          "file_size",
+          "width",
+          "height",
+          "duration_seconds",
+          "notes",
+          "available"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^med_[0-9a-f]{32}$"
+          },
+          "kind": {
+            "enum": [
+              "image",
+              "video",
+              "key_image",
+              "section_intro_video"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "section": {
+            "anyOf": [
+              {
+                "enum": [
+                  "P1",
+                  "P2",
+                  "P3",
+                  "P4"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "media_type": {
+            "enum": [
+              "image",
+              "video"
+            ]
+          },
+          "category": {
+            "enum": [
+              "normal",
+              "key",
+              "section_intro"
+            ]
+          },
+          "filename": {
+            "type": "string",
+            "minLength": 1
+          },
+          "extension": {
+            "enum": [
+              ".jpg",
+              ".jpeg",
+              ".png",
+              ".webp",
+              ".mp4",
+              ".mov",
+              ".mkv",
+              ".webm"
+            ]
+          },
+          "file_size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "duration_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "notes": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "media_assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "segment_id",
+          "media_id",
+          "assignment_type",
+          "locked",
+          "effect_preference",
+          "notes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^plc_[0-9a-f]{32}$"
+          },
+          "segment_id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "media_id": {
+            "type": "string",
+            "pattern": "^med_[0-9a-f]{32}$"
+          },
+          "assignment_type": {
+            "enum": [
+              "manual",
+              "key",
+              "section_intro",
+              "future_ai"
+            ]
+          },
+          "locked": {
+            "type": "boolean"
+          },
+          "effect_preference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "section_intros": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "P1",
+        "P2",
+        "P3",
+        "P4"
+      ],
+      "properties": {
+        "P1": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^med_[0-9a-f]{32}$"
+        },
+        "P2": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^med_[0-9a-f]{32}$"
+        },
+        "P3": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^med_[0-9a-f]{32}$"
+        },
+        "P4": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^med_[0-9a-f]{32}$"
+        }
+      }
+    },
+    "media_reuse_distance": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tts_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "voice_id",
+        "speaking_rate",
+        "style",
+        "output_format",
+        "sample_rate",
+        "pitch",
+        "intonation",
+        "volume",
+        "host",
+        "port"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "voice_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "speaking_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "style": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_format": {
+          "const": "wav"
+        },
+        "sample_rate": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pitch": {
+          "type": "number",
+          "minimum": -0.15,
+          "maximum": 0.15
+        },
+        "intonation": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "volume": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "audio_records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "segment_id",
+          "path",
+          "provider_id",
+          "voice_id",
+          "settings",
+          "duration_seconds",
+          "status",
+          "generated_at",
+          "generation_version",
+          "original_text",
+          "provider_input_text",
+          "text_hash",
+          "error",
+          "speaker_uuid",
+          "style_id",
+          "credit",
+          "license_reference",
+          "license_text"
+        ],
+        "properties": {
+          "segment_id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voice_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "voice_id",
+              "speaking_rate",
+              "style",
+              "output_format",
+              "sample_rate",
+              "pitch",
+              "intonation",
+              "volume",
+              "host",
+              "port"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              },
+              "voice_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "speaking_rate": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "style": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "output_format": {
+                "const": "wav"
+              },
+              "sample_rate": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "pitch": {
+                "type": "number",
+                "minimum": -0.15,
+                "maximum": 0.15
+              },
+              "intonation": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "volume": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "host": {
+                "type": "string",
+                "minLength": 1
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            }
+          },
+          "duration_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "failed"
+            ]
+          },
+          "generated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generation_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "original_text": {
+            "type": "string"
+          },
+          "provider_input_text": {
+            "type": "string"
+          },
+          "text_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "speaker_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "style_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "credit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "license_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "license_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "subtitle_captions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "segment_id",
+          "section",
+          "order",
+          "text",
+          "start_ms",
+          "end_ms",
+          "absolute_start_ms",
+          "absolute_end_ms",
+          "alignment_method",
+          "alignment_status",
+          "confidence",
+          "notes",
+          "locked",
+          "presentation",
+          "audio_fingerprint",
+          "split_hash",
+          "source_text_hash",
+          "sentence_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-f]{32}$"
+          },
+          "segment_id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "section": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          },
+          "order": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "absolute_start_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "absolute_end_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "alignment_method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "alignment_status": {
+            "enum": [
+              "unaligned",
+              "aligned",
+              "approximate",
+              "manual",
+              "stale"
+            ]
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "notes": {
+            "type": "string"
+          },
+          "locked": {
+            "type": "boolean"
+          },
+          "presentation": {
+            "enum": [
+              "default",
+              "headline"
+            ]
+          },
+          "audio_fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "split_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_text_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sentence_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^sen_[0-9a-f]{32}$"
+          }
+        }
+      }
+    },
+    "subtitle_style": {
+      "type": "object",
+      "required": [
+        "canvas_width",
+        "canvas_height",
+        "position",
+        "font",
+        "text_color",
+        "outline_color",
+        "background",
+        "max_lines",
+        "max_chars_per_line",
+        "headline_position",
+        "headline_background"
+      ],
+      "properties": {
+        "canvas_width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "canvas_height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "position": {
+          "type": "string"
+        },
+        "font": {
+          "type": "string"
+        },
+        "text_color": {
+          "type": "string"
+        },
+        "outline_color": {
+          "type": "string"
+        },
+        "background": {
+          "type": "string"
+        },
+        "max_lines": {
+          "const": 2
+        },
+        "max_chars_per_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "headline_position": {
+          "type": "string"
+        },
+        "headline_background": {
+          "type": "string"
+        }
+      }
+    },
+    "voice_presets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "voice_id",
+          "speaking_rate",
+          "style",
+          "output_format",
+          "sample_rate",
+          "pitch",
+          "intonation",
+          "volume",
+          "host",
+          "port"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voice_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "speaking_rate": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "style": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_format": {
+            "const": "wav"
+          },
+          "sample_rate": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "pitch": {
+            "type": "number",
+            "minimum": -0.15,
+            "maximum": 0.15
+          },
+          "intonation": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "volume": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "host": {
+            "type": "string",
+            "minLength": 1
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        }
+      }
+    },
+    "sentence_pause_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000
+    },
+    "sentence_units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "segment_id",
+          "order",
+          "synthesis_text",
+          "vietnamese_reference",
+          "mapping_confirmed"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^sen_[0-9a-f]{32}$"
+          },
+          "segment_id": {
+            "type": "string",
+            "pattern": "^seg_[0-9a-f]{32}$"
+          },
+          "order": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "synthesis_text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "vietnamese_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mapping_confirmed": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "sentence_audio_records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sentence_id",
+          "path",
+          "settings",
+          "text_hash",
+          "duration_seconds",
+          "status",
+          "generated_at",
+          "generation_version",
+          "error",
+          "speaker_uuid",
+          "style_id",
+          "credit",
+          "license_reference",
+          "license_text",
+          "audio_hash"
+        ],
+        "properties": {
+          "sentence_id": {
+            "type": "string",
+            "pattern": "^sen_[0-9a-f]{32}$"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "voice_id",
+              "speaking_rate",
+              "style",
+              "output_format",
+              "sample_rate",
+              "pitch",
+              "intonation",
+              "volume",
+              "host",
+              "port"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              },
+              "voice_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "speaking_rate": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "style": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "output_format": {
+                "const": "wav"
+              },
+              "sample_rate": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "pitch": {
+                "type": "number",
+                "minimum": -0.15,
+                "maximum": 0.15
+              },
+              "intonation": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "volume": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "host": {
+                "type": "string",
+                "minLength": 1
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            }
+          },
+          "text_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "duration_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "failed"
+            ]
+          },
+          "generated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generation_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "speaker_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "style_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "credit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "license_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "license_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "audio_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

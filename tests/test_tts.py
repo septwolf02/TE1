@@ -39,7 +39,7 @@ def test_one_segment_exact_text_duration_and_save(tmp_path):
     reopened = manager.open(folder)
     assert reopened.audio_records[0].segment_id == segment.id
     assert service.get_audio_status(reopened, segment.id) == "ready"
-    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v6.json").read_text(encoding="utf-8"))
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v7.json").read_text(encoding="utf-8"))
     jsonschema.validate(json.loads((folder / "project.json").read_text(encoding="utf-8")), schema)
 
 
@@ -143,4 +143,4 @@ def test_project_migrations_preserve_segments(tmp_path, old_version):
     assert opened.segments[0].id == project.segments[0].id
     assert opened.tts_settings.provider == "fake" and opened.audio_records == []
     manager.save(folder, opened)
-    assert json.loads((folder / "project.json").read_text(encoding="utf-8"))["schema_version"] == 6
+    assert json.loads((folder / "project.json").read_text(encoding="utf-8"))["schema_version"] == 7

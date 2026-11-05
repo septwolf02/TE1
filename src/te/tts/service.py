@@ -92,6 +92,26 @@ class TTSService:
                 return "invalid_file"
         except (OSError, ValueError, wave.Error):
             return "invalid_file"
+        units = [unit for unit in project.sentence_units if unit.segment_id == segment_id]
+        if units:
+            by_id = {item.sentence_id: item for item in project.sentence_audio_records}
+            settings = self._settings(project, self._segment(project, segment_id))
+            for unit in units:
+                sentence = by_id.get(unit.id)
+                if sentence is None or sentence.status != "ready":
+                    return "stale"
+                if (sentence.text_hash != self._hash(unit.synthesis_text)
+                        or asdict(sentence.settings) != asdict(settings)):
+                    return "stale"
+                if not sentence.path or not Path(sentence.path).is_file():
+                    return "missing_file"
+                try:
+                    if abs(_duration(Path(sentence.path)) - sentence.duration_seconds) > 1e-6:
+                        return "invalid_file"
+                    if sentence.audio_hash and sha256(Path(sentence.path).read_bytes()).hexdigest() != sentence.audio_hash:
+                        return "invalid_file"
+                except (OSError, ValueError, wave.Error):
+                    return "invalid_file"
         return "ready"
 
     def validate_audio(self, project: Project) -> dict[str, str]:
