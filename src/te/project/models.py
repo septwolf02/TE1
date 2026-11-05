@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import UUID, uuid4
 
-PROJECT_VERSION = 5
+PROJECT_VERSION = 6
 SUPPORTED_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 SUPPORTED_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm"})
 
@@ -75,6 +75,7 @@ class ScriptSegment:
     audio_ref: str | None = None
     caption_refs: list[str] = field(default_factory=list)
     media_placement_refs: list[str] = field(default_factory=list)
+    tts_override: TTSSettings | None = None
 
 
 @dataclass(slots=True)
@@ -114,6 +115,15 @@ class TTSSettings:
     style: str | None = None
     output_format: str = "wav"
     sample_rate: int = 16000
+    pitch: float = 0.0
+    intonation: float = 1.0
+    volume: float = 1.0
+    host: str = "127.0.0.1"
+    port: int = 50021
+
+    def __post_init__(self) -> None:
+        if self.provider == "voicevox" and self.voice_id == "test":
+            self.voice_id = "青山龍星"
 
 
 @dataclass(slots=True)
@@ -131,6 +141,11 @@ class AudioRecord:
     provider_input_text: str
     text_hash: str
     error: str | None = None
+    speaker_uuid: str | None = None
+    style_id: int | None = None
+    credit: str | None = None
+    license_reference: str | None = None
+    license_text: str | None = None
 
 
 @dataclass(slots=True)
@@ -169,6 +184,7 @@ class Project:
     )
     media_reuse_distance: int = 3
     tts_settings: TTSSettings = field(default_factory=TTSSettings)
+    voice_presets: dict[str, TTSSettings] = field(default_factory=dict)
     audio_records: list[AudioRecord] = field(default_factory=list)
     subtitle_captions: list[SubtitleCaption] = field(default_factory=list)
     subtitle_style: dict = field(default_factory=lambda: {
@@ -205,6 +221,8 @@ class Project:
             previous_section = section_index
             if not isinstance(segment.notes, str) or not isinstance(segment.status, str) or not segment.status:
                 raise ValueError("Invalid segment notes or status")
+            if segment.tts_override is not None:
+                self._validate_tts_settings(segment.tts_override)
             if any(not valid_id(ref, "cap") for ref in segment.caption_refs) or any(
                 not valid_id(ref, "plc") for ref in segment.media_placement_refs
             ):
@@ -286,10 +304,11 @@ class Project:
             asset = media_by_id.get(media_id)
             if asset is None or asset.category != MediaCategory.SECTION_INTRO or asset.section != SectionName(section):
                 raise ValueError("Invalid section intro reference")
-        settings = self.tts_settings
-        if (not settings.provider or not settings.voice_id or settings.speaking_rate <= 0 or
-                settings.output_format != "wav" or settings.sample_rate <= 0):
-            raise ValueError("Invalid TTS settings")
+        self._validate_tts_settings(self.tts_settings)
+        for name, preset in self.voice_presets.items():
+            if not name.strip():
+                raise ValueError("Voice preset name cannot be empty")
+            self._validate_tts_settings(preset)
         seen_audio: set[str] = set()
         for record in self.audio_records:
             if record.segment_id not in segment_by_id or record.segment_id in seen_audio:
@@ -306,6 +325,7 @@ class Project:
                 raise ValueError("Failed audio requires error")
             if segment_by_id[record.segment_id].audio_ref != record.path:
                 raise ValueError("Segment audio reference does not match record")
+            self._validate_tts_settings(record.settings)
             seen_audio.add(record.segment_id)
         caption_ids: set[str] = set()
         order_by_segment: dict[str, int] = {}
@@ -337,11 +357,19 @@ class Project:
         self.validate()
         return asdict(self)
 
+    @staticmethod
+    def _validate_tts_settings(settings: TTSSettings) -> None:
+        if (not settings.provider or not settings.voice_id or settings.speaking_rate <= 0 or
+                settings.output_format != "wav" or settings.sample_rate <= 0 or
+                not -0.15 <= settings.pitch <= 0.15 or settings.intonation <= 0 or
+                settings.volume <= 0 or not settings.host or not 1 <= settings.port <= 65535):
+            raise ValueError("Invalid TTS settings")
+
     @classmethod
     def from_dict(cls, data: dict) -> Project:
         try:
             version = data["schema_version"]
-            if version not in (1, 2, 3, 4, PROJECT_VERSION):
+            if version not in (1, 2, 3, 4, 5, PROJECT_VERSION):
                 raise ValueError("Unsupported project version")
             project = cls(
                 id=data["id"], name=data["name"], schema_version=PROJECT_VERSION,
@@ -352,7 +380,9 @@ class Project:
                     vietnamese_reference=s.get("vietnamese_reference"), notes=s.get("notes", ""),
                     status=s.get("status", "draft"), audio_ref=s.get("audio_ref"),
                     caption_refs=s.get("caption_refs", []),
-                    media_placement_refs=s.get("media_placement_refs", [])) for s in data["segments"]],
+                    media_placement_refs=s.get("media_placement_refs", []),
+                    tts_override=TTSSettings(**s["tts_override"]) if s.get("tts_override") else None)
+                    for s in data["segments"]],
                 media=[cls._media_from_dict(m) for m in data["media"]],
                 media_library_path=data.get("media_library_path"),
                 media_assignments=[MediaAssignment(
@@ -363,6 +393,7 @@ class Project:
                 section_intros=data.get("section_intros", {section.value: None for section in SectionName}),
                 media_reuse_distance=data.get("media_reuse_distance", 3),
                 tts_settings=TTSSettings(**data.get("tts_settings", {})),
+                voice_presets={name: TTSSettings(**value) for name, value in data.get("voice_presets", {}).items()},
                 audio_records=[AudioRecord(
                     **{**a, "settings": TTSSettings(**a["settings"])}
                 ) for a in data.get("audio_records", [])],

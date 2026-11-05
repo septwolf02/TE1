@@ -1,7 +1,7 @@
 """Segment-addressed WAV generation; providers can be replaced independently."""
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import os
@@ -17,7 +17,7 @@ from te.project.manager import ProjectManager
 class TTSProvider(Protocol):
     provider_id: str
 
-    def synthesize(self, text: str, settings: TTSSettings, output_path: Path) -> None:
+    def synthesize(self, text: str, settings: TTSSettings, output_path: Path) -> dict | None:
         """Write one valid WAV. Input is the exact stored narration unless explicitly transformed."""
 
 
@@ -43,7 +43,14 @@ def _duration(path: Path) -> float:
 
 class TTSService:
     def __init__(self, providers: dict[str, TTSProvider] | None = None):
-        self.providers = providers or {"fake": FakeTTSProvider()}
+        if providers is None:
+            from .voicevox import VoicevoxProvider
+            providers = {"fake": FakeTTSProvider(), "voicevox": VoicevoxProvider()}
+        self.providers = providers
+
+    @staticmethod
+    def _settings(project: Project, segment: ScriptSegment) -> TTSSettings:
+        return segment.tts_override or project.tts_settings
 
     @staticmethod
     def _segment(project: Project, segment_id: str) -> ScriptSegment:
@@ -63,7 +70,12 @@ class TTSService:
     def detect_stale_audio(self, project: Project, segment_id: str) -> bool:
         segment = self._segment(project, segment_id)
         record = self._record(project, segment_id)
-        return record is not None and record.text_hash != self._hash(segment.japanese_text)
+        if record is None:
+            return False
+        current = self._settings(project, segment)
+        return (record.text_hash != self._hash(segment.japanese_text)
+                or record.provider_id != current.provider
+                or asdict(record.settings) != asdict(current))
 
     def get_audio_status(self, project: Project, segment_id: str) -> str:
         record = self._record(project, segment_id)
@@ -88,10 +100,12 @@ class TTSService:
     def generate_segment(self, project: Project, directory: Path, segment_id: str,
                          *, settings: TTSSettings | None = None) -> AudioRecord:
         segment = self._segment(project, segment_id)
-        settings = replace(settings or project.tts_settings)
+        settings = replace(settings or self._settings(project, segment))
         provider = self.providers.get(settings.provider)
         if provider is None:
             raise ValueError(f"Unknown TTS provider: {settings.provider}")
+        if settings is not None:
+            Project._validate_tts_settings(settings)
         project.validate()
         project_dir = Path(directory).resolve()
         if ProjectManager().open(project_dir).id != project.id:
@@ -106,14 +120,17 @@ class TTSService:
             with NamedTemporaryFile(dir=output_dir, suffix=".wav", delete=False) as stream:
                 temporary = Path(stream.name)
             # No preprocessing: the provider sees exactly the stored Japanese text.
-            provider.synthesize(segment.japanese_text, settings, temporary)
+            metadata = provider.synthesize(segment.japanese_text, settings, temporary) or {}
             duration = _duration(temporary)
             os.replace(temporary, output_path)
             temporary = None
             record = AudioRecord(segment_id, str(output_path), provider.provider_id,
                 settings.voice_id, settings, duration, "ready",
                 datetime.now(timezone.utc).isoformat(), version,
-                segment.japanese_text, segment.japanese_text, self._hash(segment.japanese_text))
+                segment.japanese_text, segment.japanese_text, self._hash(segment.japanese_text),
+                speaker_uuid=metadata.get("speaker_uuid"), style_id=metadata.get("style_id"),
+                credit=metadata.get("credit"), license_reference=metadata.get("license_reference"),
+                license_text=metadata.get("license_text"))
         except Exception as exc:
             record = AudioRecord(segment_id, previous.path if previous else None,
                 provider.provider_id, settings.voice_id, settings,
@@ -128,10 +145,29 @@ class TTSService:
             project.audio_records[project.audio_records.index(previous)] = record
         else:
             project.audio_records.append(record)
+        if settings != self._settings(project, segment):
+            segment.tts_override = replace(settings)
         segment.audio_ref = record.path
         project.validate()
         ProjectManager().save(project_dir, project)
         return record
+
+    def save_voice_preset(self, project: Project, directory: Path, name: str,
+                          settings: TTSSettings) -> None:
+        Project._validate_tts_settings(settings)
+        if not name.strip():
+            raise ValueError("Voice preset name cannot be empty")
+        project.voice_presets[name] = replace(settings)
+        ProjectManager().save(directory, project)
+
+    def apply_voice_preset(self, project: Project, directory: Path, name: str,
+                           segment_id: str | None = None) -> None:
+        settings = replace(project.voice_presets[name])
+        if segment_id is None:
+            project.tts_settings = settings
+        else:
+            self._segment(project, segment_id).tts_override = settings
+        ProjectManager().save(directory, project)
 
     def regenerate_segment(self, project: Project, directory: Path, segment_id: str,
                            *, settings: TTSSettings | None = None) -> AudioRecord:

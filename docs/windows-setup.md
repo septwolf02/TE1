@@ -37,3 +37,28 @@ If TE cannot find a Japanese font, install Noto Sans CJK JP and pass its actual 
 ```
 
 You can also set `$env:TE_JAPANESE_FONT_PATH` to that file path for both the demo and integration tests. TE checks that the file exists before rendering. UTF-8 is used for project JSON, subtitles, logs and FFmpeg text output; `PYTHONUTF8=1` is not required.
+
+## VOICEVOX TTS on Windows
+
+Start your existing VOICEVOX Engine, then run these PowerShell commands from the repository. They use the local HTTP API; TE does not install or alter VOICEVOX. The default endpoint is `127.0.0.1:50021` and can be changed with `--host` and `--port`.
+
+```powershell
+.\.venv\Scripts\python.exe -m te.tts check
+.\.venv\Scripts\python.exe -m te.tts list
+.\.venv\Scripts\python.exe -m te.tts sample --voice "青山龍星" --output ".\voicevox-samples\aoyama.wav"
+.\.venv\Scripts\python.exe -m te.tts sample --voice "剣崎雌雄" --output ".\voicevox-samples\kenzaki.wav"
+.\.venv\Scripts\python.exe -m te.tts sample --voice "後鬼" --output ".\voicevox-samples\goki.wav"
+```
+
+`list` prints the installed speaker/style names and their current engine IDs. Select a style by name with `--style "ノーマル"` or another style shown by `list`. The default speaker is 青山龍星; the other two are listed first when installed. The sample command accepts `--text`, `--speed`, `--pitch`, `--intonation`, `--volume`, and `--sample-rate`. Example:
+
+```powershell
+.\.venv\Scripts\python.exe -m te.tts sample --voice "青山龍星" --style "ノーマル" --text "大谷選手が、決勝の舞台に立ちました。" --speed 1.1 --pitch 0.02 --intonation 1.2 --volume 1.0 --output ".\voicevox-samples\sports.wav"
+$env:TE_VOICEVOX_INTEGRATION = "1"
+.\.venv\Scripts\python.exe -m pytest tests\test_voicevox.py -q
+Remove-Item Env:\TE_VOICEVOX_INTEGRATION
+```
+
+The normal suite mocks VOICEVOX and works without a running engine. The opt-in integration test above synthesizes a short WAV against the local engine. Sample WAV files under `voicevox-samples/` are ignored by Git.
+
+To use VOICEVOX in a project, set `project.tts_settings` to `TTSSettings(provider="voicevox", voice_id="青山龍星", style="ノーマル", sample_rate=24000)` and save with `ProjectManager.save(...)`. `TTSService.generate_all(...)` then creates segment-addressed WAV files under the project's `generated/audio/`. The provider resolves speaker and style IDs from `/speakers` at generation time. Each audio record stores the selected speaker UUID, style ID, credit name, and that speaker's policy text and local `/speaker_info` reference. Review each speaker's current terms before publishing. Channel presets can be saved with `TTSService.save_voice_preset(project, project_dir, "channel-name", settings)` and applied with `apply_voice_preset(project, project_dir, "channel-name")`; a segment can have its own preset by passing its segment ID as the final argument. Changing text, provider, voice, style, or synthesis settings marks audio stale until regenerated.

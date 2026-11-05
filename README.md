@@ -1,6 +1,6 @@
 # TE — Sports Video Editor
 
-Local-first Windows application foundation for Japanese sports storytelling videos. Module 0 provides a Python 3.12 project model, JSON schemas, replaceable module interfaces, and a project manager. It does not synthesize speech, select media with AI, or render video yet.
+Local-first Windows application for Japanese sports storytelling videos. TE provides Python 3.12 project data and local FFmpeg rendering. Fake TTS supports offline tests and VOICEVOX supports real Japanese speech through a locally running engine.
 
 ## Get started
 
@@ -22,7 +22,7 @@ Media can be registered with `manager.add_media(project, MediaKind.KEY_IMAGE, pa
 
 ## Data contracts
 
-The current contracts are [project v5](src/te/schemas/project-v5.json) and [timeline v2](src/te/schemas/timeline-v2.json). IDs use `prj_`, `seg_`, `med_`, `cap_`, and `plc_` plus a 32-character UUID hex value. IDs remain stable when segment text, order, or indexed media metadata changes. Segment numbers are positive and unique across the project; sections are exactly P1–P4. Captions point to segments; placements point to registered media. Timing uses integer milliseconds, with inclusive start and exclusive end. Project v1–v4 and timeline v1 files are migrated in memory.
+The current contracts are [project v6](src/te/schemas/project-v6.json) and [timeline v2](src/te/schemas/timeline-v2.json). IDs use `prj_`, `seg_`, `med_`, `cap_`, and `plc_` plus a 32-character UUID hex value. IDs remain stable when segment text, order, or indexed media metadata changes. Segment numbers are positive and unique across the project; sections are exactly P1–P4. Captions point to segments; placements point to registered media. Timing uses integer milliseconds, with inclusive start and exclusive end. Project v1–v4 and timeline v1 files are migrated in memory.
 
 `te.interfaces` defines the ports for script parsing, speech synthesis, media listing/selection, subtitle alignment, timeline building, effects and rendering. All selectors output the same `Placement` objects, so timeline and rendering do not depend on selection method. Implementations will be added later. Project data stores references and editing intent, while the timeline stores timed output decisions.
 
@@ -77,3 +77,7 @@ Still effects use deterministic FFmpeg zoom/pan filters. Cut is an immediate bou
 ## TE V1 demo
 
 Run `python -m te.demo` to create a new self-contained project under `demo/test/` and render a 960×540 preview. Add `--full` to render the 1920×1080 final MP4 in the same new project. The demo generates six images (one KEY), a P1 intro, simple background music, six fake narration WAVs, Japanese captions, four effect types, a P1→P2 fade and headline captions. It prints project and MP4 paths and leaves all source files untouched. See [Windows setup](docs/windows-setup.md) for exact PowerShell commands and font configuration.
+
+## TTS-1: local VOICEVOX
+
+`VoicevoxProvider` uses the locally running VOICEVOX Engine HTTP API. Speaker and style names resolve dynamically through `/speakers`; the selected speaker credit, policy text and `/speaker_info` reference are saved with each audio record. Project v6 adds voice presets, segment overrides and synthesis settings; v1–v5 projects migrate on load. Audio becomes stale when narration, provider, voice, style or settings change. Fake TTS remains available. See [Windows setup](docs/windows-setup.md#voicevox-tts-on-windows) for PowerShell check, list and sample commands.
