@@ -102,3 +102,30 @@ Start-Process $video
 The demo prints the Japanese target, its parent Vietnamese segment, the spoken sentence interval, the KEY interval and the exact MP4 path. `--confirm-mapping` is an explicit editor action; `--vn-text` is the Vietnamese sentence you confirm, and `--target-order` selects the Japanese sentence within P2. The demo uses a blue/teal ordinary image before reveal and a bright pink KEY image at reveal. `--offset-ms` accepts positive or negative values within the target narration segment; `--duration-ms` sets an explicit visible duration. By default KEY lasts for the spoken sentence duration, capped at the end of its segment. Add `--font-path "C:\path\to\NotoSansCJKjp-Regular.otf"` if font discovery fails, or use the `TE_JAPANESE_FONT_PATH` environment variable. The demo writes only under `demo\test\` and never modifies personal media.
 
 In application code, inspect a candidate with `KeyPlacementService.context(project, sentence_id)`, call `confirm_mapping(project, project_dir, sentence_id, vietnamese_text)` only after the editor verifies the pair, then mark a local image KEY with `MediaLibraryService.mark_key(...)` and call `assign_key(...)`. `resolve(...)` uses the current audio-driven timeline. `assign_random_images(...)` uses the project seed, excludes KEY media and retains saved assignments. If a sentence disappears or its confirmed mapping changes, the KEY placement becomes `manual_review`; an editor can confirm a new mapping and explicitly call `retarget_key(...)`. Project v8 migrates v1–v7 data without deleting old WAV or source media.
+
+## TE Studio GUI Phase 1
+
+Use the Python 3.12 Windows installer with Tcl/Tk enabled. From PowerShell in the repository:
+
+```powershell
+git switch te-v1-render-test
+git pull origin te-v1-render-test
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[gui,test]"
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m te.studio
+```
+
+To run the automated GUI launch/autosave/reopen smoke test on your desktop:
+
+```powershell
+$env:TE_STUDIO_GUI_SMOKE = "1"
+.\.venv\Scripts\python.exe -m pytest tests\test_studio.py -q
+Remove-Item Env:\TE_STUDIO_GUI_SMOKE
+```
+
+The last command opens the Vietnamese editor. Create a video name, enter Vietnamese and Japanese scripts in P1–P4, choose this video's image folder, and save. Use **Thêm ảnh KEY** to select each KEY image; pick the actual Japanese sentence, type its Vietnamese reference and confirm the pairing. VOICEVOX does not need to run while you edit. The **Dò lại VOICEVOX** button discovers installed speakers/styles when the local Engine is running.
+
+Projects default to `D:\TE-Projects` and the future output folder to `D:\TE-Output` when drive D: exists. Otherwise the defaults are the current user's Documents/TE-Projects and Videos/TE-Output folders. **Thư mục mặc định** changes and remembers them. Channel profiles and these paths are saved under `%LOCALAPPDATA%\TEStudio\settings.json`; each project's editor settings are saved beside its project data in `studio.json`. The GUI saves after a short typing pause and also has an explicit **Lưu** button. Source images and videos remain at their original paths.
+
+Phase 1 has no preview, Full HD render controls, working Render Queue or YouTube login. Phase 2 will read the saved `StudioService` choices and connect them to the existing timeline/render services, including the separately agreed intro narration behavior. The current renderer's intro timing is unchanged in Phase 1.

@@ -238,6 +238,7 @@ generated/
 *.webp
 project.json
 timeline.json
+studio.json
 !.env.example
 demo/test/
 voicevox-samples/

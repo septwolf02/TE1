@@ -119,8 +119,11 @@ class MediaLibraryService:
             warnings.append(f"Media library folder is unavailable: {root}")
         for path, asset in existing.items():
             if path not in seen:
-                asset.available = False
-                warnings.append(f"Media file is unavailable: {path}")
+                # Explicit KEY and intro files may live outside the ordinary-image folder.
+                # Keep their references and refresh availability from their own paths.
+                asset.available = path.is_file() if asset.category in (MediaCategory.KEY, MediaCategory.SECTION_INTRO) else False
+                if not asset.available:
+                    warnings.append(f"Media file is unavailable: {path}")
         project.media = sorted(existing.values(), key=lambda asset: asset.path.casefold())
         self._sync_detected_intros(project, warnings)
         project.validate()
