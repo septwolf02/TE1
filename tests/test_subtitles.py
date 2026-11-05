@@ -46,8 +46,8 @@ def test_43_segments_make_129_captions_and_persist(tmp_path):
     reopened = manager.open(folder)
     assert len(reopened.subtitle_captions) == 129
     assert all(not service.detect_stale_alignment(reopened, s.id) for s in reopened.segments)
-    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v5.json").read_text())
-    jsonschema.validate(json.loads((folder / "project.json").read_text()), schema)
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v5.json").read_text(encoding="utf-8"))
+    jsonschema.validate(json.loads((folder / "project.json").read_text(encoding="utf-8")), schema)
 
 
 def test_proportional_fallback_and_local_duration(tmp_path):
@@ -107,7 +107,7 @@ def test_manual_lock_split_merge_and_timing_validation(tmp_path):
 def test_v1_to_v4_project_migration(tmp_path, old_version):
     manager, folder, project = setup_project(tmp_path)
     path = folder / "project.json"
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data["schema_version"] = old_version
     data.pop("subtitle_captions")
     data.pop("subtitle_style")
@@ -123,8 +123,8 @@ def test_v1_to_v4_project_migration(tmp_path, old_version):
         for segment in data["segments"]:
             for key in ("notes", "status", "audio_ref", "caption_refs", "media_placement_refs"):
                 segment.pop(key)
-    path.write_text(json.dumps(data, ensure_ascii=False))
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     opened = manager.open(folder)
     assert opened.schema_version == 5 and opened.subtitle_captions == []
     manager.save(folder, opened)
-    assert json.loads(path.read_text())["schema_version"] == 5
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 5

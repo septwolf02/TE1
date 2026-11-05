@@ -40,8 +40,8 @@ def test_43_segments_129_absolute_captions_and_reopen(tmp_path):
     assert all(block.visual_status == "missing" for block in timeline.blocks)
     reopened = service.load_timeline(manager.open(folder), folder)
     assert len(reopened.blocks) == 43 and not service.detect_stale_timeline(project, reopened)
-    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/timeline-v2.json").read_text())
-    jsonschema.validate(json.loads((folder / "timeline.json").read_text()), schema)
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/timeline-v2.json").read_text(encoding="utf-8"))
+    jsonschema.validate(json.loads((folder / "timeline.json").read_text(encoding="utf-8")), schema)
 
 
 def test_intro_key_effect_video_policy_and_rebuild(tmp_path):
@@ -104,7 +104,7 @@ def test_stale_audio_and_subtitles_rejected(tmp_path):
 def test_timeline_v1_migration(tmp_path):
     _, folder, project = prepared(tmp_path)
     path = folder / "timeline.json"
-    path.write_text(json.dumps({"schema_version": 1, "project_id": project.id, "captions": [], "placements": []}))
+    path.write_text(json.dumps({"schema_version": 1, "project_id": project.id, "captions": [], "placements": []}), encoding="utf-8")
     migrated = TimelineService().load_timeline(project, folder)
     assert migrated.schema_version == 2 and not migrated.blocks
     rebuilt, _ = TimelineService().rebuild_timeline(project, folder)

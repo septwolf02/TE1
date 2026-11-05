@@ -74,7 +74,7 @@ def _video_metadata(path: Path) -> tuple[int | None, int | None, float | None]:
         completed = subprocess.run(
             [ffprobe, "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path)],
-            check=True, capture_output=True, text=True, timeout=15,
+            check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
         )
         data = json.loads(completed.stdout)
         stream = data.get("streams", [{}])[0]

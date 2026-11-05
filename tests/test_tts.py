@@ -39,8 +39,8 @@ def test_one_segment_exact_text_duration_and_save(tmp_path):
     reopened = manager.open(folder)
     assert reopened.audio_records[0].segment_id == segment.id
     assert service.get_audio_status(reopened, segment.id) == "ready"
-    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v5.json").read_text())
-    jsonschema.validate(json.loads((folder / "project.json").read_text()), schema)
+    schema = json.loads((Path(__file__).resolve().parents[1] / "src/te/schemas/project-v5.json").read_text(encoding="utf-8"))
+    jsonschema.validate(json.loads((folder / "project.json").read_text(encoding="utf-8")), schema)
 
 
 def test_43_segments_generate_and_regenerate_one(tmp_path):
@@ -127,7 +127,7 @@ def test_selected_generation_and_settings_override(tmp_path):
 @pytest.mark.parametrize("old_version", [1, 2, 3])
 def test_project_migrations_preserve_segments(tmp_path, old_version):
     manager, folder, project = project_with_segments(tmp_path, 1)
-    data = json.loads((folder / "project.json").read_text())
+    data = json.loads((folder / "project.json").read_text(encoding="utf-8"))
     data["schema_version"] = old_version
     data.pop("tts_settings")
     data.pop("audio_records")
@@ -138,9 +138,9 @@ def test_project_migrations_preserve_segments(tmp_path, old_version):
         for segment in data["segments"]:
             for key in ("notes", "status", "audio_ref", "caption_refs", "media_placement_refs"):
                 segment.pop(key)
-    (folder / "project.json").write_text(json.dumps(data, ensure_ascii=False))
+    (folder / "project.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     opened = manager.open(folder)
     assert opened.segments[0].id == project.segments[0].id
     assert opened.tts_settings.provider == "fake" and opened.audio_records == []
     manager.save(folder, opened)
-    assert json.loads((folder / "project.json").read_text())["schema_version"] == 5
+    assert json.loads((folder / "project.json").read_text(encoding="utf-8"))["schema_version"] == 5

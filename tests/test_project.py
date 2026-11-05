@@ -64,15 +64,15 @@ def test_reject_unknown_version_and_broken_reference(tmp_path):
     manager = ProjectManager()
     folder = tmp_path / "story"
     project = manager.create(folder, "Story")
-    data = json.loads((folder / "project.json").read_text())
+    data = json.loads((folder / "project.json").read_text(encoding="utf-8"))
     data["schema_version"] = 6
-    (folder / "project.json").write_text(json.dumps(data))
+    (folder / "project.json").write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="version"):
         manager.open(folder)
     data["schema_version"] = 5
-    (folder / "project.json").write_text(json.dumps(data))
+    (folder / "project.json").write_text(json.dumps(data), encoding="utf-8")
     timeline = Timeline(project.id, captions=[Caption(new_id("cap"), new_id("seg"), "文", 0, 100)])
-    (folder / "timeline.json").write_text(json.dumps(timeline.to_dict()))
+    (folder / "timeline.json").write_text(json.dumps(timeline.to_dict()), encoding="utf-8")
     with pytest.raises(ValueError, match="segment"):
         manager.open(folder)
 

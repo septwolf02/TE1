@@ -48,7 +48,8 @@ class RenderService:
         ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
         if not ffmpeg or not ffprobe:
             raise RuntimeError("FFmpeg and ffprobe must be installed and on PATH")
-        version = subprocess.run([ffmpeg, "-version"], capture_output=True, text=True, check=True).stdout.splitlines()[0]
+        version = subprocess.run([ffmpeg, "-version"], capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace", check=True).stdout.splitlines()[0]
         return {"ffmpeg": ffmpeg, "ffprobe": ffprobe, "version": version}
 
     def get_render_status(self) -> str:
@@ -66,21 +67,50 @@ class RenderService:
             shutil.rmtree(cache)
 
     @staticmethod
-    def _font(settings: RenderSettings) -> str:
+    def _resolve_font(settings: RenderSettings) -> tuple[str, Path | None]:
         if settings.font_path:
             path = Path(settings.font_path)
             if not path.is_file():
                 raise ValueError(f"Japanese font file unavailable: {path}")
-            return settings.font_family
+            return settings.font_family, path.resolve()
+        configured = os.environ.get("TE_JAPANESE_FONT_PATH")
+        if configured:
+            path = Path(configured)
+            if not path.is_file():
+                raise ValueError(f"Japanese font file unavailable: {path}")
+            return settings.font_family, path.resolve()
+        windows_dirs = []
+        if local_app_data := os.environ.get("LOCALAPPDATA"):
+            windows_dirs.append(Path(local_app_data) / "Microsoft" / "Windows" / "Fonts")
+        if windows_dir := os.environ.get("WINDIR"):
+            windows_dirs.append(Path(windows_dir) / "Fonts")
+        candidates = (
+            ("NotoSansCJKjp*.otf", "Noto Sans CJK JP"),
+            ("NotoSansCJK*.ttc", "Noto Sans CJK JP"),
+            ("NotoSansJP*.ttf", "Noto Sans JP"),
+            ("YuGoth*.ttc", "Yu Gothic"),
+            ("meiryo*.ttc", "Meiryo"),
+            ("msgothic.ttc", "MS Gothic"),
+        )
+        for pattern, family in candidates:
+            for directory in windows_dirs:
+                if directory.is_dir():
+                    for path in sorted(directory.glob(pattern)):
+                        if path.is_file():
+                            return family, path.resolve()
         match = shutil.which("fc-match")
         if not match:
-            raise ValueError("Fontconfig is required to select a Japanese font; set font_path")
+            raise ValueError("Japanese font unavailable; install one or set --font-path / TE_JAPANESE_FONT_PATH")
         result = subprocess.run([match, "-f", "%{family}|%{lang}", settings.font_family],
-                                capture_output=True, text=True, check=True).stdout
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
         family, _, languages = result.partition("|")
         if "ja" not in languages or settings.font_family.casefold() not in family.casefold():
             raise ValueError(f"Japanese font unavailable: {settings.font_family}")
-        return settings.font_family
+        return settings.font_family, None
+
+    @staticmethod
+    def _font(settings: RenderSettings) -> str:
+        return RenderService._resolve_font(settings)[0]
 
     def validate_render_inputs(self, project: Project, timeline: Timeline, settings: RenderSettings) -> tuple[str, ...]:
         self.check_ffmpeg()
@@ -275,12 +305,13 @@ class RenderService:
             ass = cache / "captions.ass"
             if timeline.captions:
                 emit("burning subtitles")
-                self._write_ass(project, timeline, ass, settings, self._font(settings))
+                font_family, font_path = self._resolve_font(settings)
+                self._write_ass(project, timeline, ass, settings, font_family)
                 # Filter path is generated under the project and passed as one argument.
                 filter_path = str(ass).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
                 font_dir = ""
-                if settings.font_path:
-                    directory_path = str(Path(settings.font_path).resolve().parent).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+                if font_path:
+                    directory_path = str(font_path.parent).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
                     font_dir = f":fontsdir='{directory_path}'"
                 filters.append(f"[0:v]ass=filename='{filter_path}'{font_dir}[vout]")
                 video_map = "[vout]"

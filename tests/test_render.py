@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -23,6 +24,23 @@ def test_ffmpeg_dependency_and_missing_font(monkeypatch, tmp_path):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="FFmpeg and ffprobe"):
         service.check_ffmpeg()
+
+
+def test_windows_font_discovery_without_fontconfig(monkeypatch, tmp_path):
+    font_dir = tmp_path / "Microsoft" / "Windows" / "Fonts"
+    font_dir.mkdir(parents=True)
+    font = font_dir / "NotoSansCJKjp-Regular.otf"
+    font.write_bytes(b"font fixture")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("WINDIR", raising=False)
+    monkeypatch.delenv("TE_JAPANESE_FONT_PATH", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert RenderService._resolve_font(RenderSettings()) == ("Noto Sans CJK JP", font.resolve())
+    configured = tmp_path / "custom.ttf"
+    configured.write_bytes(b"font fixture")
+    monkeypatch.setenv("TE_JAPANESE_FONT_PATH", str(configured))
+    assert RenderService._resolve_font(RenderSettings()) == ("Noto Sans CJK JP", configured.resolve())
+    assert RenderService._resolve_font(RenderSettings(font_path=str(font))) == ("Noto Sans CJK JP", font.resolve())
 
 
 def test_real_preview_render(tmp_path):
@@ -62,17 +80,20 @@ def test_real_preview_render(tmp_path):
     timeline_service.save_timeline(project, folder, timeline)
     render = RenderService()
     progress = []
-    output = render.render_preview(project, timeline, folder, progress=progress.append)
+    output = render.render_preview(project, timeline, folder,
+                                   settings=RenderSettings(960, 540, 30, 28, "veryfast",
+                                                           font_path=os.environ.get("TE_JAPANESE_FONT_PATH")),
+                                   progress=progress.append)
     assert output.is_file() and render.get_render_status() == "completed"
     assert "burning subtitles" in progress and "mixing audio" in progress
     probe = json.loads(subprocess.run([ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(output)],
-                                      capture_output=True, text=True, check=True).stdout)
+                                      capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout)
     video = next(stream for stream in probe["streams"] if stream["codec_type"] == "video")
     audio = next(stream for stream in probe["streams"] if stream["codec_type"] == "audio")
     assert (video["width"], video["height"], video["codec_name"], video["pix_fmt"]) == (960, 540, "h264", "yuv420p")
     assert audio["codec_name"] == "aac"
     assert 2.4 <= float(probe["format"]["duration"]) <= 2.7
-    manifest = json.loads((folder / "generated/output/preview.manifest.json").read_text())
+    manifest = json.loads((folder / "generated/output/preview.manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "completed" and manifest["project_id"] == project.id
     assert manager.open(folder).id == project.id
     with pytest.raises(FileExistsError):

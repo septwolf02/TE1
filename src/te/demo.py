@@ -31,7 +31,7 @@ EFFECTS = ("slow_zoom_in", "slow_zoom_out", "pan_left", "pan_right", "slow_zoom_
 
 
 def _ffmpeg(command: list[str], *, label: str) -> None:
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode:
         raise RuntimeError(f"Could not generate {label}: {result.stderr[-1000:]}")
 

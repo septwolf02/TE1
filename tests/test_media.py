@@ -31,7 +31,7 @@ def build_library(root: Path) -> dict[str, bytes]:
         path = root / "section_intro" / f"{section}.mp4"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"intro {section}".encode())
-    (root / "normal" / "ignore.txt").write_text("unsupported")
+    (root / "normal" / "ignore.txt").write_text("unsupported", encoding="utf-8")
     return {str(path): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 

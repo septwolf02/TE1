@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from te.demo import run_demo
@@ -6,7 +7,7 @@ from te.timeline import TimelineService
 
 
 def test_demo_builds_self_contained_preview(tmp_path):
-    preview, full = run_demo(tmp_path)
+    preview, full = run_demo(tmp_path, font_path=os.environ.get("TE_JAPANESE_FONT_PATH"))
     assert preview.is_file() and full is None
     project_dir = preview.parents[2]
     project = ProjectManager().open(project_dir)
