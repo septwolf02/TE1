@@ -16,6 +16,7 @@ from te.project.models import (KeyPlacement, MediaCategory, MediaKind, MediaType
                                ScriptSegment, SectionName, TTSSettings, new_id)
 from te.tts.sentences import SentenceSpeechService
 from te.media.key_service import KeyPlacementService
+from te.subtitles import split_japanese_sentences
 
 
 STUDIO_VERSION = 1
@@ -28,6 +29,78 @@ MOTION_PRESETS = {
 TRANSITION_PRESETS = ("cut", "fade", "crossfade")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
+
+
+@dataclass(frozen=True)
+class VietnameseUnit:
+    key: str
+    text: str
+    paragraph: int
+    order: int
+    global_order: int
+
+    @property
+    def label(self) -> str:
+        return f"Đoạn {self.paragraph + 1}, câu {self.order + 1}: {self.text}"
+
+
+@dataclass(frozen=True)
+class JapaneseChoice:
+    sentence_id: str
+    text: str
+    paragraph: int | None
+    order: int
+
+    @property
+    def label(self) -> str:
+        return f"Câu {self.order + 1}: {self.text.strip()}"
+
+
+@dataclass(frozen=True)
+class SentenceSuggestion:
+    sentence_id: str | None
+    message: str
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [part for part in re.split(r"(?:\r?\n[ \t]*){2,}", text) if part.strip()]
+
+
+def _vietnamese_sentences(text: str) -> list[str]:
+    """Split editorial reference text without changing the source text itself."""
+    result: list[str] = []
+    start = 0
+    index = 0
+    closers = '\"\'”’)]}'
+    while index < len(text):
+        char = text[index]
+        if char in ".!?…" and not (char == "." and 0 < index < len(text) - 1 and
+                                    text[index - 1].isdigit() and text[index + 1].isdigit()):
+            end = index + 1
+            while end < len(text) and text[end] in ".!?…":
+                end += 1
+            while end < len(text) and text[end] in closers:
+                end += 1
+            value = text[start:end].strip()
+            if value:
+                result.append(value)
+            start = end
+            index = end
+        else:
+            index += 1
+    tail = text[start:].strip()
+    if tail:
+        result.append(tail)
+    return result
+
+
+def split_vietnamese_units(text: str) -> list[VietnameseUnit]:
+    result: list[VietnameseUnit] = []
+    for paragraph_index, paragraph in enumerate(_paragraphs(text)):
+        for sentence_index, sentence in enumerate(_vietnamese_sentences(paragraph)):
+            result.append(VietnameseUnit(f"{paragraph_index}:{sentence_index}", sentence,
+                                         paragraph_index, sentence_index, len(result)))
+    return result
 
 
 def _default_roots() -> tuple[Path, Path]:
@@ -204,6 +277,7 @@ class StudioService:
     @staticmethod
     def _apply_sections(project: Project, sections: dict[str, dict[str, str]]) -> None:
         changed: list[str] = []
+        changed_vietnamese: dict[SectionName, str] = {}
         original = list(project.segments)
         updated: list[ScriptSegment] = []
         for section in SectionName:
@@ -229,6 +303,8 @@ class StudioService:
                 if segment.japanese_text != ja:
                     segment.japanese_text = ja
                     changed.append(segment.id)
+                if (segment.vietnamese_reference or "") != vi:
+                    changed_vietnamese[section] = vi
                 segment.vietnamese_reference = vi or None
                 updated.append(segment)
             else:
@@ -236,6 +312,8 @@ class StudioService:
                 old_vi = ("\n\n".join(s.vietnamese_reference or "" for s in existing)
                           if any(s.vietnamese_reference is not None for s in existing) else "")
                 if ja != old_ja or vi != old_vi:
+                    if vi != old_vi:
+                        changed_vietnamese[section] = vi
                     japanese_parts = ja.split("\n\n")
                     vietnamese_parts = vi.split("\n\n") if vi else [""] * len(existing)
                     if len(japanese_parts) != len(existing) or len(vietnamese_parts) != len(existing):
@@ -251,6 +329,15 @@ class StudioService:
         for index, segment in enumerate(updated, 1):
             segment.number = index
         project.segments = updated
+        for section, text in changed_vietnamese.items():
+            source_sentences = {unit.text for unit in split_vietnamese_units(text)}
+            segment_ids = {segment.id for segment in updated if segment.section == section}
+            for unit in project.sentence_units:
+                if unit.segment_id in segment_ids and unit.mapping_confirmed and unit.vietnamese_reference not in source_sentences:
+                    unit.mapping_confirmed = False
+                    for placement in project.key_placements:
+                        if placement.sentence_id == unit.id:
+                            placement.status = "manual_review"
         project.validate()
         splitter = SentenceSpeechService()
         for segment in updated:
@@ -316,6 +403,44 @@ class StudioService:
                     vietnamese: str) -> None:
         state.sections[SectionName(section).value] = {"ja": japanese, "vi": vietnamese}
 
+    @staticmethod
+    def vietnamese_units(state: StudioProject, section: SectionName) -> list[VietnameseUnit]:
+        return split_vietnamese_units(state.sections[SectionName(section).value]["vi"])
+
+    @staticmethod
+    def japanese_choices(state: StudioProject, section: SectionName) -> list[JapaneseChoice]:
+        section = SectionName(section)
+        segments = [segment for segment in state.project.segments if segment.section == section]
+        units = [unit for segment in segments for unit in sorted(
+            (item for item in state.project.sentence_units if item.segment_id == segment.id),
+            key=lambda item: item.order)]
+        paragraph_indices = [paragraph_index for paragraph_index, paragraph in enumerate(
+            _paragraphs(state.sections[section.value]["ja"]))
+            for sentence in split_japanese_sentences(paragraph) if sentence.strip()]
+        if len(paragraph_indices) != len(units):
+            paragraph_indices = [None] * len(units)
+        return [JapaneseChoice(unit.id, unit.synthesis_text, paragraph_indices[index], index)
+                for index, unit in enumerate(units)]
+
+    @staticmethod
+    def suggest_japanese(state: StudioProject, section: SectionName,
+                         vietnamese_key: str) -> SentenceSuggestion:
+        vietnamese = StudioService.vietnamese_units(state, section)
+        selected = next((unit for unit in vietnamese if unit.key == vietnamese_key), None)
+        if selected is None:
+            raise KeyError(vietnamese_key)
+        japanese = StudioService.japanese_choices(state, section)
+        if len(vietnamese) != len(japanese) or not japanese:
+            return SentenceSuggestion(None, "Cần chọn câu Nhật tương ứng — số câu Việt/Nhật khác nhau.")
+        candidate = japanese[selected.global_order]
+        vi_by_paragraph = [sum(unit.paragraph == index for unit in vietnamese)
+                           for index in range(max(unit.paragraph for unit in vietnamese) + 1)]
+        ja_by_paragraph = [sum(unit.paragraph == index for unit in japanese)
+                           for index in range(len(vi_by_paragraph))]
+        if None not in (unit.paragraph for unit in japanese) and vi_by_paragraph == ja_by_paragraph:
+            return SentenceSuggestion(candidate.sentence_id, "Gợi ý theo đoạn và thứ tự — hãy kiểm tra trước khi xác nhận.")
+        return SentenceSuggestion(candidate.sentence_id, "Gợi ý theo thứ tự toàn phần — hãy kiểm tra kỹ trước khi xác nhận.")
+
     def select_media_folder(self, state: StudioProject, path: Path) -> int:
         path = Path(path).expanduser().resolve(strict=True)
         if not path.is_dir():
@@ -360,15 +485,24 @@ class StudioService:
             raise ValueError("Ảnh KEY này đã được chọn cho video.")
         state.project = working
         draft = {"id": uuid4().hex, "media_id": asset.id, "section": "P1", "sentence_id": None,
-                 "vietnamese_text": "", "duration_seconds": None, "offset_ms": 0}
+                 "vietnamese_key": None, "vietnamese_text": "", "duration_seconds": None, "offset_ms": 0}
         state.key_drafts.append(draft)
         self.save_project(state)
         return draft
 
     def confirm_key_draft(self, state: StudioProject, draft_id: str, *, section: SectionName,
-                          sentence_id: str, vietnamese_text: str, offset_ms: int = 0,
+                          sentence_id: str, vietnamese_text: str | None = None,
+                          vietnamese_key: str | None = None, offset_ms: int = 0,
                           duration_seconds: float | None = None) -> KeyPlacement:
         draft = next(item for item in state.key_drafts if item["id"] == draft_id)
+        if vietnamese_key is not None:
+            selected = next((unit for unit in self.vietnamese_units(state, section)
+                             if unit.key == vietnamese_key), None)
+            if selected is None:
+                raise ValueError("Câu Việt đã thay đổi; hãy chọn lại trước khi xác nhận.")
+            vietnamese_text = selected.text
+        if not vietnamese_text or not vietnamese_text.strip():
+            raise ValueError("Hãy chọn câu tiếng Việt tương ứng trước.")
         unit = next((u for u in state.project.sentence_units if u.id == sentence_id), None)
         segment = next((s for s in state.project.segments if unit and s.id == unit.segment_id), None)
         if segment is None or segment.section != SectionName(section):

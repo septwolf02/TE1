@@ -215,18 +215,35 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     app._refresh_key_rows()
     panel = app.key_rows.winfo_children()[0]
     combos = [child for child in panel.winfo_children() if isinstance(child, ttk.Combobox)]
-    assert len(combos) == 2
+    assert len(combos) == 3
+    combos[0].set("P2")
     combos[1].set(combos[1]["values"][0])
-    vn_field = next(child for child in panel.winfo_children()
-                    if isinstance(child, ttk.Entry) and child.grid_info()["row"] == 1)
-    vn_field.insert(0, "Câu Việt xác nhận.")
+    assert "Phần thứ hai." in combos[1].get()
+    assert "次の部分です。" in combos[2].get()
     monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
     confirm = next(child for child in panel.winfo_children()
                    if isinstance(child, ttk.Button) and child["text"] == "Xác nhận VN–JP")
     confirm.invoke()
     assert len(app.state.project.key_placements) == 1
+    app._switch_section(SectionName.P1)
+    app.jp_text.insert("end", "もう一文。")
+    app._script_changed()
+    assert app._save()
+    second_key = tmp_path / "ảnh KEY thứ hai.png"
+    second_key.write_bytes(b"second test image")
+    app.service.add_key_draft(app.state, second_key)
+    app._refresh_key_rows()
+    draft_panel = app.key_rows.winfo_children()[0]
+    draft_combos = [child for child in draft_panel.winfo_children() if isinstance(child, ttk.Combobox)]
+    draft_combos[1].set(draft_combos[1]["values"][0])
+    assert not draft_combos[2].get()
+    draft_combos[2].set(draft_combos[2]["values"][1])
+    second_confirm = next(child for child in draft_panel.winfo_children()
+                          if isinstance(child, ttk.Button) and child["text"] == "Xác nhận VN–JP")
+    second_confirm.invoke()
+    assert len(app.state.project.key_placements) == 2
     root.destroy()
     reopened = app.service.open_project(path)
-    assert reopened.sections["P1"]["ja"] == "初めての日本語。"
+    assert reopened.sections["P1"]["ja"] == "初めての日本語。もう一文。"
     assert reopened.sections["P2"]["vi"] == "Phần thứ hai."
-    assert len(reopened.project.key_placements) == 1
+    assert len(reopened.project.key_placements) == 2
