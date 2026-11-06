@@ -56,6 +56,7 @@ class StudioApp:
         self.volume = tk.StringVar(value="1.0")
         self.subtitle_font = tk.StringVar(value="bold_japanese")
         self.subtitle_color = tk.StringVar(value="#FFFFFF")
+        self.subtitle_chars = tk.StringVar(value="24")
         self.font_path = tk.StringVar(value="")
         self.motion = tk.StringVar(value="Tự động: zoom và pan")
         self.transition = tk.StringVar(value="Cắt thẳng")
@@ -221,13 +222,16 @@ class StudioApp:
         ttk.Entry(subtitle, textvariable=self.subtitle_font, width=25).pack(side="left", padx=5)
         ttk.Label(subtitle, text="Màu chữ").pack(side="left")
         ttk.Entry(subtitle, textvariable=self.subtitle_color, width=10).pack(side="left", padx=5)
+        ttk.Label(subtitle, text="Ký tự/dòng (tối đa 2 dòng)").pack(side="left")
+        ttk.Entry(subtitle, textvariable=self.subtitle_chars, width=5).pack(side="left", padx=5)
         font = ttk.Frame(box)
         font.pack(fill="x", pady=3)
         ttk.Label(font, text="File phông Nhật (tùy chọn)").pack(side="left")
         ttk.Entry(font, textvariable=self.font_path, width=68).pack(side="left", padx=5)
         ttk.Button(font, text="Chọn file…", command=self._choose_font).pack(side="left")
         for variable in (self.voice, self.style, self.speed, self.pitch, self.intonation,
-                         self.volume, self.subtitle_font, self.subtitle_color, self.font_path):
+                         self.volume, self.subtitle_font, self.subtitle_color, self.subtitle_chars,
+                         self.font_path):
             variable.trace_add("write", lambda *_: self._dirty())
 
     def _choose_font(self) -> None:
@@ -344,6 +348,7 @@ class StudioApp:
         self.volume.set(str(settings.volume))
         self.subtitle_font.set(state.project.subtitle_style.get("font", "bold_japanese"))
         self.subtitle_color.set(state.project.subtitle_style.get("text_color", "#FFFFFF"))
+        self.subtitle_chars.set(str(state.project.subtitle_style.get("max_chars_per_line", 24)))
         self.font_path.set(state.font_path or "")
         self.motion.set(next((label for label, value in MOTION_LABELS.items()
                               if value == state.motion_preset), next(iter(MOTION_LABELS))))
@@ -392,6 +397,7 @@ class StudioApp:
         settings.style = style or None
         state.project.subtitle_style["font"] = self.subtitle_font.get().strip()
         state.project.subtitle_style["text_color"] = self.subtitle_color.get().strip()
+        state.project.subtitle_style["max_chars_per_line"] = int(self.subtitle_chars.get())
         state.font_path = self.font_path.get().strip() or None
 
     def _save(self, *, auto: bool = False) -> bool:
@@ -1035,6 +1041,11 @@ class StudioApp:
             elif kind == "done":
                 self._append_render_log(f"Hoàn tất: {value}")
                 self._refresh_summary()
+                if (isinstance(value, Path) and self.state and
+                        self.state.last_final == str(value) and
+                        messagebox.askyesno("Video đã hoàn tất", f"Đã xuất video:\n{value}\n\nMở video ngay?",
+                                            parent=self.root)):
+                    self._open_path(value)
                 finished = True
             elif kind == "error":
                 message = self._production_error(value)

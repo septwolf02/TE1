@@ -283,10 +283,14 @@ class RenderService:
         for caption in timeline.captions:
             source = by_id.get(caption.id)
             headline = bool(source and source.presentation == "headline" and timeline.headline.get("enabled"))
-            text = caption.text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
+            def escape(value: str) -> str:
+                return value.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
             if not headline:
-                text = "\\N".join(wrap_caption(text, style["max_chars_per_line"], style["max_lines"]))
+                text = "\\N".join(escape(line) for line in
+                    wrap_caption(caption.text, style["max_chars_per_line"], style["max_lines"]))
             else:
+                text = "\\N".join(escape(line) for line in
+                    wrap_caption(caption.text, style["max_chars_per_line"], style["max_lines"]))
                 dark = round((1 - timeline.headline.get("darkening", 0.7)) * 255)
                 text = f"{{\\an5\\bord3\\shad0}}{text}"
                 lines.append(f"Dialogue: -1,{cls._ass_time(caption.start_ms)},{cls._ass_time(caption.end_ms)},Headline,,0,0,0,,{{\\an7\\bord0\\shad0\\1c&H000000&\\1a&H{dark:02X}&\\p1}}m 0 0 l {settings.width} 0 {settings.width} {settings.height} 0 {settings.height}{{\\p0}}\n")

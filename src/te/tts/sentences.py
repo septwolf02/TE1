@@ -12,7 +12,7 @@ import wave
 
 from te.project.manager import ProjectManager
 from te.project.models import AudioRecord, Project, SentenceAudioRecord, SentenceUnit, SubtitleCaption, new_id
-from te.subtitles.service import split_japanese_sentences, SubtitleService
+from te.subtitles.service import _allocate, split_caption_text, split_japanese_sentences, SubtitleService
 from .service import TTSService, _duration
 
 
@@ -29,6 +29,7 @@ class SentenceSpeechService:
         texts = split_japanese_sentences(segment.japanese_text)
         old = [unit for unit in project.sentence_units if unit.segment_id == segment_id]
         replacement: list[SentenceUnit | None] = [None] * len(texts)
+        rewritten_captions: dict[str, str] = {}
         matcher = SequenceMatcher(None, [unit.synthesis_text for unit in old], texts, autojunk=False)
         for tag, before_start, before_end, after_start, after_end in matcher.get_opcodes():
             if tag == "equal":
@@ -36,9 +37,10 @@ class SentenceSpeechService:
                     replacement[after] = old[before]
             elif tag == "replace" and before_end - before_start == after_end - after_start:
                 for before, after in zip(range(before_start, before_end), range(after_start, after_end)):
-                    for caption in project.subtitle_captions:
-                        if caption.sentence_id == old[before].id and caption.text == old[before].synthesis_text:
-                            caption.text = texts[after]
+                    matching = sorted((caption for caption in project.subtitle_captions
+                        if caption.sentence_id == old[before].id), key=lambda caption: caption.order)
+                    if matching and "".join(caption.text for caption in matching) == old[before].synthesis_text:
+                        rewritten_captions[old[before].id] = texts[after]
                     replacement[after] = replace(old[before], synthesis_text=texts[after],
                                                  vietnamese_reference=None, mapping_confirmed=False)
         for index, text in enumerate(texts):
@@ -55,14 +57,21 @@ class SentenceSpeechService:
             if unit is None or not unit.mapping_confirmed or unit.vietnamese_reference != placement.confirmed_vietnamese_text:
                 placement.status = "manual_review"
         surviving = {unit.id: unit.order for unit in replacement}
+        for sentence_id, new_text in rewritten_captions.items():
+            matching = sorted((caption for caption in project.subtitle_captions
+                if caption.sentence_id == sentence_id), key=lambda caption: caption.order)
+            matching[0].text = new_text
+            project.subtitle_captions = [caption for caption in project.subtitle_captions
+                if caption not in matching[1:]]
         captions = [c for c in project.subtitle_captions if c.segment_id == segment_id]
         if any(c.sentence_id and c.sentence_id not in surviving for c in captions):
             project.subtitle_captions = [c for c in project.subtitle_captions
                 if c.segment_id != segment_id or c.sentence_id is None or c.sentence_id in surviving]
-            remaining = [c for c in project.subtitle_captions if c.segment_id == segment_id]
-            for index, caption in enumerate(sorted(remaining, key=lambda c: surviving.get(c.sentence_id, c.order)), 1):
-                caption.order = index
-            segment.caption_refs = [c.id for c in remaining]
+        remaining = sorted((c for c in project.subtitle_captions if c.segment_id == segment_id),
+                           key=lambda caption: caption.order)
+        for index, caption in enumerate(remaining, 1):
+            caption.order = index
+        segment.caption_refs = [caption.id for caption in remaining]
         project.validate()
         return replacement
 
@@ -247,22 +256,40 @@ class SentenceSpeechService:
                        anchors: list[tuple[int, int]]) -> None:
         segment = next(s for s in project.segments if s.id == segment_id)
         old = [c for c in project.subtitle_captions if c.segment_id == segment_id]
-        by_sentence = {c.sentence_id: c for c in old if c.sentence_id}
+        by_sentence: dict[str, list[SubtitleCaption]] = {}
+        current_sentence = None
+        for caption in sorted(old, key=lambda item: item.order):
+            if caption.sentence_id:
+                current_sentence = caption.sentence_id
+            if current_sentence:
+                by_sentence.setdefault(current_sentence, []).append(caption)
+        for group in by_sentence.values():
+            group.sort(key=lambda caption: caption.order)
         fallback = old if len(old) == len(units) and all(c.sentence_id is None for c in old) else []
         fingerprint = SubtitleService._audio_fingerprint(project, segment_id)
         source_hash = SubtitleService._source_hash(segment.japanese_text)
         captions = []
-        for index, (unit, (start, end)) in enumerate(zip(units, anchors), 1):
-            previous = by_sentence.get(unit.id) or (fallback[index - 1] if fallback else None)
-            text = previous.text if previous else unit.synthesis_text
-            caption = SubtitleCaption(previous.id if previous else new_id("cap"), segment_id, segment.section,
-                index, text, start, end, alignment_method="sentence_audio", alignment_status="aligned",
-                confidence=1.0, locked=previous.locked if previous else False,
-                notes=previous.notes if previous else "",
-                presentation=previous.presentation if previous else
-                    "headline" if segment.section == "P1" and segment.number == 1 and index <= 2 else "default",
-                audio_fingerprint=fingerprint, source_text_hash=source_hash, sentence_id=unit.id)
-            captions.append(caption)
+        max_chars = project.subtitle_style["max_chars_per_line"]
+        max_lines = project.subtitle_style["max_lines"]
+        for sentence_index, (unit, (start, end)) in enumerate(zip(units, anchors), 1):
+            previous_parts = by_sentence.get(unit.id) or ([fallback[sentence_index - 1]] if fallback else [])
+            text = "".join(part.text for part in previous_parts) if previous_parts else unit.synthesis_text
+            capacity = max_chars * max_lines
+            parts = ([part.text for part in previous_parts]
+                     if previous_parts and all(part.text.strip() and len(part.text) <= capacity for part in previous_parts)
+                     else split_caption_text(text, max_chars, max_lines))
+            windows = _allocate([max(1, len(part)) for part in parts], end - start)
+            for part_index, (part, (local_start, local_end)) in enumerate(zip(parts, windows)):
+                previous = previous_parts[part_index] if part_index < len(previous_parts) else None
+                caption = SubtitleCaption(previous.id if previous else new_id("cap"), segment_id, segment.section,
+                    len(captions) + 1, part, start + local_start, start + local_end,
+                    alignment_method="sentence_audio", alignment_status="aligned", confidence=1.0,
+                    locked=previous.locked if previous else False,
+                    notes=previous.notes if previous else "",
+                    presentation=previous.presentation if previous else
+                        "headline" if segment.section == "P1" and segment.number == 1 and sentence_index <= 2 else "default",
+                    audio_fingerprint=fingerprint, source_text_hash=source_hash, sentence_id=unit.id)
+                captions.append(caption)
         split_hash = SubtitleService._hash([c.text for c in captions])
         for caption in captions:
             caption.split_hash = split_hash

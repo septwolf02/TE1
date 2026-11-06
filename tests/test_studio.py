@@ -200,6 +200,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     app = StudioApp(root, make_service(tmp_path))
     app.jp_text.insert("1.0", "初めての日本語。")
     app.vn_text.insert("1.0", "Lời Việt đầu tiên.")
+    app.subtitle_chars.set("18")
     app._script_changed()
     app._switch_section(SectionName.P2)
     assert app.state.sections["P1"]["ja"] == "初めての日本語。"
@@ -247,6 +248,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     root.destroy()
     reopened = app.service.open_project(path)
     assert reopened.sections["P1"]["ja"] == "初めての日本語。もう一文。"
+    assert reopened.project.subtitle_style["max_chars_per_line"] == 18
     assert reopened.sections["P2"]["vi"] == "Phần thứ hai."
     assert len(reopened.project.key_placements) == 2
 

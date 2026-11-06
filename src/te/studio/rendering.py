@@ -280,6 +280,12 @@ class StudioRenderService:
 
     def _render_video_locked(self, state: StudioProject, *, preview: bool,
                              progress: Progress | None = None) -> Path:
+        self._emit(progress, "Đang kiểm tra kịch bản, ảnh, KEY, intro, FFmpeg và phông Nhật…")
+        inspected = deepcopy(state)
+        MediaLibraryService().refresh_library(inspected.project)
+        self.validate_inputs(inspected, need_audio=False)
+        self._emit(progress, "Đang kiểm tra và cập nhật WAV/phụ đề theo từng câu…")
+        self._generate_narration_locked(state, progress)
         timeline = self.prepare_timeline(state, progress)
         settings = (RenderSettings(960, 540, 30, 28, "veryfast", font_path=state.font_path)
                     if preview else RenderSettings(font_path=state.font_path, encoder="auto"))

@@ -28,7 +28,7 @@ Services keep speech providers, subtitle alignment and media selection replaceab
 
 ## Status
 
-Modules 0–6 and TTS-1–3 cover project persistence, script editing, media indexing, VOICEVOX, sentence-level timing, KEY reveal and local FFmpeg rendering. TE Studio Phase 1 adds a Vietnamese-language desktop editor for local project inputs. Preview/Full HD controls, Render Queue, real forced alignment, AI recognition/selection and YouTube integration are not part of the Phase 1 GUI.
+Modules 0–6 and TTS-1–3 cover project persistence, script editing, media indexing, VOICEVOX, sentence-level timing, KEY reveal and local FFmpeg rendering. TE Studio provides a Vietnamese-language desktop editor and one-click local Preview/Full HD rendering. Render Queue, real forced alignment, AI recognition/selection and YouTube integration remain future work.
 
 ## Module 1: script input and editing
 
@@ -90,6 +90,6 @@ Run `python -m te.demo` to create a new self-contained project under `demo/test/
 
 `KeyPlacementService` links a marked KEY image to a confirmed Vietnamese/Japanese sentence mapping and stores an offset, duration and lock. Project v8 also stores a random seed for ordinary-image assignment; it excludes KEY media and retains saved choices. The audio-driven timeline resolves the sentence ID on each rebuild and partitions visual spans at the reveal. The renderer starts a KEY image on the first frame at or after its millisecond reveal time. Removed sentences or changed mappings mark placements for manual review. Older project v1–v7 files migrate on load. Run the self-contained [KEY demo](docs/windows-setup.md#tts-3-voicevox-key-reveal-demo) with a locally running VOICEVOX Engine.
 
-## TE Studio GUI Phase 1
+## TE Studio GUI
 
-Run `python -m te.studio` after installing the optional `gui` dependency. Tkinter provides a local Vietnamese-language editor with native file/folder pickers. It manages video names, channel profiles, P1–P4 Vietnamese/Japanese scripts, confirmed and draft KEY images, each project's own ordinary-image folder, optional intro files, VOICEVOX voice/style, motion presets and save status. Projects still use the existing project v8 model; editor-only choices live in an atomically written `studio.json` beside `project.json`. Channel profiles and default directories live in the user's local application settings. The GUI does not render yet. Phase 2 can read the editor settings through `StudioService` and pass them to the existing `TimelineService` and `RenderService` without changing the main editor layout. See [Windows setup](docs/windows-setup.md#te-studio-gui-phase-1).
+Run `python -m te.studio` after installing the optional `gui` dependency. Tkinter manages video names, channel profiles, P1–P4 Vietnamese/Japanese scripts, confirmed and draft KEY images, each project's ordinary-image folder, optional intros, VOICEVOX voice/style, motion presets and save status. **Xuất Full HD 1920×1080** now validates inputs, reuses or updates sentence WAVs, splits long Japanese subtitles into timed two-line captions, rebuilds the audio-driven timeline and renders the MP4 in one click. Preview follows the same pipeline at 960×540. Project v8 remains unchanged; editor-only choices live in `studio.json`. See [Windows setup](docs/windows-setup.md#te-studio-gui-phase-2--real-narration-and-mp4-export).

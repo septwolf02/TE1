@@ -262,7 +262,7 @@ def test_real_full_hd_export_cpu_fallback_and_saved_output_path(tmp_path, monkey
     state.motion_preset = "none"
     studio.save_project(state)
     workflow = StudioRenderService(studio)
-    workflow.generate_narration(state)
+    assert not state.project.sentence_audio_records
     original_run = RenderService._run
     monkeypatch.setattr(RenderService, "choose_encoder",
         staticmethod(lambda _ffmpeg: ("h264_nvenc", ())))
@@ -273,6 +273,7 @@ def test_real_full_hd_export_cpu_fallback_and_saved_output_path(tmp_path, monkey
     monkeypatch.setattr(RenderService, "_run", hardware_fails)
     result = workflow.render_video(state, preview=False)
     assert result.is_file() and result.parent == Path(studio.settings["output_root"])
+    assert all(record.status == "ready" for record in state.project.sentence_audio_records)
     assert result.name == "日本の試合_ Test.mp4"
     assert studio.open_project(state.directory).last_final == str(result)
     ffprobe = RenderService.check_ffmpeg()["ffprobe"]
@@ -284,15 +285,56 @@ def test_real_full_hd_export_cpu_fallback_and_saved_output_path(tmp_path, monkey
     assert manifest["encoder_used"] == "libx264"
 
 
+def test_one_click_preview_reflows_200_character_sentence(tmp_path):
+    studio, state = studio_project(tmp_path, intro=False, key=False)
+    long_text = "「監督が語り、最後の一球で流れが変わった」と振り返り、" * 8 + "試合は終わった。"
+    studio.set_section(state, SectionName.P1, japanese=long_text, vietnamese="Câu chuyện dài.")
+    state.motion_preset = "none"
+    studio.save_project(state)
+    assert not state.project.sentence_audio_records
+    workflow = StudioRenderService(studio)
+    output = workflow.render_video(state, preview=True)
+    assert output.is_file() and state.project.sentence_audio_records
+    first_segment = next(item for item in state.project.segments if item.section == SectionName.P1)
+    captions = [item for item in state.project.subtitle_captions if item.segment_id == first_segment.id]
+    assert len(captions) > 4
+    assert "".join(item.text for item in captions) == long_text
+    assert all(len(item.text) <= 48 for item in captions)
+
+
+def test_retry_after_subtitle_burn_failure_reuses_wav_and_clips(tmp_path, monkeypatch):
+    studio, state = studio_project(tmp_path, intro=False, key=False)
+    workflow = StudioRenderService(studio)
+    def fail_burn(*_args, **_kwargs):
+        raise ValueError("simulated subtitle burn failure")
+    with monkeypatch.context() as patch:
+        patch.setattr(workflow.render, "_write_ass", fail_burn)
+        with pytest.raises(ValueError, match="subtitle burn failure"):
+            workflow.render_video(state, preview=True)
+    wavs = list((state.directory / "generated/audio/sentences").glob("*.wav"))
+    clips = [item for item in (state.directory / "generated/cache/render").glob("*.mp4")
+             if item.name != "visual.mp4"]
+    assert wavs and clips
+    wav_times = {item: item.stat().st_mtime_ns for item in wavs}
+    clip_times = {item: item.stat().st_mtime_ns for item in clips}
+    generations = {item.sentence_id: item.generation_version for item in state.project.sentence_audio_records}
+    output = workflow.render_video(state, preview=True)
+    assert output.is_file()
+    assert {item: item.stat().st_mtime_ns for item in wavs} == wav_times
+    assert {item: item.stat().st_mtime_ns for item in clips} == clip_times
+    assert {item.sentence_id: item.generation_version for item in state.project.sentence_audio_records} == generations
+
+
 @pytest.mark.skipif(os.environ.get("TE_STUDIO_GUI_SMOKE") != "1", reason="requires a desktop display")
 def test_tk_buttons_generate_and_render_real_preview(tmp_path, monkeypatch):
     import time
     import tkinter as tk
-    from tkinter import simpledialog, ttk
+    from tkinter import messagebox, simpledialog, ttk
     from te.studio.gui import StudioApp
 
     studio, state = studio_project(tmp_path, intro=False, key=False)
     monkeypatch.setattr(simpledialog, "askstring", lambda *args, **kwargs: "Tạm")
+    monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: False)
     root = tk.Tk()
     app = StudioApp(root, studio)
     app._load_state(state)
@@ -312,12 +354,13 @@ def test_tk_buttons_generate_and_render_real_preview(tmp_path, monkeypatch):
             root.update()
             time.sleep(0.01)
         assert not app._job_running and not errors
-    button("Tạo / cập nhật lời đọc Nhật").invoke()
+    button("Xuất Full HD 1920×1080").invoke()
     wait_done()
+    assert state.project.sentence_audio_records
+    assert state.last_final and Path(state.last_final).is_file()
     button("Xem nhanh 960×540").invoke()
     wait_done()
     assert (state.directory / "generated/output/preview.mp4").is_file()
-    button("Xuất Full HD 1920×1080").invoke()
+    button("Tạo / cập nhật lời đọc Nhật").invoke()
     wait_done()
-    assert state.last_final and Path(state.last_final).is_file()
     root.destroy()

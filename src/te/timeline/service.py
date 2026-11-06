@@ -201,14 +201,14 @@ class TimelineService:
         unit = next((unit for unit in project.sentence_units if unit.id == sentence_id), None)
         if unit is None:
             raise KeyError(sentence_id)
-        caption = next((caption for caption in project.subtitle_captions
-                        if caption.sentence_id == sentence_id), None)
-        if caption is None:
+        captions = [caption for caption in project.subtitle_captions if caption.sentence_id == sentence_id]
+        if not captions:
             raise ValueError(f"Sentence {sentence_id} has no aligned caption")
-        placed = next((item for item in timeline.captions if item.id == caption.id), None)
-        if placed is None:
+        caption_ids = {caption.id for caption in captions}
+        placed = [item for item in timeline.captions if item.id in caption_ids]
+        if len(placed) != len(captions):
             raise ValueError(f"Sentence {sentence_id} is missing from timeline")
-        return placed.start_ms, placed.end_ms
+        return min(item.start_ms for item in placed), max(item.end_ms for item in placed)
 
     @staticmethod
     def get_section_range(timeline: Timeline, section: SectionName) -> tuple[int, int] | None:

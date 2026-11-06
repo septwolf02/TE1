@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from hashlib import sha256
+import math
 from pathlib import Path
 from typing import Protocol
 
@@ -36,11 +37,71 @@ def split_japanese_sentences(text: str) -> list[str]:
     return result
 
 
-def wrap_caption(text: str, max_chars_per_line: int = 24, max_lines: int = 2) -> list[str]:
-    """View-only wrapping; returns lines and never changes the stored caption text."""
+def _natural_cut(text: str, minimum: int, maximum: int, target: int) -> int:
+    """Choose a nearby punctuation/phrase boundary without removing characters."""
+    closers = "」』”）】"
+    def score(position: int) -> tuple[int, int]:
+        before = text[position - 1]
+        after = text[position] if position < len(text) else ""
+        if after in closers:
+            quality = -5
+        elif before in "。！？!?」』”":
+            quality = 5
+        elif before in "、，,；;：:":
+            quality = 4
+        elif before.isspace():
+            quality = 3
+        elif before in "はがをにでとへもやの":
+            quality = 1
+        else:
+            quality = 0
+        return (quality * 3 - abs(position - target), -abs(position - target))
+    return max(range(minimum, maximum + 1), key=score)
+
+
+def split_caption_text(text: str, max_chars_per_line: int = 24, max_lines: int = 2) -> list[str]:
+    """Split one editable sentence into display-sized units, preserving its text exactly."""
     if max_chars_per_line < 1 or max_lines < 1:
         raise ValueError("Invalid wrapping limits")
-    lines = [text[i:i + max_chars_per_line] for i in range(0, len(text), max_chars_per_line)]
+    capacity = max_chars_per_line * max_lines
+    if len(text) <= capacity:
+        return [text] if text else []
+    count = math.ceil(len(text) / capacity)
+    chunks: list[str] = []
+    start = 0
+    for index in range(count - 1):
+        remaining = count - index
+        minimum = max(start + 1, len(text) - capacity * (remaining - 1))
+        maximum = min(start + capacity, len(text) - (remaining - 1))
+        target = start + round((len(text) - start) / remaining)
+        boundary = _natural_cut(text, minimum, maximum, target)
+        chunks.append(text[start:boundary])
+        start = boundary
+    chunks.append(text[start:])
+    return chunks
+
+
+def wrap_caption(text: str, max_chars_per_line: int = 24, max_lines: int = 2) -> list[str]:
+    """View-only wrapping; source caption text and Japanese characters stay unchanged."""
+    if max_chars_per_line < 1 or max_lines < 1:
+        raise ValueError("Invalid wrapping limits")
+    display = text.replace("\r", " ").replace("\n", " ")
+    if len(display) > max_chars_per_line * max_lines:
+        raise ValueError("Caption exceeds display limits; edit or split it")
+    lines = []
+    start = 0
+    for index in range(max_lines - 1):
+        if len(display) - start <= max_chars_per_line:
+            break
+        remaining = max_lines - index
+        minimum = max(start + 1, len(display) - max_chars_per_line * (remaining - 1))
+        maximum = min(start + max_chars_per_line, len(display) - (remaining - 1))
+        target = start + round((len(display) - start) / remaining)
+        boundary = _natural_cut(display, minimum, maximum, target)
+        lines.append(display[start:boundary])
+        start = boundary
+    if start < len(display):
+        lines.append(display[start:])
     if len(lines) > max_lines:
         raise ValueError("Caption exceeds display limits; edit or split it")
     return lines
@@ -126,10 +187,13 @@ class SubtitleService:
             raise KeyError(segment_id)
         if self._captions(project, segment_id):
             raise ValueError("Captions already exist; edit or explicitly regenerate them")
+        texts = [part for sentence in split_japanese_sentences(segment.japanese_text)
+                 for part in split_caption_text(sentence, project.subtitle_style["max_chars_per_line"],
+                                                project.subtitle_style["max_lines"])]
         captions = [SubtitleCaption(new_id("cap"), segment_id, segment.section, index, text,
                                     presentation="headline" if segment.section == "P1" and segment.number == 1 and index <= 2 else "default",
                                     source_text_hash=self._source_hash(segment.japanese_text))
-                    for index, text in enumerate(split_japanese_sentences(segment.japanese_text), 1)]
+                    for index, text in enumerate(texts, 1)]
         project.subtitle_captions.extend(captions)
         segment.caption_refs.extend(c.id for c in captions)
         project.validate()
@@ -147,7 +211,9 @@ class SubtitleService:
         old = self._captions(project, segment_id)
         if any(c.locked for c in old) and not overwrite_locked:
             raise ValueError("Locked captions require explicit overwrite")
-        texts = split_japanese_sentences(segment.japanese_text)
+        texts = [part for sentence in split_japanese_sentences(segment.japanese_text)
+                 for part in split_caption_text(sentence, project.subtitle_style["max_chars_per_line"],
+                                                project.subtitle_style["max_lines"])]
         replacement = []
         for index, text in enumerate(texts, 1):
             keep_id = old[index - 1].id if index <= len(old) and old[index - 1].text == text else new_id("cap")
@@ -170,7 +236,8 @@ class SubtitleService:
         fingerprint = self._audio_fingerprint(project, segment_id)
         split_hash = self._hash([c.text for c in captions])
         source_hash = self._source_hash(self._segment(project, segment_id).japanese_text)
-        return any(c.alignment_status in ("unaligned", "stale") or
+        display_limit = project.subtitle_style["max_chars_per_line"] * project.subtitle_style["max_lines"]
+        return any(len(c.text) > display_limit or c.alignment_status in ("unaligned", "stale") or
                    c.audio_fingerprint != fingerprint or c.split_hash != split_hash or
                    c.source_text_hash != source_hash for c in captions)
 
@@ -237,7 +304,7 @@ class SubtitleService:
             raise ValueError("Cannot split locked caption or invalid offset")
         captions = self._captions(project, first.segment_id)
         second = SubtitleCaption(new_id("cap"), first.segment_id, first.section, first.order + 1, first.text[offset:],
-                                 source_text_hash=first.source_text_hash)
+                                 source_text_hash=first.source_text_hash, sentence_id=first.sentence_id)
         first.text = first.text[:offset]
         first.start_ms = first.end_ms = None
         first.alignment_status = "stale"
