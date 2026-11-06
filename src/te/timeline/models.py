@@ -158,9 +158,20 @@ class Timeline:
         if self.blocks:
             events = sorted([(b.start_ms, b.end_ms) for b in self.blocks] +
                             [(i.start_ms, i.end_ms) for i in self.intros])
-            if events[0][0] != 0 or any(events[index][1] != events[index + 1][0]
-                                        for index in range(len(events) - 1)):
+            if events[0][0] != 0:
                 raise ValueError("Timeline has an audio gap or overlap")
+            covered = events[0][1]
+            for start, end in events[1:]:
+                if start > covered:
+                    raise ValueError("Timeline has an audio gap or overlap")
+                covered = max(covered, end)
+            for intro in self.intros:
+                overlapping = [block for block in self.blocks
+                               if block.start_ms < intro.end_ms and intro.start_ms < block.end_ms]
+                if overlapping:
+                    section_blocks = [block for block in self.blocks if block.section == intro.section]
+                    if not section_blocks or intro.start_ms != section_blocks[0].start_ms or intro.end_ms > section_blocks[-1].end_ms:
+                        raise ValueError("Intro overlap must stay within its section and begin with narration")
 
     def to_dict(self) -> dict:
         self.validate()

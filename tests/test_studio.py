@@ -40,6 +40,7 @@ def test_create_open_save_rename_duplicate_unicode_and_sections(tmp_path):
     state.project.tts_settings.intonation = 1.2
     state.project.tts_settings.volume = 0.9
     state.project.subtitle_style["text_color"] = "#FFEEDD"
+    state.font_path = str(tmp_path / "NotoSansCJKjp-Regular.otf")
     service.save_project(state)
     reopened = service.open_project(state.directory)
     assert reopened.project.id == original_id
@@ -52,6 +53,7 @@ def test_create_open_save_rename_duplicate_unicode_and_sections(tmp_path):
     assert (reopened.project.tts_settings.pitch, reopened.project.tts_settings.intonation,
             reopened.project.tts_settings.volume) == (0.03, 1.2, 0.9)
     assert reopened.project.subtitle_style["text_color"] == "#FFEEDD"
+    assert reopened.font_path == state.font_path
     assert len(reopened.project.segments) == 4 and len(reopened.project.sentence_units) >= 5
     service.rename_project(reopened, "野球 - tên mới")
     duplicated = service.duplicate_project(reopened, name="Bản sao Nhật Việt")
@@ -247,3 +249,38 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     assert reopened.sections["P1"]["ja"] == "初めての日本語。もう一文。"
     assert reopened.sections["P2"]["vi"] == "Phần thứ hai."
     assert len(reopened.project.key_placements) == 2
+
+
+@pytest.mark.skipif(os.environ.get("TE_STUDIO_GUI_SMOKE") != "1", reason="requires a desktop display")
+def test_tk_render_worker_keeps_editor_responsive_and_reports_errors(tmp_path, monkeypatch):
+    import time
+    import tkinter as tk
+    from tkinter import simpledialog
+    from te.studio.gui import StudioApp
+
+    monkeypatch.setattr(simpledialog, "askstring", lambda *args, **kwargs: "GUI render worker")
+    root = tk.Tk()
+    app = StudioApp(root, make_service(tmp_path))
+    errors = []
+    monkeypatch.setattr(app, "_fail", errors.append)
+    ticked = []
+    root.after(30, lambda: ticked.append(True))
+    def slow_job(_state, progress):
+        time.sleep(0.15)
+        progress("Đã xử lý bước thử")
+        return "xong"
+    app._start_job("Bắt đầu thử", slow_job)
+    assert app._job_running
+    deadline = time.monotonic() + 3
+    while app._job_running and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert ticked and not app._job_running
+    assert "Đã xử lý bước thử" in app.render_log.get("1.0", "end")
+    app._start_job("Lỗi thử", lambda _state, _progress: (_ for _ in ()).throw(ValueError("Intro P1 bị thiếu")))
+    deadline = time.monotonic() + 3
+    while app._job_running and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert errors == ["Intro P1 bị thiếu"] and not app._job_running
+    root.destroy()

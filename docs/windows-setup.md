@@ -128,4 +128,34 @@ The last command opens the Vietnamese editor. Create a video name, enter Vietnam
 
 Projects default to `D:\TE-Projects` and the future output folder to `D:\TE-Output` when drive D: exists. Otherwise the defaults are the current user's Documents/TE-Projects and Videos/TE-Output folders. **Thư mục mặc định** changes and remembers them. Channel profiles and these paths are saved under `%LOCALAPPDATA%\TEStudio\settings.json`; each project's editor settings are saved beside its project data in `studio.json`. The GUI saves after a short typing pause and also has an explicit **Lưu** button. Source images and videos remain at their original paths.
 
-Phase 1 has no preview, Full HD render controls, working Render Queue or YouTube login. Phase 2 will read the saved `StudioService` choices and connect them to the existing timeline/render services, including the separately agreed intro narration behavior. The current renderer's intro timing is unchanged in Phase 1.
+## TE Studio GUI Phase 2 — real narration and MP4 export
+
+Open the locally installed VOICEVOX Engine before generating speech. In PowerShell, from the repository:
+
+```powershell
+git switch te-v1-render-test
+git pull origin te-v1-render-test
+.\.venv\Scripts\python.exe -m pip install -e ".[gui,test]"
+.\.venv\Scripts\python.exe -m te.tts check
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m te.studio
+```
+
+In the editor, open an existing project or enter Japanese narration in P1–P4, select this video's ordinary-image folder, optionally choose intros and confirm KEY pairs, then choose an installed VOICEVOX speaker/style. Click **Tạo / cập nhật lời đọc Nhật**, then **Xem nhanh 960×540** or **Xuất Full HD 1920×1080**. The buttons use measured sentence WAV durations and burn Japanese subtitles into H.264/AAC MP4. Preview stays under the project's `generated\output\preview.mp4`; the final MP4 goes directly to the saved output directory (normally `D:\TE-Output`), using the video name and `_v2`, `_v3` when needed. **Mở bản xem nhanh**, **Mở video cuối** and **Mở thư mục xuất** open those results. The final output directory can be changed with **Thư mục mặc định**.
+
+If font discovery fails, choose an installed Japanese `.otf`, `.ttf` or `.ttc` file in **File phông Nhật**. For example, Noto Sans CJK JP can be installed under `C:\Windows\Fonts` or `%LOCALAPPDATA%\Microsoft\Windows\Fonts`. The saved font path is project-local. The editor refuses stale narration, unavailable images/intros, unconfirmed KEYs and KEY/intro timing conflicts. The intro plays muted over the beginning of narration; it does not delay the voice. Image motion and section transition presets are applied during rendering. The GUI stays responsive and shows progress; only one production action runs at a time.
+
+To inspect the finished file from PowerShell (replace the path with the one shown in TE Studio):
+
+```powershell
+ffprobe -v error -show_entries format=duration:stream=codec_name,width,height -of json "D:\TE-Output\Tên video.mp4"
+Start-Process "D:\TE-Output\Tên video.mp4"
+```
+
+To run the optional reproducible ~60-second fake-audio render benchmark:
+
+```powershell
+.\.venv\Scripts\python.exe -m te.studio.benchmark
+```
+
+Hardware H.264 encoding is selected only after a short actual encode probe. If NVENC, QSV or AMF is unavailable or the final encode fails, TE falls back to CPU `libx264`. Image filtering and intermediate clips still use CPU encoding. The current `crossfade` preset uses short fades at the section boundary while keeping the timeline length and KEY reveal timing fixed; a true overlapping frame blend is deferred. Render Queue and YouTube publishing remain for later phases. Cloud tests use fake local TTS; use the GUI steps above to verify real VOICEVOX speech on your Windows PC.

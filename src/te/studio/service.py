@@ -11,6 +11,7 @@ import re
 from uuid import uuid4
 
 from te.media import MediaLibraryService
+from te.media.service import _video_metadata
 from te.project.manager import ProjectManager, _write_json
 from te.project.models import (KeyPlacement, MediaCategory, MediaKind, MediaType, Project,
                                ScriptSegment, SectionName, TTSSettings, new_id)
@@ -110,14 +111,21 @@ def _default_roots() -> tuple[Path, Path]:
     return home / "Documents" / "TE-Projects", home / "Videos" / "TE-Output"
 
 
-def _safe_name(name: str) -> str:
+def _safe_name(name: str, *, max_length: int = 80, max_bytes: int | None = None) -> str:
     value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .")
     if not value:
         raise ValueError("Tên video không được để trống.")
     if value.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
                                         *(f"LPT{i}" for i in range(1, 10))}:
         value = "_" + value
-    return value[:80]
+    result = ""
+    for char in value:
+        candidate = result + char
+        if (len(candidate.encode("utf-16-le")) // 2 > max_length or
+                max_bytes is not None and len(candidate.encode("utf-8")) > max_bytes):
+            break
+        result = candidate
+    return result
 
 
 def _sections_from_project(project: Project) -> dict[str, dict[str, str]]:
@@ -146,6 +154,8 @@ class StudioProject:
     intro_preferences: dict[str, bool] = field(default_factory=lambda: {s.value: True for s in SectionName})
     key_drafts: list[dict] = field(default_factory=list)
     recovery_warning: str | None = None
+    font_path: str | None = None
+    last_final: str | None = None
 
 
 class StudioService:
@@ -272,7 +282,7 @@ class StudioService:
             data.get("motion_preset", "mixed"), data.get("transition", "cut"),
             data.get("image_min_seconds", 7.0), data.get("image_max_seconds", 12.0),
             data.get("intro_preferences", {s.value: True for s in SectionName}),
-            data.get("key_drafts", []), warning)
+            data.get("key_drafts", []), warning, data.get("font_path"), data.get("last_final"))
 
     @staticmethod
     def _apply_sections(project: Project, sections: dict[str, dict[str, str]]) -> None:
@@ -362,6 +372,8 @@ class StudioService:
                 "image_min_seconds": state.image_min_seconds,
                 "image_max_seconds": state.image_max_seconds,
                 "intro_preferences": deepcopy(state.intro_preferences),
+                "font_path": state.font_path,
+                "last_final": state.last_final,
                 "key_drafts": deepcopy(state.key_drafts)}
         _write_json(state.directory / "studio.json", data)
         state.recovery_warning = None
@@ -394,7 +406,7 @@ class StudioService:
         ProjectManager().save(directory, clone)
         duplicated = StudioProject(directory, clone, deepcopy(state.sections), state.channel,
             state.motion_preset, state.transition, state.image_min_seconds, state.image_max_seconds,
-            deepcopy(state.intro_preferences), deepcopy(state.key_drafts))
+            deepcopy(state.intro_preferences), deepcopy(state.key_drafts), font_path=state.font_path)
         self.save_project(duplicated)
         return duplicated
 
@@ -537,6 +549,7 @@ class StudioService:
             asset = next((m for m in working.media if m.path == str(path)), None)
             if asset is None:
                 asset = ProjectManager().add_media(working, MediaKind.SECTION_INTRO_VIDEO, path, section)
+            asset.width, asset.height, asset.duration_seconds = _video_metadata(path)
             MediaLibraryService().assign_section_intro(working, section, asset.id)
         working.validate()
         state.project = working

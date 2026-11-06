@@ -1,8 +1,11 @@
-"""Tkinter Phase 1 editor. All product-facing controls use Vietnamese labels."""
+"""Tkinter editor and local video production controls with Vietnamese labels."""
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 from pathlib import Path
+from queue import Empty, Queue
+import subprocess
 from threading import Thread
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -14,6 +17,8 @@ from te.subtitles import split_japanese_sentences
 from te.tts import VoicevoxProvider
 from te.studio.service import StudioProject, StudioService, MOTION_PRESETS, TRANSITION_PRESETS
 from te.media.key_service import KeyPlacementService
+from te.studio.rendering import StudioRenderService
+from te.render.service import RenderError
 
 
 SECTIONS = tuple(SectionName)
@@ -51,10 +56,16 @@ class StudioApp:
         self.volume = tk.StringVar(value="1.0")
         self.subtitle_font = tk.StringVar(value="bold_japanese")
         self.subtitle_color = tk.StringVar(value="#FFFFFF")
+        self.font_path = tk.StringVar(value="")
         self.motion = tk.StringVar(value="Tự động: zoom và pan")
         self.transition = tk.StringVar(value="Cắt thẳng")
         self.summary = tk.StringVar(value="Tạo hoặc mở dự án để bắt đầu.")
         self.section_status = tk.StringVar()
+        self.render_status = tk.StringVar(value="Sẵn sàng tạo lời đọc hoặc render.")
+        self._job_queue: Queue[tuple[str, object]] = Queue()
+        self._job_running = False
+        self._disabled_widgets: list[tuple[object, str]] = []
+        self.renderer = StudioRenderService(self.service)
         self.intro_paths = {section: tk.StringVar() for section in SECTIONS}
         self.root.title("TE Studio — Trình biên tập")
         self.root.geometry("1200x900")
@@ -84,6 +95,7 @@ class StudioApp:
         self._build_intros()
         self._build_voice()
         self._build_motion()
+        self._build_render()
         self._build_footer()
 
     def _group(self, title: str) -> ttk.LabelFrame:
@@ -209,9 +221,20 @@ class StudioApp:
         ttk.Entry(subtitle, textvariable=self.subtitle_font, width=25).pack(side="left", padx=5)
         ttk.Label(subtitle, text="Màu chữ").pack(side="left")
         ttk.Entry(subtitle, textvariable=self.subtitle_color, width=10).pack(side="left", padx=5)
+        font = ttk.Frame(box)
+        font.pack(fill="x", pady=3)
+        ttk.Label(font, text="File phông Nhật (tùy chọn)").pack(side="left")
+        ttk.Entry(font, textvariable=self.font_path, width=68).pack(side="left", padx=5)
+        ttk.Button(font, text="Chọn file…", command=self._choose_font).pack(side="left")
         for variable in (self.voice, self.style, self.speed, self.pitch, self.intonation,
-                         self.volume, self.subtitle_font, self.subtitle_color):
+                         self.volume, self.subtitle_font, self.subtitle_color, self.font_path):
             variable.trace_add("write", lambda *_: self._dirty())
+
+    def _choose_font(self) -> None:
+        path = filedialog.askopenfilename(title="Chọn phông tiếng Nhật", parent=self.root,
+            filetypes=[("Font", "*.otf *.ttf *.ttc"), ("Tất cả", "*.*")])
+        if path:
+            self.font_path.set(path)
 
     def _build_motion(self) -> None:
         box = self._group("7. Chuyển động ảnh và chuyển cảnh")
@@ -227,12 +250,30 @@ class StudioApp:
             variable.trace_add("write", lambda *_: self._dirty())
 
     def _build_footer(self) -> None:
-        box = self._group("8. Lưu và tình trạng dự án")
+        box = self._group("9. Lưu và tình trạng dự án")
         ttk.Label(box, textvariable=self.summary, wraplength=1050).pack(anchor="w")
         ttk.Button(box, text="Lưu dự án ngay", command=self._save_clicked).pack(anchor="w", pady=5)
-        future = ttk.LabelFrame(self.body, text="Hàng đợi render — sẽ có ở Giai đoạn 2", padding=10)
+        future = ttk.LabelFrame(self.body, text="Hàng đợi render — dự kiến Giai đoạn 3", padding=10)
         future.pack(fill="x", pady=6)
         ttk.Button(future, text="Thêm vào hàng đợi render (chưa khả dụng)", state="disabled").pack(anchor="w")
+
+    def _build_render(self) -> None:
+        box = self._group("8. Tạo lời đọc, xem nhanh và xuất video")
+        row = ttk.Frame(box)
+        row.pack(fill="x", pady=3)
+        for label, action in (("Tạo / cập nhật lời đọc Nhật", self._generate_narration),
+                              ("Xem nhanh 960×540", self._render_preview),
+                              ("Xuất Full HD 1920×1080", self._render_full)):
+            ttk.Button(row, text=label, command=action).pack(side="left", padx=4)
+        files = ttk.Frame(box)
+        files.pack(fill="x", pady=3)
+        for label, action in (("Mở bản xem nhanh", self._open_preview),
+                              ("Mở video cuối", self._open_final),
+                              ("Mở thư mục xuất", self._open_output_folder)):
+            ttk.Button(files, text=label, command=action).pack(side="left", padx=4)
+        ttk.Label(box, textvariable=self.render_status, wraplength=1050).pack(anchor="w", pady=3)
+        self.render_log = tk.Text(box, height=5, state="disabled", wrap="word")
+        self.render_log.pack(fill="x")
 
     def _choose_initial_project(self) -> None:
         self._new_project()
@@ -303,6 +344,7 @@ class StudioApp:
         self.volume.set(str(settings.volume))
         self.subtitle_font.set(state.project.subtitle_style.get("font", "bold_japanese"))
         self.subtitle_color.set(state.project.subtitle_style.get("text_color", "#FFFFFF"))
+        self.font_path.set(state.font_path or "")
         self.motion.set(next((label for label, value in MOTION_LABELS.items()
                               if value == state.motion_preset), next(iter(MOTION_LABELS))))
         self.transition.set(next((label for label, value in TRANSITION_LABELS.items()
@@ -350,6 +392,7 @@ class StudioApp:
         settings.style = style or None
         state.project.subtitle_style["font"] = self.subtitle_font.get().strip()
         state.project.subtitle_style["text_color"] = self.subtitle_color.get().strip()
+        state.font_path = self.font_path.get().strip() or None
 
     def _save(self, *, auto: bool = False) -> bool:
         if not self.state:
@@ -934,7 +977,133 @@ class StudioApp:
                          f"{missing} file media bị thiếu. "
                          f"Dự án: {self.state.directory}")
 
+    def _append_render_log(self, message: str) -> None:
+        self.render_status.set(message)
+        self.render_log.configure(state="normal")
+        self.render_log.insert("end", message + "\n")
+        self.render_log.see("end")
+        self.render_log.configure(state="disabled")
+
+    def _set_job_busy(self, busy: bool) -> None:
+        if busy:
+            self._disabled_widgets.clear()
+            def visit(parent):
+                for widget in parent.winfo_children():
+                    if isinstance(widget, (ttk.Button, ttk.Entry, ttk.Combobox, ttk.Checkbutton, tk.Text)):
+                        state = str(widget.cget("state"))
+                        self._disabled_widgets.append((widget, state))
+                        widget.configure(state="disabled")
+                    visit(widget)
+            visit(self.body)
+        else:
+            for widget, state in self._disabled_widgets:
+                try:
+                    widget.configure(state=state)
+                except tk.TclError:
+                    pass
+            self._disabled_widgets.clear()
+        self._job_running = busy
+
+    def _start_job(self, label: str, action) -> None:
+        if self._job_running:
+            self._append_render_log("Đang xử lý video này; vui lòng đợi thao tác hiện tại.")
+            return
+        if not self.state or not self._save():
+            return
+        self._set_job_busy(True)
+        self._append_render_log(label)
+        state = self.state
+        def worker():
+            try:
+                result = action(state, lambda message: self._job_queue.put(("progress", message)))
+            except Exception as exc:
+                self._job_queue.put(("error", exc))
+            else:
+                self._job_queue.put(("done", result))
+        Thread(target=worker, daemon=True).start()
+        self.root.after(100, self._poll_job)
+
+    def _poll_job(self) -> None:
+        finished = False
+        while True:
+            try:
+                kind, value = self._job_queue.get_nowait()
+            except Empty:
+                break
+            if kind == "progress":
+                self._append_render_log(str(value))
+            elif kind == "done":
+                self._append_render_log(f"Hoàn tất: {value}")
+                self._refresh_summary()
+                finished = True
+            elif kind == "error":
+                message = self._production_error(value)
+                self._append_render_log("Lỗi: " + message)
+                self._fail(message)
+                finished = True
+        if finished:
+            self._set_job_busy(False)
+        elif self._job_running:
+            self.root.after(100, self._poll_job)
+
+    @staticmethod
+    def _production_error(error: Exception) -> str:
+        if isinstance(error, RenderError):
+            return (f"FFmpeg không hoàn tất bước {error.stage}. "
+                    "Xem log trong generated/cache/render của dự án.")
+        value = str(error)
+        translations = {
+            "KEY image placements overlap": "Hai ảnh KEY chồng thời gian; hãy sửa thời lượng hoặc độ lệch KEY.",
+            "KEY offset must keep reveal": "Độ lệch KEY đưa ảnh ra ngoài đoạn lời dẫn; hãy sửa lại.",
+            "Japanese font": "Không tìm thấy phông Nhật; hãy chọn file phông trong mục giọng/phụ đề.",
+            "FFmpeg and ffprobe": "Cần cài FFmpeg và ffprobe trong PATH để xuất video.",
+            "VOICEVOX": "VOICEVOX chưa sẵn sàng hoặc giọng/kiểu giọng không hợp lệ. Hãy kiểm tra Engine rồi thử lại.",
+        }
+        return next((message for trigger, message in translations.items() if trigger in value), value)
+
+    def _generate_narration(self) -> None:
+        self._start_job("Đang tạo/cập nhật lời đọc Nhật…", self.renderer.generate_narration)
+
+    def _render_preview(self) -> None:
+        self._start_job("Đang chuẩn bị bản xem nhanh…",
+            lambda state, progress: self.renderer.render_video(state, preview=True, progress=progress))
+
+    def _render_full(self) -> None:
+        self._start_job("Đang chuẩn bị bản Full HD…",
+            lambda state, progress: self.renderer.render_video(state, preview=False, progress=progress))
+
+    def _open_path(self, path: Path) -> None:
+        if not path.exists():
+            self._fail(f"Không tìm thấy: {path}")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))
+            else:
+                subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            self._fail(f"Không mở được {path}: {exc}")
+
+    def _open_preview(self) -> None:
+        if self.state:
+            self._open_path(self.state.directory / "generated" / "output" / "preview.mp4")
+
+    def _open_final(self) -> None:
+        if self.state and self.state.last_final:
+            self._open_path(Path(self.state.last_final))
+        else:
+            self._fail("Dự án chưa có video Full HD đã xuất.")
+
+    def _open_output_folder(self) -> None:
+        folder = Path(self.service.settings["output_root"])
+        folder.mkdir(parents=True, exist_ok=True)
+        self._open_path(folder)
+
     def _close(self) -> None:
+        if self._job_running:
+            self._append_render_log("Hãy đợi thao tác hiện tại hoàn tất trước khi đóng TE Studio.")
+            return
         if self.state and not self._save():
             if not messagebox.askyesno("Thoát TE Studio", "Có thay đổi chưa lưu. Vẫn thoát?", parent=self.root):
                 return

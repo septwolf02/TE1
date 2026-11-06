@@ -14,6 +14,39 @@ from te.tts.sentences import SentenceSpeechService
 from .service import MediaAssignmentService, MediaLibraryService
 
 
+class OrdinaryImageBag:
+    """Seeded shuffle bag with a boundary guard against immediate repetition."""
+
+    def __init__(self, media_ids: list[str], seed: int):
+        self.media_ids = sorted(media_ids)
+        self.random = Random(seed)
+        self.remaining: list[str] = []
+        self.last: str | None = None
+
+    def observe(self, media_id: str) -> None:
+        self.last = media_id
+        if media_id in self.remaining:
+            self.remaining.remove(media_id)
+
+    def draw(self) -> str:
+        if not self.media_ids:
+            raise ValueError("No ordinary images available")
+        if not self.remaining:
+            self.remaining = self.media_ids.copy()
+            self.random.shuffle(self.remaining)
+        if len(self.media_ids) > 1 and self.remaining[-1] == self.last:
+            alternative = next((index for index, media_id in enumerate(self.remaining)
+                                if media_id != self.last), None)
+            if alternative is None:
+                self.remaining = [media_id for media_id in self.media_ids if media_id != self.last]
+                self.random.shuffle(self.remaining)
+            else:
+                self.remaining[-1], self.remaining[alternative] = self.remaining[alternative], self.remaining[-1]
+        chosen = self.remaining.pop()
+        self.last = chosen
+        return chosen
+
+
 @dataclass(frozen=True)
 class KeyContext:
     sentence_id: str
@@ -122,39 +155,33 @@ class KeyPlacementService:
         if not block.start_ms <= start < block.end_ms:
             raise ValueError("KEY offset must keep reveal inside its narration segment")
         duration = placement.duration_ms or (spoken_end - spoken_start)
-        end = min(start + duration, block.end_ms)
+        section_end = max(item.end_ms for item in timeline.blocks if item.section == block.section)
+        end = min(start + duration, section_end)
         if end <= start:
             raise ValueError("KEY placement has no visible duration")
         return start, end
 
     @staticmethod
-    def assign_random_images(project: Project, directory: Path) -> tuple[str, ...]:
+    def assign_random_images(project: Project, directory: Path, *, persist: bool = True) -> tuple[str, ...]:
         """Keep saved assignments; choose only normal images with a seeded reuse gap."""
         candidates = sorted((asset for asset in project.media if asset.available and
             asset.media_type == MediaType.IMAGE and asset.category == MediaCategory.NORMAL),
             key=lambda a: a.path.casefold())
         if not candidates:
             return ()
-        rng = Random(project.random_seed)
+        bag = OrdinaryImageBag([asset.id for asset in candidates], project.random_seed)
         by_segment = {assignment.segment_id: assignment for assignment in project.media_assignments}
-        recent: list[str] = []
         created: list[str] = []
         assignment_service = MediaAssignmentService()
         for segment in project.segments:
             existing = by_segment.get(segment.id)
             if existing:
-                recent.append(existing.media_id)
+                bag.observe(existing.media_id)
                 continue
-            options = []
-            for distance in range(project.media_reuse_distance, -1, -1):
-                forbidden = set(recent[-distance:]) if distance else set()
-                options = [asset for asset in candidates if asset.id not in forbidden]
-                if options:
-                    break
-            chosen = rng.choice(options)
-            assignment_service.assign_media(project, segment.id, chosen.id,
+            chosen = bag.draw()
+            assignment_service.assign_media(project, segment.id, chosen,
                 assignment_type=AssignmentType.RANDOM)
             created.append(segment.id)
-            recent.append(chosen.id)
-        ProjectManager().save(directory, project)
+        if persist:
+            ProjectManager().save(directory, project)
         return tuple(created)

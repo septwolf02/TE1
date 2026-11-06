@@ -122,6 +122,8 @@ class MediaLibraryService:
                 # Explicit KEY and intro files may live outside the ordinary-image folder.
                 # Keep their references and refresh availability from their own paths.
                 asset.available = path.is_file() if asset.category in (MediaCategory.KEY, MediaCategory.SECTION_INTRO) else False
+                if asset.available and asset.category == MediaCategory.SECTION_INTRO:
+                    asset.width, asset.height, asset.duration_seconds = _video_metadata(path)
                 if not asset.available:
                     warnings.append(f"Media file is unavailable: {path}")
         project.media = sorted(existing.values(), key=lambda asset: asset.path.casefold())

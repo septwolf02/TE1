@@ -36,6 +36,7 @@ class RenderSettings:
     font_family: str = "Noto Sans CJK JP"
     font_path: str | None = None
     transition_ms: int = 250
+    encoder: str = "libx264"
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,30 @@ class RenderService:
         version = subprocess.run([ffmpeg, "-version"], capture_output=True, text=True,
                                  encoding="utf-8", errors="replace", check=True).stdout.splitlines()[0]
         return {"ffmpeg": ffmpeg, "ffprobe": ffprobe, "version": version}
+
+    @staticmethod
+    def choose_encoder(ffmpeg: str, *, timeout: float = 8.0) -> tuple[str, tuple[str, ...]]:
+        """Actually encode a few frames; an encoder listing alone is insufficient."""
+        warnings: list[str] = []
+        try:
+            available = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=timeout, check=True).stdout
+        except (OSError, subprocess.SubprocessError) as exc:
+            return "libx264", (f"Không dò được bộ mã hóa phần cứng: {exc}",)
+        for encoder in ("h264_nvenc", "h264_qsv", "h264_amf"):
+            if not any(line.split()[1:2] == [encoder] for line in available.splitlines()):
+                continue
+            try:
+                result = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "color=c=black:s=128x72:r=30:d=0.15", "-frames:v", "4", "-an",
+                    "-c:v", encoder, "-f", "null", "-"], capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=timeout)
+                if result.returncode == 0:
+                    return encoder, tuple(warnings)
+                warnings.append(f"{encoder}: {result.stderr.strip()[-180:] or 'encode test failed'}")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                warnings.append(f"{encoder}: {exc}")
+        return "libx264", tuple(warnings)
 
     def get_render_status(self) -> str:
         return self._status
@@ -131,6 +156,8 @@ class RenderService:
             raise ValueError("Invalid encoding preset")
         if settings.transition_ms < 0:
             raise ValueError("Invalid transition duration")
+        if settings.encoder not in {"auto", "libx264", "h264_nvenc", "h264_qsv", "h264_amf"}:
+            raise ValueError("Invalid video encoder")
         if timeline.captions:
             self._font(settings)
         warnings = TimelineService().validate_timeline(project, timeline)
@@ -157,30 +184,41 @@ class RenderService:
     @staticmethod
     def _visual_events(project: Project, timeline: Timeline) -> list[tuple[int, int, str, object]]:
         key_ids = {placement.id for placement in project.key_placements}
+        placements = sorted(timeline.placements, key=lambda item: (item.start_ms, item.end_ms))
+        if any(first.end_ms > second.start_ms for first, second in zip(placements, placements[1:])):
+            raise ValueError("Visual placements overlap")
+        for key in project.key_placements:
+            if key.status != "ready":
+                continue
+            placement = next((item for item in placements if item.id == key.id), None)
+            if placement and any(placement.start_ms < intro.end_ms and intro.start_ms < placement.end_ms
+                                 for intro in timeline.intros):
+                raise ValueError("KEY image overlaps an intro video")
+        end_ms = max([block.end_ms for block in timeline.blocks] +
+                     [intro.end_ms for intro in timeline.intros], default=0)
+        points = sorted({0, end_ms} |
+            {value for item in placements for value in (item.start_ms, item.end_ms)} |
+            {value for item in timeline.intros for value in (item.start_ms, item.end_ms)})
         events: list[tuple[int, int, str, object]] = []
-        for block in timeline.blocks:
-            placements = sorted((placement for placement in timeline.placements
-                if placement.segment_id == block.segment_id), key=lambda p: p.start_ms)
-            cursor = block.start_ms
-            for placement in placements:
-                if placement.start_ms < cursor or placement.end_ms > block.end_ms:
-                    raise ValueError("Visual placements overlap or exceed narration block")
-                if placement.start_ms > cursor:
-                    empty = _VisualEvent(cursor, placement.start_ms, None)
-                    events.append((cursor, placement.start_ms, "visual", empty))
+        for start, end in zip(points, points[1:]):
+            if end <= start:
+                continue
+            intros = [item for item in timeline.intros if item.start_ms <= start and end <= item.end_ms]
+            if len(intros) > 1:
+                raise ValueError("Intro videos overlap")
+            if intros:
+                events.append((start, end, "intro", intros[0]))
+                continue
+            placement = next((item for item in placements if item.start_ms <= start and end <= item.end_ms), None)
+            if placement:
                 effect = placement.effects[0].get("name", "none") if placement.effects else "none"
-                visual = _VisualEvent(placement.start_ms, placement.end_ms,
-                    placement.media_id, effect, block.video_policy, placement.id in key_ids)
-                events.append((visual.start_ms, visual.end_ms, "visual", visual))
-                cursor = placement.end_ms
-            if cursor < block.end_ms:
-                empty = _VisualEvent(cursor, block.end_ms, None)
-                events.append((cursor, block.end_ms, "visual", empty))
-        events.extend((intro.start_ms, intro.end_ms, "intro", intro) for intro in timeline.intros)
-        events.sort(key=lambda event: event[0])
-        if events and (events[0][0] != 0 or any(events[index][1] != events[index + 1][0]
-                   for index in range(len(events) - 1))):
-            raise ValueError("Visual events have a gap or overlap")
+                video_policy = next((block.video_policy for block in timeline.blocks
+                    if block.segment_id == placement.segment_id), "trim_to_segment")
+                visual = _VisualEvent(start, end, placement.media_id, effect,
+                    video_policy, placement.id in key_ids)
+            else:
+                visual = _VisualEvent(start, end, None)
+            events.append((start, end, "visual", visual))
         return events
 
     def _run(self, command: list[str], stage: str, log_dir: Path) -> None:
@@ -222,12 +260,22 @@ class RenderService:
     def _write_ass(cls, project: Project, timeline: Timeline, path: Path, settings: RenderSettings, font: str) -> None:
         style = project.subtitle_style
         size = max(18, round(settings.height * 0.048))
+        def ass_color(value: str, fallback: str) -> str:
+            if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
+                return fallback
+            try:
+                int(value[1:], 16)
+            except ValueError:
+                return fallback
+            return f"&H00{value[5:7]}{value[3:5]}{value[1:3]}".upper()
+        text_color = ass_color(style.get("text_color", ""), "&H00FFFFFF")
+        outline_color = ass_color(style.get("outline_color", ""), "&H00000000")
         header = (
             "[Script Info]\nScriptType: v4.00+\nWrapStyle: 2\n"
             f"PlayResX: {settings.width}\nPlayResY: {settings.height}\n"
             "[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
-            f"Style: Normal,{font},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H88000000,-1,0,0,0,100,100,0,0,3,2,0,2,60,60,55,1\n"
-            f"Style: Headline,{font},{round(size*1.6)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,80,80,40,1\n"
+            f"Style: Normal,{font},{size},{text_color},{text_color},{outline_color},&H88000000,-1,0,0,0,100,100,0,0,3,2,0,2,60,60,55,1\n"
+            f"Style: Headline,{font},{round(size*1.6)},{text_color},{text_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,80,80,40,1\n"
             "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
         )
         by_id = {c.id: c for c in project.subtitle_captions}
@@ -263,6 +311,12 @@ class RenderService:
                 progress(value)
         info = self.check_ffmpeg()
         self.validate_render_inputs(project, timeline, settings)
+        encoder = settings.encoder
+        if encoder == "auto":
+            encoder, reasons = self.choose_encoder(info["ffmpeg"])
+            for reason in reasons:
+                emit(f"Bộ mã hóa phần cứng không khả dụng: {reason}")
+        emit(f"Bộ mã hóa xuất video: {encoder}")
         cache = directory / "generated" / "cache" / "render"
         output_dir = directory / "generated" / "output"
         cache.mkdir(parents=True, exist_ok=True)
@@ -293,7 +347,9 @@ class RenderService:
                     if kind == "visual" and event.is_key:
                         raise ValueError("KEY duration is shorter than one rendered frame")
                     continue
-                signature = json.dumps([kind, asdict(event), asdict(settings), info["version"],
+                clip_settings = {key: getattr(settings, key) for key in
+                    ("width", "height", "fps", "crf", "preset", "transition_ms")}
+                signature = json.dumps([kind, asdict(event), clip_settings, info["version"],
                     transitions.get(start), transitions.get(end), settings.transition_ms, frames,
                     (asset.path, Path(asset.path).stat().st_size, Path(asset.path).stat().st_mtime_ns) if asset and Path(asset.path).exists() else None], sort_keys=True, default=str)
                 clip = cache / f"{sha256(signature.encode()).hexdigest()}.mp4"
@@ -370,10 +426,29 @@ class RenderService:
                 video_map = "0:v"
             emit("finalizing")
             command += ["-filter_complex", ";".join(filters), "-map", video_map, "-map", "[aout]",
-                        "-c:v", "libx264", "-preset", settings.preset, "-crf", str(settings.crf),
+                        "-c:v", encoder]
+            if encoder == "libx264":
+                command += ["-preset", settings.preset, "-crf", str(settings.crf)]
+            else:
+                command += ["-b:v", "8M" if settings.width >= 1920 else "3M"]
+            command += [
                         "-pix_fmt", "yuv420p", "-r", str(settings.fps), "-c:a", "aac", "-b:a", "192k",
                         "-t", str(max(end for _, end, _, _ in events) / 1000), "-movflags", "+faststart", str(partial)]
-            self._run(command, stage, cache)
+            try:
+                self._run(command, stage, cache)
+            except RenderError:
+                if encoder == "libx264" or self._cancel.is_set():
+                    raise
+                emit(f"{encoder} thất bại khi xuất; thử lại bằng CPU libx264")
+                partial.unlink(missing_ok=True)
+                cpu = command[:]
+                codec_index = cpu.index("-c:v", cpu.index("-filter_complex"))
+                cpu[codec_index:codec_index + 2] = ["-c:v", "libx264", "-preset", settings.preset,
+                    "-crf", str(settings.crf)]
+                bitrate_index = cpu.index("-b:v")
+                del cpu[bitrate_index:bitrate_index + 2]
+                self._run(cpu, stage, cache)
+                encoder = "libx264"
             os.replace(partial, output)
             emit("completed")
             return output
@@ -387,7 +462,8 @@ class RenderService:
                 "timeline_hash": sha256(json.dumps(timeline.to_dict(), sort_keys=True, default=str).encode()).hexdigest(),
                 "rendered_at": datetime.now(timezone.utc).isoformat(), "output_path": str(output),
                 "resolution": [settings.width, settings.height], "fps": settings.fps,
-                "video_codec": "h264", "audio_codec": "aac", "pixel_format": "yuv420p",
+                "video_codec": "h264", "encoder_used": encoder,
+                "audio_codec": "aac", "pixel_format": "yuv420p",
                 "settings": asdict(settings), "ffmpeg_version": info["version"], "status": self._status,
                 "stage": stage,
             })

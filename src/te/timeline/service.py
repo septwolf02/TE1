@@ -27,7 +27,9 @@ class TimelineService:
 
     def build_timeline(self, project: Project, directory: Path, *, previous: Timeline | None = None,
                        effect_sequence: tuple[str, ...] = ("slow_zoom_in", "slow_zoom_out", "pan_left", "pan_right"),
-                       video_policy: str = "trim_to_segment", intro_max_ms: int | None = None) -> tuple[Timeline, tuple[str, ...]]:
+                       video_policy: str = "trim_to_segment", intro_max_ms: int | None = None,
+                       intro_overlap: bool = False,
+                       intro_enabled: dict[str, bool] | None = None) -> tuple[Timeline, tuple[str, ...]]:
         project.validate()
         if not effect_sequence or any(effect not in EFFECTS for effect in effect_sequence):
             raise ValueError("Invalid effect sequence")
@@ -56,7 +58,8 @@ class TimelineService:
                 if last_section is not None:
                     timeline.transitions.append(TransitionEvent(last_section, segment.section, cursor,
                         saved_transitions.get(segment.section, "cut")))
-                intro_id = project.section_intros.get(segment.section.value)
+                intro_id = (project.section_intros.get(segment.section.value)
+                            if intro_enabled is None or intro_enabled.get(segment.section.value, True) else None)
                 if intro_id:
                     intro = media[intro_id]
                     if intro.available and intro.duration_seconds is not None and intro.duration_seconds > 0:
@@ -64,8 +67,17 @@ class TimelineService:
                         policy = "keep_original"
                         if intro_max_ms and length > intro_max_ms:
                             length, policy = intro_max_ms, "trim"
-                        timeline.intros.append(IntroEvent(segment.section, intro.id, cursor, cursor + length, policy))
-                        cursor += length
+                        if intro_overlap:
+                            section_length = sum(round(item.duration_seconds * 1000)
+                                for member in project.segments if member.section == segment.section
+                                for item in project.audio_records if item.segment_id == member.id
+                                and item.duration_seconds is not None)
+                            if length > section_length:
+                                length, policy = section_length, "trim"
+                        if length > 0:
+                            timeline.intros.append(IntroEvent(segment.section, intro.id, cursor, cursor + length, policy))
+                            if not intro_overlap:
+                                cursor += length
                     else:
                         warnings.append(f"Intro for {segment.section} is missing or has unknown duration")
                 last_section = segment.section
@@ -124,8 +136,10 @@ class TimelineService:
                 raise ValueError("KEY image placements overlap")
             intervals.append((start, end))
             unit = next(unit for unit in project.sentence_units if unit.id == key.sentence_id)
+            if any(start < intro.end_ms and intro.start_ms < end for intro in timeline.intros):
+                raise ValueError(f"KEY {key.id} trùng thời gian intro; hãy đổi intro hoặc thời điểm KEY.")
             for base in list(timeline.placements):
-                if base.segment_id != unit.segment_id or base.end_ms <= start or base.start_ms >= end:
+                if base.end_ms <= start or base.start_ms >= end:
                     continue
                 timeline.placements.remove(base)
                 if base.start_ms < start:
