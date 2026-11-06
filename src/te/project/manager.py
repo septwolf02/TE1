@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 import warnings
@@ -34,7 +35,7 @@ class ProjectManager:
         directory = Path(directory)
         if directory.exists() and any(directory.iterdir()):
             raise FileExistsError(f"Project directory is not empty: {directory}")
-        project = Project(id=new_id("prj"), name=name)
+        project = Project(id=new_id("prj"), name=name, random_seed=secrets.randbits(63))
         project.validate()
         directory.mkdir(parents=True, exist_ok=True)
         _write_json(directory / "project.json", project.to_dict())

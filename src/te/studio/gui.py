@@ -57,6 +57,7 @@ class StudioApp:
         self.subtitle_font = tk.StringVar(value="bold_japanese")
         self.subtitle_color = tk.StringVar(value="#FFFFFF")
         self.subtitle_chars = tk.StringVar(value="24")
+        self.subtitle_size = tk.StringVar(value="156")
         self.font_path = tk.StringVar(value="")
         self.motion = tk.StringVar(value="Tự động: zoom và pan")
         self.transition = tk.StringVar(value="Cắt thẳng")
@@ -166,6 +167,7 @@ class StudioApp:
         row = ttk.Frame(box)
         row.pack(fill="x")
         ttk.Button(row, text="Chọn thư mục…", command=self._choose_media_folder).pack(side="left")
+        ttk.Button(row, text="Xáo trộn lại ảnh", command=self._reshuffle_images).pack(side="left", padx=5)
         ttk.Label(row, textvariable=self.media_path, wraplength=700).pack(side="left", padx=8)
         ttk.Label(box, textvariable=self.media_count).pack(anchor="w", pady=3)
         duration = ttk.Frame(box)
@@ -224,6 +226,8 @@ class StudioApp:
         ttk.Entry(subtitle, textvariable=self.subtitle_color, width=10).pack(side="left", padx=5)
         ttk.Label(subtitle, text="Ký tự/dòng (tối đa 2 dòng)").pack(side="left")
         ttk.Entry(subtitle, textvariable=self.subtitle_chars, width=5).pack(side="left", padx=5)
+        ttk.Label(subtitle, text="Cỡ chữ phụ đề").pack(side="left", padx=(12, 2))
+        ttk.Entry(subtitle, textvariable=self.subtitle_size, width=5).pack(side="left", padx=5)
         font = ttk.Frame(box)
         font.pack(fill="x", pady=3)
         ttk.Label(font, text="File phông Nhật (tùy chọn)").pack(side="left")
@@ -231,6 +235,7 @@ class StudioApp:
         ttk.Button(font, text="Chọn file…", command=self._choose_font).pack(side="left")
         for variable in (self.voice, self.style, self.speed, self.pitch, self.intonation,
                          self.volume, self.subtitle_font, self.subtitle_color, self.subtitle_chars,
+                         self.subtitle_size,
                          self.font_path):
             variable.trace_add("write", lambda *_: self._dirty())
 
@@ -349,6 +354,7 @@ class StudioApp:
         self.subtitle_font.set(state.project.subtitle_style.get("font", "bold_japanese"))
         self.subtitle_color.set(state.project.subtitle_style.get("text_color", "#FFFFFF"))
         self.subtitle_chars.set(str(state.project.subtitle_style.get("max_chars_per_line", 24)))
+        self.subtitle_size.set(str(state.subtitle_size))
         self.font_path.set(state.font_path or "")
         self.motion.set(next((label for label, value in MOTION_LABELS.items()
                               if value == state.motion_preset), next(iter(MOTION_LABELS))))
@@ -398,6 +404,7 @@ class StudioApp:
         state.project.subtitle_style["font"] = self.subtitle_font.get().strip()
         state.project.subtitle_style["text_color"] = self.subtitle_color.get().strip()
         state.project.subtitle_style["max_chars_per_line"] = int(self.subtitle_chars.get())
+        state.subtitle_size = int(self.subtitle_size.get())
         state.font_path = self.font_path.get().strip() or None
 
     def _save(self, *, auto: bool = False) -> bool:
@@ -571,6 +578,16 @@ class StudioApp:
                 self._refresh_gallery()
                 self._refresh_summary()
         self._background(work, done)
+
+    def _reshuffle_images(self) -> None:
+        if not self.state or not self._save():
+            return
+        try:
+            changed = self.service.reshuffle_images(self.state)
+            self._refresh_summary()
+            self._append_render_log(f"Đã xáo trộn {changed} ảnh tự động. Render lại để xem thứ tự mới.")
+        except Exception as exc:
+            self._fail(str(exc))
 
     def _thumbnail(self, path: Path, size=(92, 66)):
         try:

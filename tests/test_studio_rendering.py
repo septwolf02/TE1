@@ -88,7 +88,7 @@ def test_studio_fake_tts_timeline_intro_key_and_real_preview(tmp_path):
     ffmpeg = RenderService.check_ffmpeg()["ffmpeg"]
     def center_rgb(seconds):
         return subprocess.run([ffmpeg, "-v", "error", "-ss", str(seconds), "-i", str(output),
-            "-frames:v", "1", "-vf", "crop=64:64:448:238,scale=1:1", "-pix_fmt", "rgb24",
+            "-frames:v", "1", "-vf", "crop=64:64:448:80,scale=1:1", "-pix_fmt", "rgb24",
             "-f", "rawvideo", "-"], capture_output=True, check=True).stdout[:3]
     before = center_rgb((key_visual.start_ms - 150) / 1000)
     after = center_rgb((key_visual.start_ms + 150) / 1000)

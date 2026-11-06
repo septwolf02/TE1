@@ -7,6 +7,8 @@ import pytest
 
 from te.project import ProjectManager, SectionName
 from te.studio import StudioService
+from te.media import KeyPlacementService, MediaAssignmentService
+from te.project.models import AssignmentType
 
 
 def make_service(tmp_path):
@@ -40,6 +42,7 @@ def test_create_open_save_rename_duplicate_unicode_and_sections(tmp_path):
     state.project.tts_settings.intonation = 1.2
     state.project.tts_settings.volume = 0.9
     state.project.subtitle_style["text_color"] = "#FFEEDD"
+    state.subtitle_size = 174
     state.font_path = str(tmp_path / "NotoSansCJKjp-Regular.otf")
     service.save_project(state)
     reopened = service.open_project(state.directory)
@@ -53,16 +56,79 @@ def test_create_open_save_rename_duplicate_unicode_and_sections(tmp_path):
     assert (reopened.project.tts_settings.pitch, reopened.project.tts_settings.intonation,
             reopened.project.tts_settings.volume) == (0.03, 1.2, 0.9)
     assert reopened.project.subtitle_style["text_color"] == "#FFEEDD"
+    assert reopened.subtitle_size == 174
     assert reopened.font_path == state.font_path
     assert len(reopened.project.segments) == 4 and len(reopened.project.sentence_units) >= 5
     service.rename_project(reopened, "野球 - tên mới")
     duplicated = service.duplicate_project(reopened, name="Bản sao Nhật Việt")
     assert duplicated.project.id != original_id
+    assert duplicated.subtitle_size == 174
     assert duplicated.sections == reopened.sections
     assert duplicated.project.audio_records == []
     assert service.open_project(duplicated.directory).project.name == "Bản sao Nhật Việt"
     assert service.open_project(reopened.directory).project.name == "野球 - tên mới"
     assert not (duplicated.directory / "generated").exists()
+
+
+def test_old_studio_sidecar_gets_large_subtitle_default(tmp_path):
+    service = make_service(tmp_path)
+    state = service.create_project("Legacy captions")
+    sidecar = state.directory / "studio.json"
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    data.pop("subtitle_size")
+    sidecar.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert service.open_project(state.directory).subtitle_size == 156
+
+
+def test_unique_project_seeds_and_manual_ordinary_reshuffle(tmp_path):
+    from PIL import Image
+    service = make_service(tmp_path)
+    library = tmp_path / "shared-images"
+    library.mkdir()
+    for index in range(6):
+        Image.new("RGB", (80, 45), (index * 35, 90, 110)).save(library / f"image-{index}.png")
+    first = service.create_project("First")
+    second = service.create_project("Second")
+    assert first.project.random_seed != second.project.random_seed
+    assert service.open_project(first.directory).project.random_seed == first.project.random_seed
+    assert service.open_project(second.directory).project.random_seed == second.project.random_seed
+    for state in (first, second):
+        for section in SectionName:
+            service.set_section(state, section, japanese="。".join(f"第{i}の場面" for i in range(4)) + "。", vietnamese="")
+        service.save_project(state)
+        service.select_media_folder(state, library)
+        KeyPlacementService.assign_random_images(state.project, state.directory)
+    def filenames(state):
+        media = {item.id: item.filename for item in state.project.media}
+        return tuple(media[item.media_id] for item in state.project.media_assignments)
+    if filenames(first) == filenames(second):
+        third = service.create_project("Third")
+        for section in SectionName:
+            service.set_section(third, section, japanese="。".join(f"第{i}の場面" for i in range(4)) + "。", vietnamese="")
+        service.save_project(third)
+        service.select_media_folder(third, library)
+        KeyPlacementService.assign_random_images(third.project, third.directory)
+        assert filenames(first) != filenames(third)
+    old = {item.segment_id: item.media_id for item in first.project.media_assignments}
+    locked_id = first.project.segments[0].id
+    first.project.media_assignments[0].locked = True
+    manual_id = first.project.segments[1].id
+    first.project.media_assignments[1].assignment_type = AssignmentType.MANUAL
+    service.save_project(first)
+    seed = first.project.random_seed
+    assert service.reshuffle_images(first) == len(first.project.segments) - 2
+    assert first.project.random_seed != seed
+    assignments = {item.segment_id: item.media_id for item in first.project.media_assignments}
+    assert assignments[locked_id] == old[locked_id]
+    assert assignments[manual_id] == old[manual_id]
+    assert any(assignments[key] != old[key] for key in old if key not in {locked_id, manual_id})
+    assert service.open_project(first.directory).project.random_seed == first.project.random_seed
+    assert {item.segment_id: item.media_id for item in service.open_project(first.directory).project.media_assignments} == assignments
+    KeyPlacementService.assign_random_images(first.project, first.directory)
+    assert {item.segment_id: item.media_id for item in first.project.media_assignments} == assignments
+    assert all(a != b for a, b in zip(
+        [item.media_id for item in first.project.media_assignments],
+        [item.media_id for item in first.project.media_assignments][1:]))
 
 
 def test_channel_defaults_and_project_media_isolation(tmp_path):
@@ -201,6 +267,15 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     app.jp_text.insert("1.0", "初めての日本語。")
     app.vn_text.insert("1.0", "Lời Việt đầu tiên.")
     app.subtitle_chars.set("18")
+    app.subtitle_size.set("180")
+    pending = [app.body]
+    button_labels = []
+    while pending:
+        widget = pending.pop()
+        if isinstance(widget, ttk.Button):
+            button_labels.append(widget.cget("text"))
+        pending.extend(widget.winfo_children())
+    assert "Xáo trộn lại ảnh" in button_labels
     app._script_changed()
     app._switch_section(SectionName.P2)
     assert app.state.sections["P1"]["ja"] == "初めての日本語。"
@@ -249,6 +324,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     reopened = app.service.open_project(path)
     assert reopened.sections["P1"]["ja"] == "初めての日本語。もう一文。"
     assert reopened.project.subtitle_style["max_chars_per_line"] == 18
+    assert reopened.subtitle_size == 180
     assert reopened.sections["P2"]["vi"] == "Phần thứ hai."
     assert len(reopened.project.key_placements) == 2
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from array import array
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -10,12 +11,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import wave
 from threading import Event
 from typing import Callable
 
 from te.project.manager import _write_json
 from te.project.models import MediaType, Project
-from te.subtitles import wrap_caption
+from te.subtitles import wrap_caption, split_caption_text
 from te.timeline.models import Timeline
 from te.timeline.service import TimelineService
 
@@ -37,6 +39,7 @@ class RenderSettings:
     font_path: str | None = None
     transition_ms: int = 250
     encoder: str = "libx264"
+    subtitle_font_size: int = 156  # Full-HD reference pixels; scales with output height.
 
 
 @dataclass(frozen=True)
@@ -148,6 +151,74 @@ class RenderService:
     def _font(settings: RenderSettings) -> str:
         return RenderService._resolve_font(settings)[0]
 
+    @staticmethod
+    def _pcm_slice(ffmpeg: str, path: Path, start_ms: int, duration_ms: int) -> array:
+        result = subprocess.run([ffmpeg, "-v", "error", "-ss", str(max(0, start_ms) / 1000),
+            "-i", str(path), "-t", str(duration_ms / 1000), "-vn", "-ac", "1", "-ar", "8000",
+            "-f", "s16le", "-"], capture_output=True, check=True)
+        samples = array("h")
+        samples.frombytes(result.stdout[:len(result.stdout) // 2 * 2])
+        return samples
+
+    @staticmethod
+    def _similar_voice(source: array, output: array) -> bool:
+        length = min(len(source), len(output) - 80)
+        if length < 800:
+            return False
+        source = source[:length]
+        energy = sum(value * value for value in source)
+        if energy / length < 50 * 50:
+            return False
+        # AAC introduces a small encoder delay. Search around the expected audio position.
+        for shift in range(-240, 241, 16):
+            left = max(0, shift)
+            right = max(0, -shift)
+            count = length - left - right
+            if count <= 0:
+                continue
+            dot = sum(source[right + i] * output[left + i] for i in range(count))
+            out_energy = sum(output[left + i] ** 2 for i in range(count))
+            if out_energy and dot / math.sqrt(energy * out_energy) > 0.12:
+                return True
+        return False
+
+    def _verify_intro_narration(self, project: Project, timeline: Timeline, output: Path, ffmpeg: str) -> None:
+        """Check the actual MP4 contains narration correlated with source WAV during each intro."""
+        segments = {segment.id: segment for segment in project.segments}
+        for intro in timeline.intros:
+            speech_windows = 0
+            section_end = max(block.end_ms for block in timeline.blocks if block.section == intro.section)
+            check_end = min(section_end, intro.end_ms + 300)
+            audible_all = self._pcm_slice(ffmpeg, output, intro.start_ms, check_end - intro.start_ms + 40)
+            for block in timeline.blocks:
+                segment = segments[block.segment_id]
+                if block.section != intro.section:
+                    continue
+                if (segment.tts_override or project.tts_settings).provider == "fake":
+                    continue  # The deterministic fake provider deliberately generates silence.
+                overlap_start = max(intro.start_ms, block.start_ms)
+                overlap_end = min(check_end, block.end_ms)
+                if overlap_end - overlap_start < 180:
+                    continue
+                source_all = self._pcm_slice(ffmpeg, Path(block.audio_path),
+                    overlap_start - block.start_ms, overlap_end - overlap_start)
+                for start in range(overlap_start, overlap_end - 179, 160):
+                    duration = min(240, overlap_end - start)
+                    source_offset = round((start - overlap_start) * 8)
+                    output_offset = round((start - intro.start_ms) * 8)
+                    source = source_all[source_offset:source_offset + duration * 8]
+                    if not source or sum(value * value for value in source) / len(source) < 50 * 50:
+                        continue
+                    speech_windows += 1
+                    audible = audible_all[output_offset:output_offset + (duration + 40) * 8]
+                    if not self._similar_voice(source, audible):
+                        raise ValueError(f"Intro {intro.section.value}: video MP4 thiếu lời đọc gần mốc {start} ms")
+            if not speech_windows and all((segments[block.segment_id].tts_override or project.tts_settings).provider == "fake"
+                                          for block in timeline.blocks if block.section == intro.section):
+                continue
+            if not speech_windows:
+                raise ValueError(f"Intro {intro.section.value}: WAV không có lời đọc trong intro")
+
     def validate_render_inputs(self, project: Project, timeline: Timeline, settings: RenderSettings) -> tuple[str, ...]:
         self.check_ffmpeg()
         if settings.width <= 0 or settings.height <= 0 or settings.fps <= 0 or not 0 <= settings.crf <= 51:
@@ -158,12 +229,22 @@ class RenderService:
             raise ValueError("Invalid transition duration")
         if settings.encoder not in {"auto", "libx264", "h264_nvenc", "h264_qsv", "h264_amf"}:
             raise ValueError("Invalid video encoder")
+        if not 36 <= settings.subtitle_font_size <= 240:
+            raise ValueError("Subtitle font size must be between 36 and 240")
         if timeline.captions:
             self._font(settings)
         warnings = TimelineService().validate_timeline(project, timeline)
+        segments = {segment.id: segment for segment in project.segments}
         for block in timeline.blocks:
             if not Path(block.audio_path).is_file():
                 raise ValueError(f"Narration WAV missing: {block.audio_path}")
+            if (segments[block.segment_id].tts_override or project.tts_settings).provider != "fake":
+                with wave.open(block.audio_path, "rb") as source:
+                    if source.getsampwidth() != 2:
+                        raise ValueError(f"WAV lời đọc không phải PCM 16-bit: {block.audio_path}")
+                    samples = array("h", source.readframes(source.getnframes()))
+                if not samples or sum(value * value for value in samples) / len(samples) < 50 * 50:
+                    raise ValueError(f"WAV lời đọc không có âm thanh: {block.audio_path}")
         if not timeline.blocks:
             raise ValueError("Timeline has no narration blocks")
         media = {asset.id: asset for asset in project.media}
@@ -257,9 +338,20 @@ class RenderService:
         return f"{h}:{m:02}:{s:02}.{cs:02}"
 
     @classmethod
+    def caption_line_limit(cls, settings: RenderSettings, requested: int = 24) -> int:
+        size = max(18, round(settings.subtitle_font_size * settings.height / 1080))
+        margin = max(20, round(settings.width * 0.045))
+        # A full-width Japanese glyph can exceed one em in some installed fonts.
+        return max(1, min(requested, int((settings.width - 2 * margin) / (size * 1.10))))
+
+    @classmethod
     def _write_ass(cls, project: Project, timeline: Timeline, path: Path, settings: RenderSettings, font: str) -> None:
         style = project.subtitle_style
-        size = max(18, round(settings.height * 0.048))
+        size = max(18, round(settings.subtitle_font_size * settings.height / 1080))
+        margin = max(20, round(settings.width * 0.045))
+        bottom = max(20, round(settings.height * 0.055))
+        outline = max(3, round(size * 0.045))
+        line_limit = cls.caption_line_limit(settings, style["max_chars_per_line"])
         def ass_color(value: str, fallback: str) -> str:
             if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
                 return fallback
@@ -274,8 +366,8 @@ class RenderService:
             "[Script Info]\nScriptType: v4.00+\nWrapStyle: 2\n"
             f"PlayResX: {settings.width}\nPlayResY: {settings.height}\n"
             "[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
-            f"Style: Normal,{font},{size},{text_color},{text_color},{outline_color},&H88000000,-1,0,0,0,100,100,0,0,3,2,0,2,60,60,55,1\n"
-            f"Style: Headline,{font},{round(size*1.6)},{text_color},{text_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,80,80,40,1\n"
+            f"Style: Normal,{font},{size},{text_color},{text_color},{outline_color},&H88000000,-1,0,0,0,100,100,0,0,3,{outline},0,2,{margin},{margin},{bottom},1\n"
+            f"Style: Headline,{font},{size},{text_color},{text_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline},0,5,{margin},{margin},{bottom},1\n"
             "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
         )
         by_id = {c.id: c for c in project.subtitle_captions}
@@ -285,18 +377,27 @@ class RenderService:
             headline = bool(source and source.presentation == "headline" and timeline.headline.get("enabled"))
             def escape(value: str) -> str:
                 return value.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
-            if not headline:
-                text = "\\N".join(escape(line) for line in
-                    wrap_caption(caption.text, style["max_chars_per_line"], style["max_lines"]))
-            else:
-                text = "\\N".join(escape(line) for line in
-                    wrap_caption(caption.text, style["max_chars_per_line"], style["max_lines"]))
+            parts = split_caption_text(caption.text, line_limit, 2)
+            if not parts:
+                continue
+            duration = caption.end_ms - caption.start_ms
+            weights = [len(part) for part in parts]
+            total = sum(weights)
+            boundaries = [caption.start_ms]
+            for index in range(1, len(parts)):
+                boundaries.append(caption.start_ms + round(duration * sum(weights[:index]) / total))
+            boundaries.append(caption.end_ms)
+            for part, start, end in zip(parts, boundaries, boundaries[1:]):
+                if end <= start:
+                    continue
+                text = "\\N".join(escape(line) for line in wrap_caption(part, line_limit, 2))
+                if not headline:
+                    lines.append(f"Dialogue: 0,{cls._ass_time(start)},{cls._ass_time(end)},Normal,,0,0,0,,{text}\n")
+                    continue
                 dark = round((1 - timeline.headline.get("darkening", 0.7)) * 255)
                 text = f"{{\\an5\\bord3\\shad0}}{text}"
-                lines.append(f"Dialogue: -1,{cls._ass_time(caption.start_ms)},{cls._ass_time(caption.end_ms)},Headline,,0,0,0,,{{\\an7\\bord0\\shad0\\1c&H000000&\\1a&H{dark:02X}&\\p1}}m 0 0 l {settings.width} 0 {settings.width} {settings.height} 0 {settings.height}{{\\p0}}\n")
-                lines.append(f"Dialogue: 0,{cls._ass_time(caption.start_ms)},{cls._ass_time(caption.end_ms)},Headline,,0,0,0,,{{\\alpha&H00&}}{text}\n")
-                continue
-            lines.append(f"Dialogue: 0,{cls._ass_time(caption.start_ms)},{cls._ass_time(caption.end_ms)},Normal,,0,0,0,,{text}\n")
+                lines.append(f"Dialogue: -1,{cls._ass_time(start)},{cls._ass_time(end)},Headline,,0,0,0,,{{\\an7\\bord0\\shad0\\1c&H000000&\\1a&H{dark:02X}&\\p1}}m 0 0 l {settings.width} 0 {settings.width} {settings.height} 0 {settings.height}{{\\p0}}\n")
+                lines.append(f"Dialogue: 0,{cls._ass_time(start)},{cls._ass_time(end)},Headline,,0,0,0,,{{\\alpha&H00&}}{text}\n")
         path.write_text("".join(lines), encoding="utf-8")
 
     def render_preview(self, project: Project, timeline: Timeline, directory: Path, **kwargs) -> Path:
@@ -453,6 +554,8 @@ class RenderService:
                 del cpu[bitrate_index:bitrate_index + 2]
                 self._run(cpu, stage, cache)
                 encoder = "libx264"
+            emit("verifying intro narration")
+            self._verify_intro_narration(project, timeline, partial, info["ffmpeg"])
             os.replace(partial, output)
             emit("completed")
             return output

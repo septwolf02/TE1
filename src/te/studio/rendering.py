@@ -147,7 +147,10 @@ class StudioRenderService:
                 if needs_generation and settings.provider == "voicevox":
                     VoicevoxProvider(timeout=5).check_connection(settings)
                 self._emit(progress, f"Lời đọc {index}/{len(working.segments)}: {segment.section.value}")
-                self.speech.sync_segment(working, state.directory, segment.id, rebuild_timeline=False)
+                line_limit = self.render.caption_line_limit(RenderSettings(subtitle_font_size=state.subtitle_size),
+                    working.subtitle_style["max_chars_per_line"])
+                self.speech.sync_segment(working, state.directory, segment.id, rebuild_timeline=False,
+                                         caption_max_chars=line_limit)
                 count += int(needs_generation)
         except Exception:
             state.project = ProjectManager().open(state.directory)
@@ -166,7 +169,8 @@ class StudioRenderService:
         bag = OrdinaryImageBag(candidates, project.random_seed)
         keys = {item.id for item in project.key_placements}
         media = {item.id: item for item in project.media}
-        locked = {item.segment_id for item in project.media_assignments if item.locked}
+        fixed = {item.segment_id for item in project.media_assignments
+                 if item.locked or item.assignment_type not in (AssignmentType.RANDOM, AssignmentType.FUTURE_AI)}
         result = []
         for placement in sorted(timeline.placements, key=lambda item: (item.start_ms, item.end_ms)):
             if placement.id in keys or media[placement.media_id].category != MediaCategory.NORMAL:
@@ -174,7 +178,7 @@ class StudioRenderService:
                 continue
             primary_id = placement.media_id
             if (len(candidates) > 1 and primary_id == bag.last and
-                    placement.segment_id not in locked):
+                    placement.segment_id not in fixed):
                 primary_id = bag.draw()
             else:
                 bag.observe(primary_id)
@@ -183,6 +187,8 @@ class StudioRenderService:
             upper = max(1, math.floor(duration / (minimum * 1000)))
             ideal = max(1, round(duration / ((minimum + maximum) * 500)))
             chunks = max(lower, min(ideal, upper)) if upper >= lower else lower
+            if placement.segment_id in fixed:
+                chunks = 1
             if chunks == 1:
                 piece = deepcopy(placement)
                 piece.media_id = primary_id
@@ -239,7 +245,7 @@ class StudioRenderService:
         timeline_service.save_timeline(project, state.directory, timeline)
         self.render.validate_render_inputs(project, timeline, RenderSettings(
             960, 540, 30, 28, "veryfast", font_family=self._font_family(state),
-            font_path=state.font_path))
+            font_path=state.font_path, subtitle_font_size=state.subtitle_size))
         state.project = project
         self.studio.save_project(state)
         for warning in warnings:
@@ -290,6 +296,7 @@ class StudioRenderService:
         settings = (RenderSettings(960, 540, 30, 28, "veryfast", font_path=state.font_path)
                     if preview else RenderSettings(font_path=state.font_path, encoder="auto"))
         settings = replace(settings, font_family=self._font_family(state))
+        settings = replace(settings, subtitle_font_size=state.subtitle_size)
         self._emit(progress, "Đang render bản xem nhanh…" if preview else "Đang render Full HD…")
         source = self.render.render_project(state.project, timeline, state.directory, preview=preview,
             overwrite=True, settings=settings, progress=progress)

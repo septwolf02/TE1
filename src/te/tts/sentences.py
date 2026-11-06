@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from array import array
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from hashlib import sha256
 import os
+import math
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 import wave
@@ -14,6 +16,15 @@ from te.project.manager import ProjectManager
 from te.project.models import AudioRecord, Project, SentenceAudioRecord, SentenceUnit, SubtitleCaption, new_id
 from te.subtitles.service import _allocate, split_caption_text, split_japanese_sentences, SubtitleService
 from .service import TTSService, _duration
+
+
+def _wav_rms(path: Path) -> float:
+    """Measure 16-bit PCM speech energy; VOICEVOX WAVs must contain audible samples."""
+    with wave.open(str(path), "rb") as source:
+        if source.getsampwidth() != 2:
+            raise ValueError("Expected 16-bit narration WAV")
+        samples = array("h", source.readframes(source.getnframes()))
+    return math.sqrt(sum(sample * sample for sample in samples) / len(samples)) if samples else 0.0
 
 
 class SentenceSpeechService:
@@ -105,6 +116,8 @@ class SentenceSpeechService:
                 return "invalid_file"
             if record.audio_hash and sha256(Path(record.path).read_bytes()).hexdigest() != record.audio_hash:
                 return "invalid_file"
+            if settings.provider == "voicevox" and _wav_rms(Path(record.path)) < 50:
+                return "silent"
         except (OSError, ValueError, wave.Error):
             return "invalid_file"
         return "ready"
@@ -134,6 +147,8 @@ class SentenceSpeechService:
                 temporary = Path(stream.name)
             metadata = provider.synthesize(unit.synthesis_text, settings, temporary) or {}
             duration = _duration(temporary)
+            if settings.provider == "voicevox" and _wav_rms(temporary) < 50:
+                raise ValueError("WAV lời đọc vừa tạo không có âm thanh")
             os.replace(temporary, destination)
             temporary = None
             record = SentenceAudioRecord(unit.id, str(destination), replace(settings),
@@ -192,7 +207,7 @@ class SentenceSpeechService:
                 temporary.unlink(missing_ok=True)
 
     def sync_segment(self, project: Project, directory: Path, segment_id: str, *,
-                     rebuild_timeline: bool = True) -> list[tuple[SentenceUnit, int, int]]:
+                     rebuild_timeline: bool = True, caption_max_chars: int | None = None) -> list[tuple[SentenceUnit, int, int]]:
         directory = Path(directory).resolve()
         if ProjectManager().open(directory).id != project.id:
             raise ValueError("Project directory does not match project")
@@ -227,7 +242,7 @@ class SentenceSpeechService:
             else:
                 project.audio_records.append(record)
             segment.audio_ref = record.path
-        self._sync_captions(project, segment_id, units, anchors)
+        self._sync_captions(project, segment_id, units, anchors, caption_max_chars)
         ProjectManager().save(directory, project)
         if rebuild_timeline:
             self.rebuild_if_ready(project, directory)
@@ -253,7 +268,7 @@ class SentenceSpeechService:
 
     @staticmethod
     def _sync_captions(project: Project, segment_id: str, units: list[SentenceUnit],
-                       anchors: list[tuple[int, int]]) -> None:
+                       anchors: list[tuple[int, int]], caption_max_chars: int | None = None) -> None:
         segment = next(s for s in project.segments if s.id == segment_id)
         old = [c for c in project.subtitle_captions if c.segment_id == segment_id]
         by_sentence: dict[str, list[SubtitleCaption]] = {}
@@ -269,7 +284,7 @@ class SentenceSpeechService:
         fingerprint = SubtitleService._audio_fingerprint(project, segment_id)
         source_hash = SubtitleService._source_hash(segment.japanese_text)
         captions = []
-        max_chars = project.subtitle_style["max_chars_per_line"]
+        max_chars = min(project.subtitle_style["max_chars_per_line"], caption_max_chars or 1000000)
         max_lines = project.subtitle_style["max_lines"]
         for sentence_index, (unit, (start, end)) in enumerate(zip(units, anchors), 1):
             previous_parts = by_sentence.get(unit.id) or ([fallback[sentence_index - 1]] if fallback else [])

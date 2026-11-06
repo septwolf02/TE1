@@ -175,6 +175,22 @@ def test_sentence_failure_preserves_other_audio(tmp_path):
     assert [r.generation_version for r in project.sentence_audio_records] == [1, 2]
 
 
+def test_silent_voicevox_wav_is_rejected_and_not_marked_ready(tmp_path):
+    from te.tts import FakeTTSProvider, TTSService
+
+    class SilentVoicevox(FakeTTSProvider):
+        provider_id = "voicevox"
+
+    manager, directory, project, first, _ = make_project(tmp_path)
+    project.tts_settings.provider = "voicevox"
+    manager.save(directory, project)
+    service = SentenceSpeechService(TTSService({"voicevox": SilentVoicevox()}))
+    with pytest.raises(RuntimeError, match="không có âm thanh"):
+        service.sync_segment(project, directory, first.id, rebuild_timeline=False)
+    assert project.sentence_audio_records[0].status == "failed"
+    assert manager.open(directory).sentence_audio_records[0].status == "failed"
+
+
 @pytest.mark.skipif(os.environ.get("TE_VOICEVOX_INTEGRATION") != "1", reason="opt-in local engine test")
 def test_real_voicevox_sentence_timing(tmp_path):
     from te.project.models import TTSSettings

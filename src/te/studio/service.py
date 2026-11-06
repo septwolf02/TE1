@@ -8,15 +8,16 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 from uuid import uuid4
 
-from te.media import MediaLibraryService
+from te.media import MediaAssignmentService, MediaLibraryService
+from te.media.key_service import KeyPlacementService
 from te.media.service import _video_metadata
 from te.project.manager import ProjectManager, _write_json
-from te.project.models import (KeyPlacement, MediaCategory, MediaKind, MediaType, Project,
+from te.project.models import (AssignmentType, KeyPlacement, MediaCategory, MediaKind, MediaType, Project,
                                ScriptSegment, SectionName, TTSSettings, new_id)
 from te.tts.sentences import SentenceSpeechService
-from te.media.key_service import KeyPlacementService
 from te.subtitles import split_japanese_sentences
 
 
@@ -156,6 +157,7 @@ class StudioProject:
     recovery_warning: str | None = None
     font_path: str | None = None
     last_final: str | None = None
+    subtitle_size: int = 156
 
 
 class StudioService:
@@ -282,7 +284,8 @@ class StudioService:
             data.get("motion_preset", "mixed"), data.get("transition", "cut"),
             data.get("image_min_seconds", 7.0), data.get("image_max_seconds", 12.0),
             data.get("intro_preferences", {s.value: True for s in SectionName}),
-            data.get("key_drafts", []), warning, data.get("font_path"), data.get("last_final"))
+            data.get("key_drafts", []), warning, data.get("font_path"), data.get("last_final"),
+            data.get("subtitle_size", 156))
 
     @staticmethod
     def _apply_sections(project: Project, sections: dict[str, dict[str, str]]) -> None:
@@ -361,6 +364,8 @@ class StudioService:
             raise ValueError("Hiệu ứng hoặc chuyển cảnh không hợp lệ.")
         if not 0 < state.image_min_seconds <= state.image_max_seconds <= 60:
             raise ValueError("Thời lượng ảnh phải nằm trong khoảng 0–60 giây.")
+        if not 36 <= state.subtitle_size <= 240:
+            raise ValueError("Cỡ chữ phụ đề phải từ 36 đến 240.")
         working = deepcopy(state.project)
         self._apply_sections(working, state.sections)
         working.validate()
@@ -373,6 +378,7 @@ class StudioService:
                 "image_max_seconds": state.image_max_seconds,
                 "intro_preferences": deepcopy(state.intro_preferences),
                 "font_path": state.font_path,
+                "subtitle_size": state.subtitle_size,
                 "last_final": state.last_final,
                 "key_drafts": deepcopy(state.key_drafts)}
         _write_json(state.directory / "studio.json", data)
@@ -396,6 +402,7 @@ class StudioService:
         clone = deepcopy(state.project)
         clone.id = new_project.id
         clone.name = new_name
+        clone.random_seed = new_project.random_seed
         clone.audio_records.clear()
         clone.sentence_audio_records.clear()
         clone.subtitle_captions.clear()
@@ -406,7 +413,8 @@ class StudioService:
         ProjectManager().save(directory, clone)
         duplicated = StudioProject(directory, clone, deepcopy(state.sections), state.channel,
             state.motion_preset, state.transition, state.image_min_seconds, state.image_max_seconds,
-            deepcopy(state.intro_preferences), deepcopy(state.key_drafts), font_path=state.font_path)
+            deepcopy(state.intro_preferences), deepcopy(state.key_drafts), font_path=state.font_path,
+            subtitle_size=state.subtitle_size)
         self.save_project(duplicated)
         return duplicated
 
@@ -463,6 +471,46 @@ class StudioService:
         state.project = working
         self.save_project(state)
         return self.eligible_image_count(state)
+
+    def reshuffle_images(self, state: StudioProject) -> int:
+        """Reassign only unlocked automatic ordinary visuals; never touch KEY/manual media."""
+        working = deepcopy(state.project)
+        media = {asset.id: asset for asset in working.media}
+        changed = [assignment for assignment in list(working.media_assignments)
+                   if assignment.assignment_type in (AssignmentType.RANDOM, AssignmentType.FUTURE_AI)
+                   and not assignment.locked and
+                   (asset := media.get(assignment.media_id)) is not None and
+                   asset.media_type == MediaType.IMAGE and asset.category == MediaCategory.NORMAL]
+        old_sequence = tuple(assignment.media_id for assignment in changed)
+        originally_unassigned = {segment.id for segment in working.segments
+                                 if not any(item.segment_id == segment.id for item in working.media_assignments)}
+        if not changed:
+            working.random_seed = secrets.randbits(63)
+            state.project = working
+            self.save_project(state)
+            return 0
+        for assignment in changed:
+            MediaAssignmentService().unassign_media(working, assignment.segment_id)
+        candidates = [asset for asset in working.media if asset.available and
+                      asset.media_type == MediaType.IMAGE and asset.category == MediaCategory.NORMAL]
+        if not candidates:
+            raise ValueError("Không có ảnh thường khả dụng để xáo trộn.")
+        for _ in range(20):
+            trial = deepcopy(working)
+            trial.random_seed = secrets.randbits(63)
+            if trial.random_seed == state.project.random_seed:
+                trial.random_seed ^= 1
+            KeyPlacementService.assign_random_images(trial, state.directory, persist=False)
+            for segment_id in originally_unassigned:
+                MediaAssignmentService().unassign_media(trial, segment_id)
+            new_sequence = tuple(next(item.media_id for item in trial.media_assignments
+                                      if item.segment_id == assignment.segment_id) for assignment in changed)
+            working = trial
+            if new_sequence != old_sequence or len(candidates) < 2 or not changed:
+                break
+        state.project = working
+        self.save_project(state)
+        return len(changed)
 
     @staticmethod
     def eligible_image_count(state: StudioProject) -> int:
