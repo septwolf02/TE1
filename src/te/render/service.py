@@ -354,8 +354,29 @@ class RenderService:
             (log_dir / f"{stage}.log").write_text(stderr, encoding="utf-8")
             if self._cancel.is_set() or self._process.returncode != 0:
                 raise RenderError(stage, command, "Cancelled" if self._cancel.is_set() else stderr)
+            if stage in {"audio-mixing", "muxing"} and any(phrase in stderr.casefold() for phrase in
+                    ("non-monotonic dts", "non-monotonous dts", "queue input is backward in time")):
+                raise RenderError(stage, command, "FFmpeg reported backward timestamps: " + stderr)
         finally:
             self._process = None
+
+    @staticmethod
+    def _verify_packet_timestamps(ffprobe: str, path: Path, stream: str = "a:0") -> None:
+        result = subprocess.run([ffprobe, "-v", "error", "-select_streams", stream,
+            "-show_entries", "packet=dts", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
+        previous = None
+        count = 0
+        for line in result.stdout.splitlines():
+            if not line or line == "N/A":
+                continue
+            current = int(line.split(",", 1)[0])
+            if previous is not None and current <= previous:
+                raise ValueError(f"AAC/video DTS đi lùi tại gói {count}: {previous} -> {current} ({path})")
+            previous = current
+            count += 1
+        if count == 0:
+            raise ValueError(f"Không tìm thấy gói {stream} trong {path}")
 
     @staticmethod
     def _keep_narration_diagnostic(partial: Path, output_dir: Path, cache: Path,
@@ -376,6 +397,10 @@ class RenderService:
         final_log = cache / "finalizing.log"
         if final_log.is_file():
             shutil.copyfile(final_log, folder / "ffmpeg-finalizing.log")
+        for name in ("audio-mixing.log", "muxing.log"):
+            log = cache / name
+            if log.is_file():
+                shutil.copyfile(log, folder / f"ffmpeg-{name}")
         plan = cache / "finalizing-plan.json"
         if plan.is_file():
             shutil.copyfile(plan, folder / "finalizing-plan.json")
@@ -393,16 +418,17 @@ class RenderService:
     @staticmethod
     def _visual_filter(effect: str, width: int, height: int, fps: int, frames: int) -> str:
         base = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
+        finish = ",format=yuv420p"
         if effect == "none":
-            return base + f",fps={fps}"
+            return base + f",fps={fps}" + finish
         if effect.startswith("slow_zoom"):
             z = f"1+0.08*on/{max(1, frames - 1)}" if effect.endswith("in") else f"1.08-0.08*on/{max(1, frames - 1)}"
-            return base + f",zoompan=z='{z}':d=1:s={width}x{height}:fps={fps}"
+            return base + f",zoompan=z='{z}':d=1:s={width}x{height}:fps={fps}" + finish
         direction = effect.removeprefix("pan_")
         factor = f"on/{max(1, frames - 1)}"
         x = f"(iw-iw/zoom)*{factor}" if direction == "right" else f"(iw-iw/zoom)*(1-{factor})" if direction == "left" else "(iw-iw/zoom)/2"
         y = f"(ih-ih/zoom)*{factor}" if direction == "down" else f"(ih-ih/zoom)*(1-{factor})" if direction == "up" else "(ih-ih/zoom)/2"
-        return base + f",zoompan=z=1.08:x='{x}':y='{y}':d=1:s={width}x{height}:fps={fps}"
+        return base + f",zoompan=z=1.08:x='{x}':y='{y}':d=1:s={width}x{height}:fps={fps}" + finish
 
     @staticmethod
     def _ass_time(ms: int) -> str:
@@ -530,7 +556,7 @@ class RenderService:
                     continue
                 clip_settings = {key: getattr(settings, key) for key in
                     ("width", "height", "fps", "crf", "preset", "transition_ms")}
-                signature = json.dumps([kind, asdict(event), clip_settings, info["version"],
+                signature = json.dumps(["visual-filter-v2", kind, asdict(event), clip_settings, info["version"],
                     transitions.get(start), transitions.get(end), settings.transition_ms, frames,
                     (asset.path, Path(asset.path).stat().st_size, Path(asset.path).stat().st_mtime_ns) if asset and Path(asset.path).exists() else None], sort_keys=True, default=str)
                 clip = cache / f"{sha256(signature.encode()).hexdigest()}.mp4"
@@ -566,12 +592,12 @@ class RenderService:
             visual = cache / "visual.mp4"
             self._run([info["ffmpeg"], "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
                        "-c", "copy", str(visual)], "concatenating", cache)
-            stage = "finalizing"
+            stage = "audio-mixing"
             emit("mixing audio")
-            command = [info["ffmpeg"], "-y", "-i", str(visual)]
+            audio_command = [info["ffmpeg"], "-y"]
             filters = []
             narration_labels = []
-            input_index = 1
+            input_index = 0
             cursor_ms = 0
             for block in timeline.blocks:
                 if block.start_ms < cursor_ms or block.end_ms <= block.start_ms:
@@ -581,7 +607,7 @@ class RenderService:
                     label = f"gap{len(narration_labels)}"
                     filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={gap},asetpts=PTS-STARTPTS[{label}]")
                     narration_labels.append(f"[{label}]")
-                command += ["-i", block.audio_path]
+                audio_command += ["-i", block.audio_path]
                 duration = (block.end_ms - block.start_ms) / 1000
                 label = f"voice{input_index}"
                 # Reset each WAV's PTS and fix its exact timeline length before concat.
@@ -599,7 +625,7 @@ class RenderService:
                 section = TimelineService.get_section_range(timeline, music.section)
                 if not section:
                     continue
-                command += ["-stream_loop", "-1", "-i", music.path]
+                audio_command += ["-stream_loop", "-1", "-i", music.path]
                 duration = (section[1] - section[0]) / 1000
                 filters.append(f"[{input_index}:a]aresample=48000,aformat=channel_layouts=stereo,"
                                f"atrim=duration={duration},asetpts=PTS-STARTPTS,volume={music.volume},"
@@ -613,58 +639,118 @@ class RenderService:
             else:
                 filters.append("".join(audio_labels) +
                                f"amix=inputs={len(audio_labels)}:duration=first:normalize=0[aout]")
+            end_seconds = max(end for _, end, _, _ in events) / 1000
+            audio_filter = ";".join(filters)
+            audio_command += ["-filter_complex", audio_filter, "-map", "[aout]", "-vn",
+                              "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                              "-t", str(end_seconds), "-movflags", "+faststart"]
+            def file_key(path: Path) -> tuple[str, int, int, str]:
+                stat = path.stat()
+                return (str(path), stat.st_size, stat.st_mtime_ns, sha256(path.read_bytes()).hexdigest())
+            audio_key = sha256(json.dumps(["audio-track-v2", info["version"], audio_filter,
+                [(block.start_ms, block.end_ms, file_key(Path(block.audio_path))) for block in timeline.blocks],
+                [(music.section.value, music.volume, music.fade_in_ms, music.fade_out_ms,
+                  file_key(Path(music.path))) for music in timeline.music]],
+                sort_keys=True).encode()).hexdigest()
+            audio_file = cache / f"audio-{audio_key}.m4a"
+            audio_actual_command: list[str] | None = None
+            if not audio_file.is_file():
+                audio_temp = cache / f"audio-{audio_key}.partial.m4a"
+                try:
+                    audio_actual_command = audio_command + [str(audio_temp)]
+                    self._run(audio_actual_command, stage, cache)
+                    self._verify_packet_timestamps(info["ffprobe"], audio_temp)
+                    os.replace(audio_temp, audio_file)
+                finally:
+                    audio_temp.unlink(missing_ok=True)
+            else:
+                (cache / "audio-mixing.log").write_text(
+                    f"Reused cached AAC narration: {audio_file}\n", encoding="utf-8")
+
             ass = cache / "captions.ass"
+            video_filter = f"fps={settings.fps},format=yuv420p"
+            font_path = None
             if timeline.captions:
                 emit("burning subtitles")
                 font_family, font_path = self._resolve_font(settings)
                 self._write_ass(project, timeline, ass, settings, font_family)
-                # Filter path is generated under the project and passed as one argument.
                 filter_path = str(ass).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
                 font_dir = ""
                 if font_path:
                     directory_path = str(font_path.parent).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
                     font_dir = f":fontsdir='{directory_path}'"
-                filters.append(f"[0:v]ass=filename='{filter_path}'{font_dir}[vout]")
-                video_map = "[vout]"
-            else:
-                video_map = "0:v"
-            emit("finalizing")
-            command += ["-filter_complex", ";".join(filters), "-map", video_map, "-map", "[aout]",
-                        "-c:v", encoder]
-            if encoder == "libx264":
-                command += ["-preset", settings.preset, "-crf", str(settings.crf)]
-            else:
-                command += ["-b:v", "8M" if settings.width >= 1920 else "3M"]
-            command += [
-                        "-pix_fmt", "yuv420p", "-r", str(settings.fps), "-c:a", "aac", "-b:a", "192k",
-                        "-t", str(max(end for _, end, _, _ in events) / 1000), "-movflags", "+faststart", str(partial)]
-            def save_audio_plan(actual_command: list[str]) -> None:
-                _write_json(cache / "finalizing-plan.json", {
-                    "argv": actual_command,
-                    "filter_complex": actual_command[actual_command.index("-filter_complex") + 1],
-                    "audio_blocks": [{"segment_id": block.segment_id, "section": block.section.value,
-                        "start_ms": block.start_ms, "end_ms": block.end_ms,
-                        "wav_path": block.audio_path} for block in timeline.blocks],
-                    "intros": [{"section": intro.section.value, "start_ms": intro.start_ms,
-                        "end_ms": intro.end_ms, "media_id": intro.media_id} for intro in timeline.intros],
-                })
-            save_audio_plan(command)
+                video_filter += f",ass=filename='{filter_path}'{font_dir}"
+
+            def video_command_for(selected_encoder: str, destination: Path) -> list[str]:
+                command = [info["ffmpeg"], "-y", "-i", str(visual), "-an", "-vf", video_filter,
+                    "-c:v", selected_encoder]
+                if selected_encoder == "libx264":
+                    command += ["-preset", settings.preset, "-crf", str(settings.crf)]
+                else:
+                    command += ["-b:v", "8M" if settings.width >= 1920 else "3M"]
+                return command + ["-pix_fmt", "yuv420p", "-r", str(settings.fps),
+                    "-t", str(end_seconds), str(destination)]
+
+            def render_video_only(selected_encoder: str) -> tuple[Path, list[str] | None]:
+                signature = sha256(json.dumps(["video-burn-v2", info["version"],
+                    [file_key(path) for path in used], video_filter, ass.read_text(encoding="utf-8")
+                    if timeline.captions else None, file_key(font_path) if font_path else None,
+                    selected_encoder,
+                    settings.preset, settings.crf, settings.fps], sort_keys=True).encode()).hexdigest()
+                destination = cache / f"video-{signature}.mp4"
+                command = None
+                if not destination.is_file():
+                    temporary = cache / f"video-{signature}.partial.mp4"
+                    command = video_command_for(selected_encoder, temporary)
+                    try:
+                        self._run(command, "finalizing", cache)
+                        self._verify_packet_timestamps(info["ffprobe"], temporary, "v:0")
+                        os.replace(temporary, destination)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                else:
+                    (cache / "finalizing.log").write_text(
+                        f"Reused cached subtitle video: {destination}\n", encoding="utf-8")
+                return destination, command
+
+            stage = "finalizing"
+            emit("encoding video separately from narration")
             try:
-                self._run(command, stage, cache)
+                video_file, video_command = render_video_only(encoder)
             except RenderError:
                 if encoder == "libx264" or self._cancel.is_set():
                     raise
                 emit(f"{encoder} thất bại khi xuất; thử lại bằng CPU libx264")
-                partial.unlink(missing_ok=True)
-                cpu = command[:]
-                codec_index = cpu.index("-c:v", cpu.index("-filter_complex"))
-                cpu[codec_index:codec_index + 2] = ["-c:v", "libx264", "-preset", settings.preset,
-                    "-crf", str(settings.crf)]
-                bitrate_index = cpu.index("-b:v")
-                del cpu[bitrate_index:bitrate_index + 2]
-                save_audio_plan(cpu)
-                self._run(cpu, stage, cache)
                 encoder = "libx264"
+                video_file, video_command = render_video_only(encoder)
+
+            stage = "muxing"
+            emit("muxing video and AAC narration")
+            mux_command = [info["ffmpeg"], "-y", "-i", str(video_file), "-i", str(audio_file),
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "copy",
+                "-t", str(end_seconds), "-movflags", "+faststart", str(partial)]
+            _write_json(cache / "finalizing-plan.json", {
+                "argv": audio_actual_command, "filter_complex": audio_filter,
+                "audio_cache_hit": audio_actual_command is None,
+                "audio_path": str(audio_file),
+                "video_argv": video_command, "video_cache_hit": video_command is None,
+                "video_path": str(video_file), "mux_argv": mux_command,
+                "audio_blocks": [{"segment_id": block.segment_id, "section": block.section.value,
+                    "start_ms": block.start_ms, "end_ms": block.end_ms,
+                    "wav_path": block.audio_path} for block in timeline.blocks],
+                "intros": [{"section": intro.section.value, "start_ms": intro.start_ms,
+                    "end_ms": intro.end_ms, "media_id": intro.media_id} for intro in timeline.intros],
+            })
+            try:
+                self._run(mux_command, stage, cache)
+                self._verify_packet_timestamps(info["ffprobe"], partial)
+                self._verify_packet_timestamps(info["ffprobe"], partial, "v:0")
+            except Exception as exc:
+                if partial.is_file():
+                    diagnostic_video = self._keep_narration_diagnostic(
+                        partial, output_dir, cache, info["ffmpeg"], exc)
+                    raise ValueError(f"{exc}; video chẩn đoán: {diagnostic_video}") from exc
+                raise
             stage = "verifying-intro-narration"
             emit("verifying intro narration")
             try:

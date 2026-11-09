@@ -146,7 +146,7 @@ def test_failed_final_render_keeps_mp4_audio_report_logs_and_caches(tmp_path):
     class BrokenMixRenderer(RenderService):
         def _run(self, command, stage, log_dir):
             super()._run(command, stage, log_dir)
-            if stage == "finalizing":
+            if stage == "muxing":
                 partial = Path(command[-1])
                 muted = partial.with_name("muted.mp4")
                 subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(partial),
@@ -161,6 +161,8 @@ def test_failed_final_render_keeps_mp4_audio_report_logs_and_caches(tmp_path):
     assert (diagnostic / "suspected-narration.mp4").is_file()
     assert (diagnostic / "suspected-interval.wav").is_file()
     assert (diagnostic / "ffmpeg-finalizing.log").is_file()
+    assert (diagnostic / "ffmpeg-audio-mixing.log").is_file()
+    assert (diagnostic / "ffmpeg-muxing.log").is_file()
     plan = json.loads((diagnostic / "finalizing-plan.json").read_text(encoding="utf-8"))
     assert plan["audio_blocks"][0]["start_ms"] == plan["intros"][0]["start_ms"] == 0
     assert "concat=" in plan["filter_complex"] and "[narration]" in plan["filter_complex"]
@@ -169,3 +171,11 @@ def test_failed_final_render_keeps_mp4_audio_report_logs_and_caches(tmp_path):
     assert report["windows"] and report["source_wavs"]
     assert list((directory / "generated/cache/render").glob("*.mp4"))
     assert Path(project.audio_records[0].path).is_file()
+    cache = directory / "generated/cache/render"
+    reusable = list(cache.glob("video-*.mp4")) + list(cache.glob("audio-*.m4a"))
+    assert len(reusable) == 2
+    timestamps = {path: path.stat().st_mtime_ns for path in reusable}
+    repaired = RenderService().render_preview(project, timeline, directory,
+        settings=RenderSettings(960, 540, 30, 28, "veryfast"), overwrite=True)
+    assert repaired.is_file()
+    assert all(path.stat().st_mtime_ns == timestamp for path, timestamp in timestamps.items())

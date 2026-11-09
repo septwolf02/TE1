@@ -85,7 +85,8 @@ def test_p2_49429ms_intro_and_all_section_audio_boundaries(tmp_path):
     assert output.is_file()
     plan = json.loads((directory / "generated/cache/render/finalizing-plan.json").read_text(encoding="utf-8"))
     assert "concat=n=12:v=0:a=1[narration]" in plan["filter_complex"]
-    assert "[1:a]adelay=" not in plan["filter_complex"]
+    assert "[0:a]adelay=" not in plan["filter_complex"]
+    assert "-c:a" in plan["mux_argv"] and "copy" in plan["mux_argv"]
     for intro in timeline.intros:
         block = next(block for block in timeline.blocks if block.section == intro.section)
         assert intro.start_ms == block.start_ms
@@ -119,10 +120,12 @@ def test_p2_49429ms_intro_and_all_section_audio_boundaries(tmp_path):
     # project timeline boundary. The visual clip cache must remain reusable.
     clips = {path: path.stat().st_mtime_ns for path in
              (directory / "generated/cache/render").glob("*.mp4") if path.name != "visual.mp4"}
+    for cached_audio in (directory / "generated/cache/render").glob("audio-*.m4a"):
+        cached_audio.unlink()
 
     class OffsetInputRenderer(RenderService):
         def _run(self, command, stage, log_dir):
-            if stage == "finalizing":
+            if stage == "audio-mixing":
                 command = command.copy()
                 path_index = command.index(p2.audio_path)
                 command[path_index - 1:path_index - 1] = ["-itsoffset", "4.5"]
