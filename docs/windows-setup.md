@@ -162,6 +162,8 @@ Start-Process (Join-Path $diagnostic 'suspected-narration.mp4')
 
 If font discovery fails, choose an installed Japanese `.otf`, `.ttf` or `.ttc` file in **File phông Nhật**. For example, Noto Sans CJK JP can be installed under `C:\Windows\Fonts` or `%LOCALAPPDATA%\Microsoft\Windows\Fonts`. The saved font path is project-local. The editor refuses stale narration, unavailable images/intros, unconfirmed KEYs and KEY/intro timing conflicts. The intro plays muted over the beginning of narration; it does not delay the voice. Image motion and section transition presets are applied during rendering. The GUI stays responsive and shows progress; only one production action runs at a time.
 
+FFmpeg subtitle paths are escaped for Windows drive letters, spaces and Japanese/Vietnamese project names. To check this and the AAC timestamp regression on your own Windows machine, run `.\.venv\Scripts\python.exe -m pytest tests\test_aac_timestamp_regression.py tests\test_large_subtitle_frames.py -q`. The old combined-graph part of the regression test runs fully; its historical DTS warning is only asserted when that FFmpeg build reproduces it. The independent video/audio mux must pass on every build.
+
 To inspect the finished file from PowerShell (replace the path with the one shown in TE Studio):
 
 ```powershell

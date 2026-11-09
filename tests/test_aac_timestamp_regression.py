@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import wave
 
@@ -13,7 +13,7 @@ import pytest
 from te.media import MediaAssignmentService, MediaLibraryService
 from te.project import ProjectManager, SectionName
 from te.render import RenderService, RenderSettings
-from te.render.service import RenderError
+from te.render.service import RenderError, _ass_filter
 from te.timeline import TimelineService
 from te.tts import SentenceSpeechService, TTSService
 
@@ -41,13 +41,25 @@ class LongVoice:
                 stream.writeframes(data)
 
 
+def test_ass_filter_escapes_windows_drive_spaces_and_unicode():
+    path = PureWindowsPath(r"C:\Users\chien\Thư mục 日本\O'Connor\captions.ass")
+    filter_text = _ass_filter(path, path.parent)
+    assert "C\\\\:/Users/chien/" in filter_text
+    assert "Thư\\ mục\\ 日本" in filter_text
+    assert "O\\\\\\'Connor" in filter_text
+    assert ":fontsdir=" in filter_text
+    assert r"\Users\chien" not in filter_text
+
+
 def test_video_filter_reconfiguration_cannot_reset_aac_timestamps(tmp_path):
     """Reproduce the old combined-graph failure, then verify independent streams."""
     ffmpeg = RenderService.check_ffmpeg()["ffmpeg"]
     ffprobe = RenderService.check_ffmpeg()["ffprobe"]
+    media_dir = tmp_path / "nguồn video 日本"
+    media_dir.mkdir()
     clips = []
     for index, color_space in enumerate(("bt709", "smpte170m")):
-        clip = tmp_path / f"clip-{index}.mp4"
+        clip = media_dir / f"clip-{index}.mp4"
         subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
             f"color=c={'blue' if index == 0 else 'red'}:s=160x90:r=10:d=5",
             "-vf", f"setparams=range=tv:color_primaries={color_space}:"
@@ -57,7 +69,7 @@ def test_video_filter_reconfiguration_cannot_reset_aac_timestamps(tmp_path):
             capture_output=True, check=True)
         clips.append(clip)
     list_file = tmp_path / "concat.txt"
-    list_file.write_text("".join(f"file '{clip}'\n" for clip in clips), encoding="utf-8")
+    list_file.write_text("".join(f"file '{clip.as_posix()}'\n" for clip in clips), encoding="utf-8")
     visual = tmp_path / "visual.mp4"
     subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "concat", "-safe", "0",
         "-i", str(list_file), "-c", "copy", str(visual)], capture_output=True, check=True)
@@ -68,7 +80,9 @@ def test_video_filter_reconfiguration_cannot_reset_aac_timestamps(tmp_path):
             f"sine=frequency={330 + index * 50}:duration=5", "-c:a", "pcm_s16le", str(wav)],
             capture_output=True, check=True)
         wavs.append(wav)
-    ass = tmp_path / "captions.ass"
+    ass_dir = tmp_path / "Thư mục: O'Connor 日本"
+    ass_dir.mkdir()
+    ass = ass_dir / "captions.ass"
     ass.write_text("[Script Info]\nScriptType: v4.00+\nPlayResX: 160\nPlayResY: 90\n"
         "[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,"
         "OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,"
@@ -83,15 +97,24 @@ def test_video_filter_reconfiguration_cannot_reset_aac_timestamps(tmp_path):
     old = tmp_path / "old-combined.mp4"
     combined = [ffmpeg, "-hide_banner", "-y", "-i", str(visual), "-i", str(wavs[0]),
         "-i", str(wavs[1]), "-filter_complex",
-        f"[0:v]ass=filename='{ass}'[v];{audio_graph}", "-map", "[v]", "-map", "[a]",
+        f"[0:v]{_ass_filter(ass, ass_dir)}[v];{audio_graph}", "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-c:a", "aac", "-t", "10", str(old)]
-    with pytest.raises(RenderError, match="Render failed during muxing"):
-        RenderService()._run(combined, "muxing", tmp_path)
-    old_log = (tmp_path / "muxing.log").read_text(encoding="utf-8")
-    assert "Reconfiguring filter graph" in old_log
-    assert "Queue input is backward in time" in old_log
-    assert "Non-monotonic DTS" in old_log
-    assert RenderService._rms(RenderService._pcm_slice(ffmpeg, old, 5500, 400)) < 100
+    legacy = subprocess.run(combined, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    assert legacy.returncode == 0, legacy.stderr[-800:]
+    old_log = legacy.stderr
+    assert "No option name near" not in old_log and "Invalid argument" not in old_log
+    assert old.is_file()
+    assert RenderService._rms(RenderService._pcm_slice(ffmpeg, old, 500, 400)) > 1000
+    old_timestamp_bug = any(phrase in old_log for phrase in
+        ("Queue input is backward in time", "Non-monotonic DTS", "Non-monotonous DTS"))
+    if old_timestamp_bug:
+        assert "Reconfiguring filter graph" in old_log
+        with pytest.raises(RenderError):
+            RenderService()._run(combined, "muxing", tmp_path)
+    else:
+        RenderService._verify_packet_timestamps(ffprobe, old)
+        assert RenderService._rms(RenderService._pcm_slice(ffmpeg, old, 5500, 400)) > 1000
 
     audio = tmp_path / "separate-audio.m4a"
     video = tmp_path / "separate-video.mp4"
@@ -100,7 +123,7 @@ def test_video_filter_reconfiguration_cannot_reset_aac_timestamps(tmp_path):
         "-filter_complex", audio_graph.replace("[1:a]", "[0:a]").replace("[2:a]", "[1:a]"),
         "-map", "[a]", "-c:a", "aac", str(audio)], "audio-mixing", tmp_path)
     RenderService()._run([ffmpeg, "-y", "-i", str(visual), "-an", "-vf",
-        f"ass=filename='{ass}'", "-c:v", "libx264", str(video)], "finalizing", tmp_path)
+        _ass_filter(ass, ass_dir), "-c:v", "libx264", str(video)], "finalizing", tmp_path)
     RenderService()._run([ffmpeg, "-y", "-i", str(video), "-i", str(audio),
         "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", str(finished)],
         "muxing", tmp_path)

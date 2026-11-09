@@ -10,6 +10,7 @@ import pytest
 
 from te.project import ProjectManager
 from te.render import RenderService, RenderSettings
+from te.render.service import _ass_filter
 
 
 @pytest.mark.parametrize("length", [50, 100, 220])
@@ -42,11 +43,11 @@ def test_large_caption_is_visible_within_frame(tmp_path, width, height):
     assert f"Style: Normal,{font},{round(156 * height / 1080)}," in ass
     assert ass.count("Dialogue: 0,") > 1
     ffmpeg = RenderService.check_ffmpeg()["ffmpeg"]
-    font_dir = f":fontsdir='{font_path.parent}'" if font_path else ""
     frame = tmp_path / f"caption-{width}.png"
     subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
         f"color=c=black:s={width}x{height}:d=0.2", "-vf",
-        f"ass=filename='{script}'{font_dir}", "-frames:v", "1", str(frame)],
+        _ass_filter(script, font_path.parent if font_path else None),
+        "-frames:v", "1", str(frame)],
         capture_output=True, check=True)
     with Image.open(frame) as image:
         pixels = image.convert("RGB")

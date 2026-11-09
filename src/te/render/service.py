@@ -62,6 +62,25 @@ class _VisualEvent:
     is_key: bool = False
 
 
+def _escape_filter_path(path: Path) -> str:
+    """Escape a path through FFmpeg's option parser and outer filtergraph parser.
+
+    FFmpeg sees both layers even when subprocess passes one argv item. A Windows
+    drive colon therefore needs two escaping passes; quoting only once is unsafe.
+    """
+    value = path.as_posix()
+    def escape(text: str, special: str) -> str:
+        return "".join("\\" + char if char in special else char for char in text)
+    return escape(escape(value, "\\':"), "\\'[],; \t")
+
+
+def _ass_filter(path: Path, fonts_dir: Path | None = None) -> str:
+    result = "ass=filename=" + _escape_filter_path(path)
+    if fonts_dir is not None:
+        result += ":fontsdir=" + _escape_filter_path(fonts_dir)
+    return result
+
+
 class RenderService:
     def __init__(self):
         self._cancel = Event()
@@ -588,7 +607,7 @@ class RenderService:
                     self._run(command, stage, cache)
                 used.append(clip)
             concat_list = cache / "concat.txt"
-            concat_list.write_text("".join(f"file '{str(path).replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'\n" for path in used), encoding="utf-8")
+            concat_list.write_text("".join(f"file '{path.as_posix().replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'\n" for path in used), encoding="utf-8")
             visual = cache / "visual.mp4"
             self._run([info["ffmpeg"], "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
                        "-c", "copy", str(visual)], "concatenating", cache)
@@ -674,12 +693,7 @@ class RenderService:
                 emit("burning subtitles")
                 font_family, font_path = self._resolve_font(settings)
                 self._write_ass(project, timeline, ass, settings, font_family)
-                filter_path = str(ass).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-                font_dir = ""
-                if font_path:
-                    directory_path = str(font_path.parent).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-                    font_dir = f":fontsdir='{directory_path}'"
-                video_filter += f",ass=filename='{filter_path}'{font_dir}"
+                video_filter += "," + _ass_filter(ass, font_path.parent if font_path else None)
 
             def video_command_for(selected_encoder: str, destination: Path) -> list[str]:
                 command = [info["ffmpeg"], "-y", "-i", str(visual), "-an", "-vf", video_filter,
