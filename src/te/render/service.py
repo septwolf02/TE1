@@ -376,6 +376,9 @@ class RenderService:
         final_log = cache / "finalizing.log"
         if final_log.is_file():
             shutil.copyfile(final_log, folder / "ffmpeg-finalizing.log")
+        plan = cache / "finalizing-plan.json"
+        if plan.is_file():
+            shutil.copyfile(plan, folder / "finalizing-plan.json")
         if windows:
             suspect = next((item for item in windows if not item["matched"]), windows[0])
             excerpt = folder / "suspected-interval.wav"
@@ -567,26 +570,49 @@ class RenderService:
             emit("mixing audio")
             command = [info["ffmpeg"], "-y", "-i", str(visual)]
             filters = []
-            audio_labels = []
+            narration_labels = []
             input_index = 1
+            cursor_ms = 0
             for block in timeline.blocks:
+                if block.start_ms < cursor_ms or block.end_ms <= block.start_ms:
+                    raise ValueError(f"Khối lời đọc chồng lấn hoặc không hợp lệ: {block.segment_id}")
+                if block.start_ms > cursor_ms:
+                    gap = (block.start_ms - cursor_ms) / 1000
+                    label = f"gap{len(narration_labels)}"
+                    filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={gap},asetpts=PTS-STARTPTS[{label}]")
+                    narration_labels.append(f"[{label}]")
                 command += ["-i", block.audio_path]
-                filters.append(f"[{input_index}:a]adelay={block.start_ms}:all=1[n{input_index}]")
-                audio_labels.append(f"[n{input_index}]")
+                duration = (block.end_ms - block.start_ms) / 1000
+                label = f"voice{input_index}"
+                # Reset each WAV's PTS and fix its exact timeline length before concat.
+                # This avoids FFmpeg mixing dozens of independently delayed inputs.
+                filters.append(f"[{input_index}:a]aresample=48000,aformat=channel_layouts=stereo,"
+                    f"asetpts=PTS-STARTPTS,apad,atrim=duration={duration},"
+                    f"asetpts=PTS-STARTPTS[{label}]")
+                narration_labels.append(f"[{label}]")
+                cursor_ms = block.end_ms
                 input_index += 1
+            filters.append("".join(narration_labels) +
+                           f"concat=n={len(narration_labels)}:v=0:a=1[narration]")
+            audio_labels = ["[narration]"]
             for music in timeline.music:
                 section = TimelineService.get_section_range(timeline, music.section)
                 if not section:
                     continue
                 command += ["-stream_loop", "-1", "-i", music.path]
                 duration = (section[1] - section[0]) / 1000
-                filters.append(f"[{input_index}:a]atrim=0:{duration},asetpts=PTS-STARTPTS,volume={music.volume},"
+                filters.append(f"[{input_index}:a]aresample=48000,aformat=channel_layouts=stereo,"
+                               f"atrim=duration={duration},asetpts=PTS-STARTPTS,volume={music.volume},"
                                f"afade=t=in:st=0:d={music.fade_in_ms/1000},"
                                f"afade=t=out:st={max(0,duration-music.fade_out_ms/1000)}:d={music.fade_out_ms/1000},"
                                f"adelay={section[0]}:all=1[m{input_index}]")
                 audio_labels.append(f"[m{input_index}]")
                 input_index += 1
-            filters.append("".join(audio_labels) + f"amix=inputs={len(audio_labels)}:duration=longest:normalize=0[aout]")
+            if len(audio_labels) == 1:
+                filters.append("[narration]anull[aout]")
+            else:
+                filters.append("".join(audio_labels) +
+                               f"amix=inputs={len(audio_labels)}:duration=first:normalize=0[aout]")
             ass = cache / "captions.ass"
             if timeline.captions:
                 emit("burning subtitles")
@@ -612,6 +638,17 @@ class RenderService:
             command += [
                         "-pix_fmt", "yuv420p", "-r", str(settings.fps), "-c:a", "aac", "-b:a", "192k",
                         "-t", str(max(end for _, end, _, _ in events) / 1000), "-movflags", "+faststart", str(partial)]
+            def save_audio_plan(actual_command: list[str]) -> None:
+                _write_json(cache / "finalizing-plan.json", {
+                    "argv": actual_command,
+                    "filter_complex": actual_command[actual_command.index("-filter_complex") + 1],
+                    "audio_blocks": [{"segment_id": block.segment_id, "section": block.section.value,
+                        "start_ms": block.start_ms, "end_ms": block.end_ms,
+                        "wav_path": block.audio_path} for block in timeline.blocks],
+                    "intros": [{"section": intro.section.value, "start_ms": intro.start_ms,
+                        "end_ms": intro.end_ms, "media_id": intro.media_id} for intro in timeline.intros],
+                })
+            save_audio_plan(command)
             try:
                 self._run(command, stage, cache)
             except RenderError:
@@ -625,6 +662,7 @@ class RenderService:
                     "-crf", str(settings.crf)]
                 bitrate_index = cpu.index("-b:v")
                 del cpu[bitrate_index:bitrate_index + 2]
+                save_audio_plan(cpu)
                 self._run(cpu, stage, cache)
                 encoder = "libx264"
             stage = "verifying-intro-narration"

@@ -161,6 +161,9 @@ def test_failed_final_render_keeps_mp4_audio_report_logs_and_caches(tmp_path):
     assert (diagnostic / "suspected-narration.mp4").is_file()
     assert (diagnostic / "suspected-interval.wav").is_file()
     assert (diagnostic / "ffmpeg-finalizing.log").is_file()
+    plan = json.loads((diagnostic / "finalizing-plan.json").read_text(encoding="utf-8"))
+    assert plan["audio_blocks"][0]["start_ms"] == plan["intros"][0]["start_ms"] == 0
+    assert "concat=" in plan["filter_complex"] and "[narration]" in plan["filter_complex"]
     report = json.loads((diagnostic / "narration-verification.json").read_text(encoding="utf-8"))
     assert report["section"] == "P1" and report["reason"] == "output_silent"
     assert report["windows"] and report["source_wavs"]
