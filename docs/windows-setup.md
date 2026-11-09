@@ -145,10 +145,19 @@ In the editor, open an existing project or enter Japanese narration in P1–P4, 
 
 **Cỡ chữ phụ đề** sets the subtitle size in Full HD pixels (default 156); Preview scales it to half size. TE limits Japanese characters per line to the actual frame width, keeps at most two lines, and divides longer sentences into consecutive captions using the measured WAV timing. This editor setting is saved per project; older projects without the setting receive the new default. **Xáo trộn lại ảnh** changes the saved project seed and reassigns only unlocked automatic ordinary images. KEY images, intro clips, scripts and manual or locked assignments stay fixed. Rendering the same project again without clicking this button keeps its image sequence. New projects receive independent random seeds; existing projects with seed `0` keep their saved sequence until manually reshuffled.
 
-Intro source audio is muted. After FFmpeg renders, TE compares the output MP4 audio against the expected narration WAV during each enabled P1–P4 intro and just after its boundary. A silent VOICEVOX WAV is regenerated; if narration is still silent or missing from the MP4, the export fails with the affected section instead of publishing a silent video. Preview and Full HD use this check. To exercise the synthetic-audio regression locally, run:
+Intro source audio is muted. After FFmpeg renders, TE compares several meaningful speech intervals against the expected narration WAV during each enabled P1–P4 intro and just after its boundary. The check allows AAC delay and an isolated low-correlation interval, but rejects actual silence, sustained missing speech, or an intro whose speech cannot be confirmed. A silent VOICEVOX WAV is regenerated. If verification fails, the error gives a path under the project's `generated\output\diagnostics\` folder. That folder retains `suspected-narration.mp4`, `suspected-interval.wav`, `narration-verification.json` (source/output levels and correlations), and `ffmpeg-finalizing.log`. The WAV and cached video clips remain available for a retry. Preview and Full HD use the same check. To exercise the synthetic-audio regression locally, run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_intro_narration_audio.py tests\test_large_subtitle_frames.py tests\test_studio.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_narration_verification.py tests\test_intro_narration_audio.py -q
+```
+
+For a failed render, copy the diagnostic path printed by TE Studio and inspect it in PowerShell:
+
+```powershell
+$diagnostic = 'D:\TE-Projects\YOUR-PROJECT\generated\output\diagnostics\YOUR-DIAGNOSTIC-FOLDER'
+Get-Content (Join-Path $diagnostic 'narration-verification.json') -Encoding UTF8
+ffprobe -v error -show_entries format=duration:stream=codec_name -of json (Join-Path $diagnostic 'suspected-narration.mp4')
+Start-Process (Join-Path $diagnostic 'suspected-narration.mp4')
 ```
 
 If font discovery fails, choose an installed Japanese `.otf`, `.ttf` or `.ttc` file in **File phông Nhật**. For example, Noto Sans CJK JP can be installed under `C:\Windows\Fonts` or `%LOCALAPPDATA%\Microsoft\Windows\Fonts`. The saved font path is project-local. The editor refuses stale narration, unavailable images/intros, unconfirmed KEYs and KEY/intro timing conflicts. The intro plays muted over the beginning of narration; it does not delay the voice. Image motion and section transition presets are applied during rendering. The GUI stays responsive and shows progress; only one production action runs at a time.

@@ -14,6 +14,7 @@ import subprocess
 import wave
 from threading import Event
 from typing import Callable
+from uuid import uuid4
 
 from te.project.manager import _write_json
 from te.project.models import MediaType, Project
@@ -26,6 +27,15 @@ class RenderError(RuntimeError):
     def __init__(self, stage: str, command: list[str], stderr: str):
         super().__init__(f"Render failed during {stage}: {stderr[-600:]}")
         self.stage, self.command, self.stderr = stage, command, stderr
+
+
+class NarrationVerificationError(ValueError):
+    def __init__(self, section: str, reason: str, windows: list[dict], source_paths: list[str]):
+        detail = ("MP4 thực sự im lặng" if reason == "output_silent" else
+                  "WAV không có khoảng lời nói rõ" if reason == "source_silent" else
+                  "không xác nhận được lời đọc trong MP4")
+        super().__init__(f"Intro {section}: {detail}")
+        self.section, self.reason, self.windows, self.source_paths = section, reason, windows, source_paths
 
 
 @dataclass(frozen=True)
@@ -161,63 +171,95 @@ class RenderService:
         return samples
 
     @staticmethod
-    def _similar_voice(source: array, output: array) -> bool:
-        length = min(len(source), len(output) - 80)
-        if length < 800:
-            return False
-        source = source[:length]
-        energy = sum(value * value for value in source)
-        if energy / length < 50 * 50:
-            return False
-        # AAC introduces a small encoder delay. Search around the expected audio position.
-        for shift in range(-240, 241, 16):
-            left = max(0, shift)
-            right = max(0, -shift)
-            count = length - left - right
-            if count <= 0:
+    def _voice_score(source: array, output: array, expected: int, max_shift: int = 1600) -> tuple[float, int]:
+        """Best normalized waveform match, allowing AAC priming and local timing drift."""
+        if len(source) < 1200:
+            return 0.0, 0
+        source_energy = sum(value * value for value in source)
+        if source_energy / len(source) < 50 * 50:
+            return 0.0, 0
+        best, best_shift = 0.0, 0
+        for shift in range(-max_shift, max_shift + 1, 80):
+            start = expected + shift
+            if start < 0 or start + len(source) > len(output):
                 continue
-            dot = sum(source[right + i] * output[left + i] for i in range(count))
-            out_energy = sum(output[left + i] ** 2 for i in range(count))
-            if out_energy and dot / math.sqrt(energy * out_energy) > 0.12:
-                return True
-        return False
+            candidate = output[start:start + len(source)]
+            output_energy = sum(value * value for value in candidate)
+            if not output_energy:
+                continue
+            dot = sum(a * b for a, b in zip(source, candidate))
+            score = dot / math.sqrt(source_energy * output_energy)
+            if score > best:
+                best, best_shift = score, shift
+        return best, best_shift
+
+    @staticmethod
+    def _similar_voice(source: array, output: array) -> bool:
+        return RenderService._voice_score(source, output, 0, min(1600, max(0, len(output) - len(source))))[0] >= 0.12
+
+    @staticmethod
+    def _rms(samples: array) -> float:
+        return math.sqrt(sum(value * value for value in samples) / len(samples)) if samples else 0.0
 
     def _verify_intro_narration(self, project: Project, timeline: Timeline, output: Path, ffmpeg: str) -> None:
-        """Check the actual MP4 contains narration correlated with source WAV during each intro."""
+        """Check speech energy and several longer AAC matches, allowing an isolated mismatch."""
         segments = {segment.id: segment for segment in project.segments}
         for intro in timeline.intros:
-            speech_windows = 0
             section_end = max(block.end_ms for block in timeline.blocks if block.section == intro.section)
             check_end = min(section_end, intro.end_ms + 300)
-            audible_all = self._pcm_slice(ffmpeg, output, intro.start_ms, check_end - intro.start_ms + 40)
+            pad = min(250, intro.start_ms)
+            decoded_start = intro.start_ms - pad
+            audible_all = self._pcm_slice(ffmpeg, output, decoded_start,
+                                          check_end - decoded_start + 250)
+            results: list[dict] = []
+            source_paths: list[str] = []
+            real_blocks = 0
             for block in timeline.blocks:
                 segment = segments[block.segment_id]
                 if block.section != intro.section:
                     continue
                 if (segment.tts_override or project.tts_settings).provider == "fake":
                     continue  # The deterministic fake provider deliberately generates silence.
+                real_blocks += 1
                 overlap_start = max(intro.start_ms, block.start_ms)
                 overlap_end = min(check_end, block.end_ms)
-                if overlap_end - overlap_start < 180:
+                if overlap_end - overlap_start < 300:
                     continue
+                source_paths.append(block.audio_path)
                 source_all = self._pcm_slice(ffmpeg, Path(block.audio_path),
                     overlap_start - block.start_ms, overlap_end - overlap_start)
-                for start in range(overlap_start, overlap_end - 179, 160):
-                    duration = min(240, overlap_end - start)
+                for start in range(overlap_start, overlap_end - 299, 500):
+                    duration = min(700, overlap_end - start)
                     source_offset = round((start - overlap_start) * 8)
-                    output_offset = round((start - intro.start_ms) * 8)
+                    output_offset = round((start - decoded_start) * 8)
                     source = source_all[source_offset:source_offset + duration * 8]
-                    if not source or sum(value * value for value in source) / len(source) < 50 * 50:
+                    source_rms = self._rms(source)
+                    if source_rms < 150:
                         continue
-                    speech_windows += 1
-                    audible = audible_all[output_offset:output_offset + (duration + 40) * 8]
-                    if not self._similar_voice(source, audible):
-                        raise ValueError(f"Intro {intro.section.value}: video MP4 thiếu lời đọc gần mốc {start} ms")
-            if not speech_windows and all((segments[block.segment_id].tts_override or project.tts_settings).provider == "fake"
-                                          for block in timeline.blocks if block.section == intro.section):
+                    audible = audible_all[output_offset:output_offset + duration * 8]
+                    output_rms = self._rms(audible)
+                    score, shift = self._voice_score(source, audible_all, output_offset)
+                    results.append({"start_ms": start, "duration_ms": duration,
+                        "source_rms": round(source_rms, 1), "output_rms": round(output_rms, 1),
+                        "correlation": round(score, 3), "shift_ms": round(shift / 8),
+                        "matched": score >= 0.12})
+            if not real_blocks:
                 continue
-            if not speech_windows:
-                raise ValueError(f"Intro {intro.section.value}: WAV không có lời đọc trong intro")
+            if not results:
+                raise NarrationVerificationError(intro.section.value, "source_silent", results, source_paths)
+            # Near-zero output is stronger evidence than correlation: fail even for one long interval.
+            if any(item["output_rms"] < max(50, item["source_rms"] * 0.04) for item in results):
+                raise NarrationVerificationError(intro.section.value, "output_silent", results, source_paths)
+            matches = sum(item["matched"] for item in results)
+            longest_miss = miss = 0
+            for item in results:
+                miss = 0 if item["matched"] else miss + 1
+                longest_miss = max(longest_miss, miss)
+            # Two adjacent 700 ms speech windows indicate a sustained loss; one
+            # mismatched window can be an AAC/music artefact and is diagnostic only.
+            if matches == 0 or (len(results) >= 3 and
+                                (longest_miss >= 2 or matches / len(results) < 0.35)):
+                raise NarrationVerificationError(intro.section.value, "low_similarity", results, source_paths)
 
     def validate_render_inputs(self, project: Project, timeline: Timeline, settings: RenderSettings) -> tuple[str, ...]:
         self.check_ffmpeg()
@@ -314,6 +356,36 @@ class RenderService:
                 raise RenderError(stage, command, "Cancelled" if self._cancel.is_set() else stderr)
         finally:
             self._process = None
+
+    @staticmethod
+    def _keep_narration_diagnostic(partial: Path, output_dir: Path, cache: Path,
+                                   ffmpeg: str, error: Exception) -> Path:
+        folder = output_dir / "diagnostics" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                                                  + "-" + uuid4().hex[:8])
+        folder.mkdir(parents=True)
+        video = folder / "suspected-narration.mp4"
+        os.replace(partial, video)
+        windows = error.windows if isinstance(error, NarrationVerificationError) else []
+        _write_json(folder / "narration-verification.json", {
+            "error": str(error), "reason": getattr(error, "reason", "verification_error"),
+            "section": getattr(error, "section", None), "windows": windows,
+            "source_wavs": getattr(error, "source_paths", []),
+            "video": str(video), "sample_rate_hz": 8000,
+            "correlation_threshold": 0.12,
+        })
+        final_log = cache / "finalizing.log"
+        if final_log.is_file():
+            shutil.copyfile(final_log, folder / "ffmpeg-finalizing.log")
+        if windows:
+            suspect = next((item for item in windows if not item["matched"]), windows[0])
+            excerpt = folder / "suspected-interval.wav"
+            result = subprocess.run([ffmpeg, "-v", "error", "-y", "-ss",
+                str(max(0, suspect["start_ms"] - 400) / 1000), "-i", str(video),
+                "-t", "2", "-vn", "-c:a", "pcm_s16le", str(excerpt)],
+                capture_output=True)
+            (folder / "audio-excerpt.log").write_text(
+                result.stderr.decode("utf-8", errors="replace"), encoding="utf-8")
+        return video
 
     @staticmethod
     def _visual_filter(effect: str, width: int, height: int, fps: int, frames: int) -> str:
@@ -441,6 +513,7 @@ class RenderService:
             return math.ceil(position) if ms in key_starts else round(position)
         used: list[Path] = []
         stage = "preparing"
+        diagnostic_video: Path | None = None
         try:
             for index, (start, end, kind, event) in enumerate(events, 1):
                 stage = f"segment-{index}"
@@ -554,8 +627,14 @@ class RenderService:
                 del cpu[bitrate_index:bitrate_index + 2]
                 self._run(cpu, stage, cache)
                 encoder = "libx264"
+            stage = "verifying-intro-narration"
             emit("verifying intro narration")
-            self._verify_intro_narration(project, timeline, partial, info["ffmpeg"])
+            try:
+                self._verify_intro_narration(project, timeline, partial, info["ffmpeg"])
+            except Exception as exc:
+                diagnostic_video = self._keep_narration_diagnostic(
+                    partial, output_dir, cache, info["ffmpeg"], exc)
+                raise ValueError(f"{exc}; video chẩn đoán: {diagnostic_video}") from exc
             os.replace(partial, output)
             emit("completed")
             return output
@@ -573,4 +652,5 @@ class RenderService:
                 "audio_codec": "aac", "pixel_format": "yuv420p",
                 "settings": asdict(settings), "ffmpeg_version": info["version"], "status": self._status,
                 "stage": stage,
+                "diagnostic_video": str(diagnostic_video) if diagnostic_video else None,
             })

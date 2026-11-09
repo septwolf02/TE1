@@ -67,7 +67,7 @@ def test_rendered_p2_intro_without_voice_is_rejected(tmp_path):
     subprocess.run([info["ffmpeg"], "-v", "error", "-y", "-i", str(output),
         "-af", filter_audio, "-c:v", "copy", "-c:a", "aac", str(muted)],
         capture_output=True, check=True)
-    with pytest.raises(ValueError, match="Intro P2: video MP4 thiếu lời đọc"):
+    with pytest.raises(ValueError, match="Intro P2: MP4 thực sự im lặng"):
         RenderService()._verify_intro_narration(project, timeline, muted, info["ffmpeg"])
 
 
