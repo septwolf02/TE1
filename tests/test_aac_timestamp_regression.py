@@ -1,4 +1,4 @@
-"""Real FFmpeg regression for the reported 49.429 s / 270.427 s two-section render."""
+﻿"""Real FFmpeg regression for the reported 49.429 s / 270.427 s two-section render."""
 from __future__ import annotations
 
 import math
@@ -80,7 +80,7 @@ def test_video_filter_reconfiguration_cannot_reset_aac_timestamps(tmp_path):
             f"sine=frequency={330 + index * 50}:duration=5", "-c:a", "pcm_s16le", str(wav)],
             capture_output=True, check=True)
         wavs.append(wav)
-    ass_dir = tmp_path / "Thư mục: O'Connor 日本"
+    ass_dir = tmp_path / "Thư mục O'Connor 日本"
     ass_dir.mkdir()
     ass = ass_dir / "captions.ass"
     ass.write_text("[Script Info]\nScriptType: v4.00+\nPlayResX: 160\nPlayResY: 90\n"
@@ -195,3 +195,4 @@ def test_reported_duration_render_has_monotonic_aac_and_aligned_p2(tmp_path):
     p1_tail = RenderService._pcm_slice(ffmpeg, output, 48600, 600)
     p2_head = RenderService._pcm_slice(ffmpeg, output, 49600, 600)
     assert RenderService._rms(p1_tail) > 500 and RenderService._rms(p2_head) > 500
+
