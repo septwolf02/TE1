@@ -19,6 +19,8 @@ from te.project.models import (AssignmentType, KeyPlacement, MediaCategory, Medi
                                ScriptSegment, SectionName, TTSSettings, new_id)
 from te.tts.sentences import SentenceSpeechService
 from te.subtitles import split_japanese_sentences
+from te.studio.full_script_import import (FullScriptImportPlan, alignment_warnings,
+                                          parse_full_script)
 
 
 STUDIO_VERSION = 1
@@ -422,6 +424,79 @@ class StudioService:
     def set_section(state: StudioProject, section: SectionName, *, japanese: str,
                     vietnamese: str) -> None:
         state.sections[SectionName(section).value] = {"ja": japanese, "vi": vietnamese}
+
+    def prepare_full_script_import(self, state: StudioProject, vietnamese: str,
+                                   japanese: str) -> FullScriptImportPlan:
+        vi = parse_full_script(vietnamese)
+        ja = parse_full_script(japanese)
+        proposed = {section.value: {"vi": vi.get(section.value, ""),
+                                    "ja": ja.get(section.value, "")}
+                    for section in SectionName}
+        changed = [section.value for section in SectionName
+                   if state.sections[section.value] != proposed[section.value]]
+        overwritten = tuple(section for section in changed
+                            if any(state.sections[section].values()) and
+                            any(proposed[section].values()))
+        cleared = tuple(section for section in changed
+                        if any(state.sections[section].values()) and
+                        not any(proposed[section].values()))
+        # Older projects can contain several segments in one section. Collapse only segments
+        # without downstream references; preserve the first segment ID and referenced records.
+        trial, collapsed = self._full_import_base(state.project, proposed)
+        self._apply_sections(trial, proposed)
+        impacted = []
+        for key in state.project.key_placements:
+            old_unit = next((unit for unit in state.project.sentence_units if unit.id == key.sentence_id), None)
+            old_segment = next((segment for segment in state.project.segments
+                                if old_unit and segment.id == old_unit.segment_id), None)
+            new_key = next((item for item in trial.key_placements if item.id == key.id), None)
+            if (old_segment and old_segment.section.value in changed) or (
+                    new_key and new_key.status != key.status):
+                impacted.append(key.id)
+        warnings = list(alignment_warnings(vi, ja))
+        if impacted:
+            warnings.append(f"{len(impacted)} KEY trong phần thay đổi cần kiểm tra lại sau khi nhập.")
+        return FullScriptImportPlan(proposed, tuple(vi), tuple(ja), tuple(warnings),
+                                    overwritten, cleared, tuple(impacted), collapsed)
+
+    @staticmethod
+    def _full_import_base(project: Project, proposed: dict[str, dict[str, str]]) -> tuple[Project, tuple[str, ...]]:
+        working = deepcopy(project)
+        collapsed = []
+        for section in SectionName:
+            existing = [segment for segment in working.segments if segment.section == section]
+            if len(existing) < 2:
+                continue
+            current = _sections_from_project(working)[section.value]
+            if current == proposed[section.value]:
+                continue
+            removed = existing[1:]
+            removed_ids = {segment.id for segment in removed}
+            removed_units = {unit.id for unit in working.sentence_units if unit.segment_id in removed_ids}
+            if (any(segment.audio_ref or segment.caption_refs or segment.media_placement_refs for segment in removed)
+                    or any(item.segment_id in removed_ids for item in working.audio_records)
+                    or any(item.segment_id in removed_ids for item in working.media_assignments)
+                    or any(item.segment_id in removed_ids for item in working.subtitle_captions)
+                    or any(item.sentence_id in removed_units for item in working.key_placements)):
+                raise ValueError(f"{section.value}: có dữ liệu gắn với các đoạn cũ; hãy xử lý trước khi thay toàn phần.")
+            working.segments = [segment for segment in working.segments if segment.id not in removed_ids]
+            working.sentence_units = [unit for unit in working.sentence_units if unit.id not in removed_units]
+            working.sentence_audio_records = [item for item in working.sentence_audio_records
+                                               if item.sentence_id not in removed_units]
+            collapsed.append(section.value)
+        return working, tuple(collapsed)
+
+    def apply_full_script_import(self, state: StudioProject, plan: FullScriptImportPlan) -> None:
+        old_sections = state.sections
+        old_project = state.project
+        state.project, _ = self._full_import_base(state.project, plan.sections)
+        state.sections = deepcopy(plan.sections)
+        try:
+            self.save_project(state)
+        except Exception:
+            state.sections = old_sections
+            state.project = old_project
+            raise
 
     @staticmethod
     def vietnamese_units(state: StudioProject, section: SectionName) -> list[VietnameseUnit]:

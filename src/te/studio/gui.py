@@ -138,6 +138,8 @@ class StudioApp:
             button = ttk.Button(tabs, text=section.value, command=lambda s=section: self._switch_section(s))
             button.pack(side="left", padx=3)
             self.section_buttons[section] = button
+        ttk.Button(tabs, text="Nhập toàn bài Việt–Nhật", command=self._open_full_script_import).pack(
+            side="left", padx=12)
         ttk.Label(tabs, textvariable=self.section_status).pack(side="right")
         panel = ttk.Frame(box)
         panel.pack(fill="both", expand=True, pady=6)
@@ -154,6 +156,108 @@ class StudioApp:
             widget.bind("<MouseWheel>", lambda event, w=widget:
                 (w.yview_scroll(-int(event.delta / 120), "units"), "break")[1])
         ttk.Label(box, text="Chuyển P1–P4 không làm mất nội dung; TE không tự dịch hoặc viết lại kịch bản.").pack(anchor="w")
+
+    def _open_full_script_import(self) -> None:
+        if not self.state:
+            self._fail("Hãy tạo hoặc mở một dự án trước.")
+            return
+        self._capture_section()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Nhập toàn bài Việt–Nhật")
+        dialog.geometry("1050x760")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure((0, 1), weight=1)
+        dialog.rowconfigure(1, weight=3)
+        dialog.rowconfigure(3, weight=1)
+        ttk.Label(dialog, text="Toàn bài tiếng Việt (mỗi nhãn P1–P4 đứng riêng một dòng)").grid(
+            row=0, column=0, sticky="w", padx=10, pady=5)
+        ttk.Label(dialog, text="Toàn bài tiếng Nhật (mỗi nhãn P1–P4 đứng riêng một dòng)").grid(
+            row=0, column=1, sticky="w", padx=10, pady=5)
+        vi_box = tk.Text(dialog, wrap="word", undo=True, font=("Segoe UI", 11))
+        ja_box = tk.Text(dialog, wrap="word", undo=True, font=("Yu Gothic", 11))
+        vi_box.grid(row=1, column=0, sticky="nsew", padx=(10, 5))
+        ja_box.grid(row=1, column=1, sticky="nsew", padx=(5, 10))
+        ttk.Label(dialog, text="Xem trước nhãn, nội dung bị thay thế/xóa và cảnh báo KEY").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 2))
+        preview = tk.Text(dialog, wrap="word", state="disabled", height=10)
+        preview.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=10)
+        actions = ttk.Frame(dialog)
+        actions.grid(row=4, column=0, columnspan=2, sticky="e", padx=10, pady=10)
+        checked = None
+
+        def input_text():
+            return vi_box.get("1.0", "end-1c"), ja_box.get("1.0", "end-1c")
+
+        def show_preview(value: str) -> None:
+            preview.configure(state="normal")
+            preview.delete("1.0", "end")
+            preview.insert("1.0", value)
+            preview.configure(state="disabled")
+
+        def validate() -> None:
+            nonlocal checked
+            checked = None
+            vi, ja = input_text()
+            try:
+                plan = self.service.prepare_full_script_import(self._require_state(), vi, ja)
+            except ValueError as exc:
+                show_preview(f"Không thể chia bài: {exc}")
+                confirm.configure(state="disabled")
+                return
+            lines = [f"Bản Việt: {', '.join(plan.vietnamese_labels)}",
+                     f"Bản Nhật: {', '.join(plan.japanese_labels)}", ""]
+            for section in SECTIONS:
+                label = section.value
+                new = plan.sections[label]
+                old = self.state.sections[label]
+                action = ("xóa nội dung cũ" if label in plan.cleared else
+                          "thay thế nội dung cũ" if label in plan.overwritten else
+                          "giữ nguyên" if old == new else "thêm nội dung")
+                lines.append(f"{label}: Việt {'có' if new['vi'].strip() else 'trống'}, "
+                             f"Nhật {'có' if new['ja'].strip() else 'trống'} — {action}")
+            if plan.warnings:
+                lines.extend(("", *plan.warnings))
+            if plan.collapsed:
+                lines.append("Gộp các đoạn cũ không có dữ liệu gắn: " + ", ".join(plan.collapsed))
+            show_preview("\n".join(lines))
+            checked = (vi, ja, plan)
+            confirm.configure(state="normal")
+
+        def apply() -> None:
+            if checked is None or input_text() != checked[:2]:
+                show_preview("Nội dung đã thay đổi. Hãy bấm Kiểm tra và chia P1–P4 lần nữa.")
+                confirm.configure(state="disabled")
+                return
+            plan = checked[2]
+            if plan.overwritten or plan.cleared or plan.key_review:
+                details = []
+                if plan.overwritten:
+                    details.append("Thay thế: " + ", ".join(plan.overwritten))
+                if plan.cleared:
+                    details.append("Xóa: " + ", ".join(plan.cleared))
+                if plan.key_review:
+                    details.append(f"{len(plan.key_review)} KEY có thể cần xác nhận lại.")
+                if not messagebox.askyesno("Xác nhận thay nội dung", "\n".join(details) +
+                                           "\n\nTiếp tục nhập?", parent=dialog):
+                    return
+            try:
+                self._apply_fields()
+                self.service.apply_full_script_import(self._require_state(), plan)
+            except Exception as exc:
+                messagebox.showerror("Không thể nhập toàn bài", str(exc), parent=dialog)
+                return
+            if self._save_after:
+                self.root.after_cancel(self._save_after)
+                self._save_after = None
+            dialog.destroy()
+            self._load_state(self.state)
+            self._save_status.set("Đã nhập và lưu toàn bài Việt–Nhật")
+
+        ttk.Button(actions, text="Kiểm tra và chia P1–P4", command=validate).pack(side="left", padx=5)
+        confirm = ttk.Button(actions, text="Xác nhận nhập", command=apply, state="disabled")
+        confirm.pack(side="left", padx=5)
+        ttk.Button(actions, text="Hủy", command=dialog.destroy).pack(side="left", padx=5)
 
     def _build_keys(self) -> None:
         box = self._group("3. Ảnh KEY và câu tiết lộ")
