@@ -7,8 +7,22 @@ import json
 from te.project.models import SectionName
 
 
-ROLES = {"A": "MC / Narrator", "B": "Main story participant",
-         "C": "Commentator C", "D": "Commentator D"}
+ROLES = {"A": "MC", "B": "Nhân vật chính",
+         "C": "Bình luận C", "D": "Bình luận D"}
+
+
+def voice_label(voice: dict | None) -> str:
+    if not voice:
+        return "Chưa chọn"
+    speaker = voice.get("speaker") or voice.get("speaker_uuid") or "Không rõ giọng"
+    style = voice.get("style") or f"style #{voice['style_id']}"
+    return f"{speaker} — {style} (ID {voice['style_id']})"
+
+
+def voice_key(voice: dict | None) -> tuple[str, int] | None:
+    if not voice:
+        return None
+    return voice["speaker_uuid"], voice["style_id"]
 
 RESULT_FILTERS = ("Toàn bài", "P1", "P2", "P3", "P4")
 OPEN_QUOTES = "‘“\"「『"

@@ -20,7 +20,7 @@ Chọn một model trong danh sách của provider. **Nhanh** và **Vừa** tư�
 
 Sau Full Script Import, mở **AI phân vai**. Điền tên nhân vật A (MC), B (nhân vật chính), C và D. Chọn provider/model rồi bấm **AI phân vai** trong cửa sổ review. Một request phân tích toàn bộ P1–P4 đang có nội dung, bất kể bộ lọc kết quả đang ở **Toàn bài** hay P1–P4. Python tạo ID cho từng đoạn Việt/Nhật; AI chọn ID và Python xác định vị trí trong script. Kết quả hiển thị đoạn Việt, đoạn Nhật, vai và cảnh báo. **Chỉ cần xem lại** giúp tìm đoạn chưa rõ. Chọn dòng, chọn lại text Việt/Nhật trong hai ô và bấm **Thêm / sửa thủ công** nếu cần. Có thể thêm assignment thủ công khi offline. **Xác nhận và lưu** yêu cầu mọi assignment có vai và span Nhật.
 
-Nếu script đổi, assignment cũ được giữ và đánh dấu `stale`. Phân tích lại, hoặc dùng **Tạo mới thủ công** để xóa assignment cũ sau khi xác nhận. **Tải giọng VOICEVOX** đọc speaker/style từ engine; **Lưu giọng cho vai** lưu style ID theo vai. B1 chỉ lưu dữ liệu chuẩn bị cho B2; render hiện tại vẫn dùng một giọng.
+Nếu script đổi, assignment cũ được giữ và đánh dấu `stale`. Phân tích lại, hoặc dùng **Tạo mới thủ công** để xóa assignment cũ sau khi xác nhận. Bảng giọng có bốn hàng riêng A — MC, B — Nhân vật chính, C — Bình luận C, D — Bình luận D. Mỗi hàng hiển thị tên nhân vật, giọng đã lưu và trạng thái. **Tải giọng VOICEVOX** đọc speaker/style từ engine; chọn giọng ở hàng cần đổi, bấm **Nghe thử** nếu muốn, rồi **Lưu hàng**. Có thể dùng cùng một giọng cho nhiều vai. Vai chưa dùng không cần chọn giọng. B1 chỉ lưu dữ liệu chuẩn bị cho B2; render hiện tại vẫn dùng một giọng.
 
 ## So sánh hai provider với cùng script
 

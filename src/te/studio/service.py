@@ -21,7 +21,7 @@ from te.tts.sentences import SentenceSpeechService
 from te.subtitles import split_japanese_sentences
 from te.studio.full_script_import import (FullScriptImportPlan, alignment_warnings,
                                           parse_full_script)
-from te.studio.ai_speakers import default_speaker_data, validate_speaker_data
+from te.studio.ai_speakers import ROLES, default_speaker_data, validate_speaker_data
 
 
 STUDIO_VERSION = 1
@@ -391,6 +391,23 @@ class StudioService:
                 "speaker_data": deepcopy(speaker_data)}
         _write_json(state.directory / "studio.json", data)
         state.recovery_warning = None
+
+    def save_role_configuration(self, state: StudioProject, role: str, name: str,
+                                voice: dict | None = None) -> None:
+        """Persist one role without replacing another role's saved voice or assignments."""
+        if role not in ROLES or not isinstance(name, str) or len(name) > 120:
+            raise ValueError("Vai hoặc tên nhân vật không hợp lệ.")
+        previous = state.speaker_data
+        updated = deepcopy(previous)
+        updated["identities"][role] = name.strip()
+        if voice is not None:
+            updated["voices"][role] = deepcopy(voice)
+        state.speaker_data = validate_speaker_data(updated, state.sections)
+        try:
+            self.save_project(state)
+        except Exception:
+            state.speaker_data = previous
+            raise
 
     def rename_project(self, state: StudioProject, name: str) -> None:
         previous = state.project.name

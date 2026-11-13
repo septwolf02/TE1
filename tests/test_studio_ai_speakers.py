@@ -11,7 +11,7 @@ from te.studio.ai_auth import ChatGPTAuth, CredentialStore
 from te.studio.ai_clients import AIConnectionError, OpenAIConnection
 from te.studio.ai_speakers import (ROLES, filter_assignments, resolve_speaker_references,
                                    script_fingerprint, section_counts, segment_passages,
-                                   validate_assignments)
+                                   validate_assignments, voice_key, voice_label)
 from te.studio.service import StudioService
 
 
@@ -324,6 +324,50 @@ def test_resolved_assignment_manual_correction_survives_reopen(tmp_path):
     assert reopened.speaker_data["assignments"][0]["role"] == "A"
     assert reopened.speaker_data["assignments"][0]["source"] == "manual"
     assert reopened.speaker_data["assignments"][0]["japanese"] == [ja["start"], ja["end"]]
+
+
+def test_four_role_voices_save_reload_switch_and_edit_independently(tmp_path):
+    service = StudioService(tmp_path / "settings.json")
+    service.set_directories(tmp_path / "projects", tmp_path / "output")
+    state = service.create_project("KL4")
+    service.set_section(state, SectionName.P1, vietnamese="MC kể.", japanese="司会。")
+    service.save_project(state)
+    voices = {role: {"speaker_uuid": f"speaker-{role}", "style_id": index,
+                     "speaker": f"Giọng {role}", "style": "Normal"}
+              for index, role in enumerate(ROLES, 1)}
+    for role in ("C", "A", "D", "B"):
+        service.save_role_configuration(state, role, f"Nhân vật {role}", voices[role])
+        reopened = service.open_project(state.directory)
+        assert reopened.speaker_data["voices"][role] == voices[role]
+        assert reopened.speaker_data["identities"][role] == f"Nhân vật {role}"
+        assert reopened.speaker_data["voices"] == state.speaker_data["voices"]
+    before_assignments = deepcopy(state.speaker_data["assignments"])
+    before_voices = deepcopy(state.speaker_data["voices"])
+    service.save_role_configuration(state, "B", "Tên B mới", voices["A"])
+    reopened = service.open_project(state.directory)
+    assert reopened.speaker_data["voices"]["B"] == voices["A"]  # same style may be reused
+    assert all(reopened.speaker_data["voices"][role] == before_voices[role]
+               for role in ("A", "C", "D"))
+    assert reopened.speaker_data["assignments"] == before_assignments
+    assert reopened.speaker_data["identities"]["B"] == "Tên B mới"
+    assert reopened.speaker_data["voices"]["A"]["style_id"] == 1
+    service.save_role_configuration(reopened, "C", "Tên C mới")  # name only keeps the voice
+    assert service.open_project(state.directory).speaker_data["voices"]["C"] == voices["C"]
+    assert voice_key(voices["A"]) == ("speaker-A", 1)
+    assert voice_label(voices["A"]) == "Giọng A — Normal (ID 1)"
+
+
+def test_unused_role_needs_no_voice_and_legacy_voice_label_survives(tmp_path):
+    service = StudioService(tmp_path / "settings.json")
+    service.set_directories(tmp_path / "projects", tmp_path / "output")
+    state = service.create_project("Old project")
+    service.save_role_configuration(state, "A", "MC")
+    legacy = {"speaker_uuid": "old-uuid", "style_id": 91}
+    service.save_role_configuration(state, "D", "D", legacy)
+    reopened = service.open_project(state.directory)
+    assert set(reopened.speaker_data["voices"]) == {"D"}
+    assert voice_label(reopened.speaker_data["voices"]["D"]) == "old-uuid — style #91 (ID 91)"
+    assert ROLES == {"A": "MC", "B": "Nhân vật chính", "C": "Bình luận C", "D": "Bình luận D"}
 
 
 @pytest.mark.parametrize("body,expected", [

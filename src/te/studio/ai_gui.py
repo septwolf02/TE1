@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import tempfile
 import tkinter as tk
 from tkinter import messagebox, ttk
+from pathlib import Path
 
 from te.project.models import SectionName
 from te.studio.ai_auth import ChatGPTAuth, CredentialStore
 from te.studio.ai_clients import OpenAIConnection
 from te.studio.ai_speakers import (ROLES, filter_assignments, passage, script_fingerprint,
-                                   section_counts, validate_speaker_data)
+                                   section_counts, validate_speaker_data, voice_key, voice_label)
 from te.tts import VoicevoxProvider
 
 
@@ -188,13 +190,35 @@ class SpeakerAIController:
         dialog.geometry("1250x850")
         dialog.transient(app.root)
         dialog.grab_set()
-        top = ttk.Frame(dialog, padding=8)
-        top.pack(fill="x")
-        identities = {role: tk.StringVar(value=state.speaker_data["identities"].get(role, ROLES[role]))
-                      for role in ROLES}
-        for role in ROLES:
-            ttk.Label(top, text=f"{role} — {ROLES[role]}").pack(side="left")
-            ttk.Entry(top, textvariable=identities[role], width=16).pack(side="left", padx=4)
+        voice_table = ttk.LabelFrame(dialog, text="Giọng theo vai (lưu cho B2)", padding=8)
+        voice_table.pack(fill="x", padx=8, pady=5)
+        for column, title in enumerate(("Vai", "Tên nhân vật", "Giọng đã lưu", "Chọn giọng VOICEVOX",
+                                        "Nghe thử", "Lưu", "Trạng thái")):
+            ttk.Label(voice_table, text=title).grid(row=0, column=column, sticky="w", padx=4)
+        voice_rows = {}
+        voice_choices: dict[str, dict] = {}
+        for number, role_id in enumerate(ROLES, 1):
+            saved_voice = state.speaker_data["voices"].get(role_id)
+            name = tk.StringVar(value=state.speaker_data["identities"].get(role_id, ROLES[role_id]))
+            selected_voice = tk.StringVar(value=voice_label(saved_voice) if saved_voice else "")
+            saved_text = tk.StringVar(value=voice_label(saved_voice))
+            status = tk.StringVar(value="Đã lưu" if saved_voice else "Đã lưu • chưa chọn giọng")
+            ttk.Label(voice_table, text=f"{role_id} — {ROLES[role_id]}").grid(
+                row=number, column=0, sticky="w", padx=4, pady=3)
+            ttk.Entry(voice_table, textvariable=name, width=18).grid(row=number, column=1, sticky="ew", padx=4)
+            ttk.Label(voice_table, textvariable=saved_text, width=28).grid(row=number, column=2,
+                                                                            sticky="w", padx=4)
+            combo = ttk.Combobox(voice_table, textvariable=selected_voice, state="readonly", width=29)
+            combo.grid(row=number, column=3, sticky="ew", padx=4)
+            ttk.Button(voice_table, text="Nghe thử", command=lambda r=role_id: preview_voice(r)).grid(
+                row=number, column=4, padx=4)
+            ttk.Button(voice_table, text="Lưu hàng", command=lambda r=role_id: save_voice(r)).grid(
+                row=number, column=5, padx=4)
+            ttk.Label(voice_table, textvariable=status, width=19).grid(row=number, column=6, sticky="w", padx=4)
+            voice_rows[role_id] = {"name": name, "selected": selected_voice, "saved": saved_text,
+                                   "status": status, "combo": combo}
+        voice_table.columnconfigure(2, weight=1)
+        voice_table.columnconfigure(3, weight=1)
         section = tk.StringVar(value="P1")
         result_filter = tk.StringVar(value="Toàn bài")
         review_only = tk.BooleanVar(value=False)
@@ -231,14 +255,38 @@ class SpeakerAIController:
             table.heading(key, text=label)
             table.column(key, width=width)
         table.pack(fill="both", expand=True, padx=10)
-        role = tk.StringVar(value="A")
-        ttk.Combobox(row, textvariable=role, values=("A", "B", "C", "D", ""),
+        passage_role = tk.StringVar(value="A")
+        ttk.Label(row, text="Vai của đoạn").pack(side="left", padx=(12, 3))
+        ttk.Combobox(row, textvariable=passage_role, values=("A", "B", "C", "D", ""),
                      state="readonly", width=5).pack(side="left")
         note = tk.StringVar(value="Chọn dòng để sửa; chọn text trong hai ô để gắn span.")
         ttk.Label(dialog, text="AI sẽ phân vai toàn bộ các phần có nội dung.").pack(anchor="w", padx=10)
         counts_label = tk.StringVar()
         ttk.Label(dialog, textvariable=counts_label).pack(anchor="w", padx=10)
         ttk.Label(dialog, textvariable=note).pack(anchor="w", padx=10)
+
+        def selected_voice(role_id):
+            widgets = voice_rows[role_id]
+            label = widgets["selected"].get()
+            if label in voice_choices:
+                return voice_choices[label]
+            saved = state.speaker_data["voices"].get(role_id)
+            return saved if saved and label == voice_label(saved) else None
+
+        def refresh_voice_status(role_id):
+            widgets = voice_rows[role_id]
+            saved_name = state.speaker_data["identities"].get(role_id, ROLES[role_id])
+            saved_voice = state.speaker_data["voices"].get(role_id)
+            widgets["saved"].set(voice_label(saved_voice))
+            selected = selected_voice(role_id)
+            changed = (widgets["name"].get() != saved_name or
+                       voice_key(selected) != voice_key(saved_voice))
+            widgets["status"].set("Chưa lưu" if changed else
+                                  "Đã lưu" if saved_voice else "Đã lưu • chưa chọn giọng")
+
+        for role_id, widgets in voice_rows.items():
+            widgets["name"].trace_add("write", lambda *_, r=role_id: refresh_voice_status(r))
+            widgets["combo"].bind("<<ComboboxSelected>>", lambda _event, r=role_id: refresh_voice_status(r))
 
         def refresh():
             table.delete(*table.get_children())
@@ -269,7 +317,7 @@ class SpeakerAIController:
             if selected:
                 item = state.speaker_data["assignments"][int(selected[0])]
                 section.set(item["section"])
-                role.set(item["role"] or "")
+                passage_role.set(item["role"] or "")
         table.bind("<<TreeviewSelect>>", select_row)
 
         def selected_span(widget):
@@ -303,7 +351,7 @@ class SpeakerAIController:
                     note.set("Hãy chọn đoạn tiếng Việt trước.")
                     return
                 item = {"section": section.get(), "confidence": "review", "warning": "Gán thủ công"}
-            item.update(section=section.get(), role=role.get() or None, vietnamese=vi, japanese=ja,
+            item.update(section=section.get(), role=passage_role.get() or None, vietnamese=vi, japanese=ja,
                         source="manual", confirmed=False)
             try:
                 from te.studio.ai_speakers import validate_assignments
@@ -338,7 +386,7 @@ class SpeakerAIController:
             if not available_sections:
                 note.set("Chưa có script Việt hoặc Nhật để phân vai.")
                 return
-            names = {key: value.get() for key, value in identities.items()}
+            names = {key: widgets["name"].get() for key, widgets in voice_rows.items()}
             provider = self.provider.get()
             settings = {"model": self.model.get(), "reasoning": self.reasoning.get(),
                         "available_models": deepcopy(self.available[provider])}
@@ -374,6 +422,8 @@ class SpeakerAIController:
                 state.speaker_data["fingerprint"] = script_fingerprint(source)
                 state.speaker_data["status"] = "draft"
                 app.service.save_project(state)
+                for role_id in ROLES:
+                    refresh_voice_status(role_id)
                 refresh()
                 tokens = (f" Tokens: {usage.get('total_tokens')}." if usage and
                           usage.get("total_tokens") is not None else "")
@@ -385,23 +435,74 @@ class SpeakerAIController:
             def done(speakers):
                 if not dialog.winfo_exists():
                     return
-                choices = {f"{speaker['name']} — {style['name']}":
-                           {"speaker_uuid": speaker.get("speaker_uuid", ""), "style_id": style["id"],
-                            "speaker": speaker["name"], "style": style["name"]}
-                           for speaker in speakers for style in speaker.get("styles", [])}
-                voice_combo.configure(values=list(choices))
-                voice_combo._choices = choices
-                note.set(f"Đã tìm thấy {len(choices)} VOICEVOX styles.")
+                voice_choices.clear()
+                for speaker in speakers:
+                    for style in speaker.get("styles", []):
+                        if not isinstance(style.get("id"), int):
+                            continue
+                        item = {"speaker_uuid": speaker.get("speaker_uuid", ""),
+                                "style_id": style["id"], "speaker": speaker["name"],
+                                "style": style["name"]}
+                        label = voice_label(item)
+                        if label in voice_choices:
+                            label += f" [{item['speaker_uuid'][-8:]}]"
+                        voice_choices[label] = item
+                for role_id, widgets in voice_rows.items():
+                    saved = state.speaker_data["voices"].get(role_id)
+                    current = widgets["selected"].get()
+                    matches = [label for label, item in voice_choices.items()
+                               if voice_key(item) == voice_key(saved) and saved]
+                    if saved and current == voice_label(saved) and matches:
+                        widgets["selected"].set(matches[0])
+                    values = list(voice_choices)
+                    if saved and not matches:
+                        values.insert(0, voice_label(saved))
+                    widgets["combo"].configure(values=values)
+                    refresh_voice_status(role_id)
+                note.set(f"Đã tìm thấy {len(voice_choices)} VOICEVOX styles.")
             app._background(lambda: VoicevoxProvider(timeout=3).list_voices(state.project.tts_settings), done)
 
-        def assign_voice():
-            choice = getattr(voice_combo, "_choices", {}).get(voice_choice.get())
-            if not choice:
-                note.set("Hãy tải và chọn style VOICEVOX.")
+        def save_voice(role_id):
+            widgets = voice_rows[role_id]
+            selected = widgets["selected"].get()
+            voice = selected_voice(role_id)
+            if selected and voice is None:
+                note.set("Giọng đã chọn không hợp lệ; hãy tải lại danh sách VOICEVOX.")
                 return
-            state.speaker_data["voices"][role.get()] = choice
-            app.service.save_project(state)
-            note.set(f"Đã lưu style cho vai {role.get()} (B2 sẽ dùng khi render đa giọng).")
+            try:
+                app.service.save_role_configuration(state, role_id, widgets["name"].get(), voice)
+            except Exception as exc:
+                note.set(str(exc))
+                return
+            refresh_voice_status(role_id)
+            note.set(f"Đã lưu tên và giọng của vai {role_id}. Render vẫn dùng một giọng đến B2.")
+
+        def preview_voice(role_id):
+            voice = selected_voice(role_id)
+            if voice is None:
+                note.set(f"Vai {role_id} chưa chọn giọng để nghe thử.")
+                return
+            note.set(f"Đang tạo mẫu giọng {role_id}…")
+            def work():
+                import winsound
+                provider = VoicevoxProvider(timeout=20)
+                speakers = provider.list_voices(state.project.tts_settings)
+                speaker = next((item for item in speakers if
+                    item.get("speaker_uuid") == voice["speaker_uuid"] or
+                    item.get("name") == voice.get("speaker")), None)
+                style = next((item for item in speaker.get("styles", [])
+                              if item.get("id") == voice["style_id"]), None) if speaker else None
+                if not speaker or not style:
+                    raise ValueError("Giọng hoặc style này không còn trong VOICEVOX Engine.")
+                settings = deepcopy(state.project.tts_settings)
+                settings.voice_id = speaker.get("speaker_uuid") or speaker["name"]
+                settings.style = style["name"]
+                with tempfile.TemporaryDirectory(prefix="te-voice-preview-") as folder:
+                    path = Path(folder) / "preview.wav"
+                    provider.synthesize("こんにちは。声のテストです。", settings, path)
+                    winsound.PlaySound(str(path), winsound.SND_FILENAME)
+                return role_id
+            app._background(work, lambda value: note.set(f"Đã nghe thử giọng {value}."))
 
         def confirm():
             if state.speaker_data["status"] == "stale":
@@ -414,7 +515,8 @@ class SpeakerAIController:
             if any(row["role"] not in ROLES or row["japanese"] is None for row in rows):
                 note.set("Còn vai hoặc đoạn Nhật chưa rõ; hãy sửa trước khi xác nhận.")
                 return
-            state.speaker_data["identities"] = {key: value.get() for key, value in identities.items()}
+            state.speaker_data["identities"] = {key: widgets["name"].get()
+                                                for key, widgets in voice_rows.items()}
             for item in rows:
                 item["confirmed"] = True
             state.speaker_data["fingerprint"] = script_fingerprint(state.sections)
@@ -422,6 +524,8 @@ class SpeakerAIController:
             try:
                 state.speaker_data = validate_speaker_data(state.speaker_data, state.sections)
                 app.service.save_project(state)
+                for role_id in ROLES:
+                    refresh_voice_status(role_id)
             except Exception as exc:
                 note.set(str(exc))
                 return
@@ -447,8 +551,4 @@ class SpeakerAIController:
         ttk.Button(buttons, text="Tạo mới thủ công", command=reset_manual).pack(side="left", padx=4)
         ttk.Button(buttons, text="Xác nhận và lưu", command=confirm).pack(side="left", padx=4)
         ttk.Button(buttons, text="Tải giọng VOICEVOX", command=load_voices).pack(side="left", padx=4)
-        voice_choice = tk.StringVar()
-        voice_combo = ttk.Combobox(buttons, textvariable=voice_choice, state="readonly", width=28)
-        voice_combo.pack(side="left", padx=4)
-        ttk.Button(buttons, text="Lưu giọng cho vai", command=assign_voice).pack(side="left", padx=4)
         ttk.Button(buttons, text="Đóng", command=dialog.destroy).pack(side="right")
