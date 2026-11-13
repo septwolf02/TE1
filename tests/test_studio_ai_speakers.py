@@ -2,6 +2,7 @@
 from copy import deepcopy
 import io
 import json
+import os
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
@@ -11,9 +12,11 @@ from te.project.models import SectionName
 from te.studio.ai_auth import ChatGPTAuth, CredentialStore
 from te.studio.ai_clients import AIConnectionError, OpenAIConnection
 from te.studio.ai_speakers import (ROLES, filter_assignments, resolve_speaker_references,
+                                   resolve_japanese_references,
                                    script_fingerprint, section_counts, segment_passages,
                                    validate_assignments, voice_key, voice_label)
 from te.studio.service import StudioService
+from te.studio.multi_voice import confirmed_speaker_data, speech_plan
 
 
 def test_auto_attribution_requires_live_connection_and_loaded_model(monkeypatch):
@@ -38,6 +41,29 @@ def test_auto_attribution_requires_live_connection_and_loaded_model(monkeypatch)
         "scopes": ["chatgpt.tokens.use.direct", "resource.invoke"],
         "expires_at": 0, "refresh_token": "refresh"}))
     assert controller._ready_for_analysis()
+
+
+@pytest.mark.skipif(os.environ.get("TE_STUDIO_GUI_SMOKE") != "1", reason="requires a desktop display")
+def test_japanese_first_review_keeps_ai_request_explicit(tmp_path, monkeypatch):
+    import tkinter as tk
+    from tkinter import simpledialog, ttk
+    from te.studio.gui import StudioApp
+
+    monkeypatch.setattr(simpledialog, "askstring", lambda *args, **kwargs: "Review GUI")
+    root = tk.Tk()
+    service = StudioService(tmp_path / "settings.json")
+    service.set_directories(tmp_path / "projects", tmp_path / "output")
+    app = StudioApp(root, service)
+    monkeypatch.setattr(app.ai, "_connection", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("AI must not be called when review opens")))
+    app.ai.open_review()
+    dialog = root.winfo_children()[-1]
+    table = next(child for child in dialog.winfo_children() if isinstance(child, ttk.Treeview))
+    assert table["columns"] == ("section", "ja", "role", "vi", "review")
+    labels = [child.cget("text") for child in dialog.winfo_children() if isinstance(child, ttk.Frame)
+              for child in child.winfo_children() if isinstance(child, ttk.Button)]
+    assert "Phân vai lại toàn bài bằng AI" in labels
+    root.destroy()
 
 
 def sections():
@@ -201,10 +227,10 @@ def test_model_catalogs_stream_contract_and_no_auto_fallback(monkeypatch):
     calls = []
     source = sections()
     ids = list(segment_passages(source).values())
-    vi_id = next(item["id"] for item in ids if item["section"] == "P3" and item["language"] == "vi")
-    ja_id = next(item["id"] for item in ids if item["section"] == "P3" and item["language"] == "ja")
-    response = {"assignments": [{"vietnamese_id": vi_id, "japanese_ids": [ja_id],
-                                  "role": "C", "confidence": "high", "warning": ""}]}
+    response = {"assignments": [{"japanese_id": item["id"],
+                                  "role": "C" if item["section"] == "P3" else "A",
+                                  "confidence": "high", "warning": ""}
+                                 for item in ids if item["language"] == "ja"]}
     stream = (b"data: " + json.dumps({"type": "response.output_text.delta",
               "delta": json.dumps(response)}, ensure_ascii=False).encode() + b"\n\n" +
               b'data: {"type":"response.completed"}\n\n')
@@ -230,6 +256,7 @@ def test_model_catalogs_stream_contract_and_no_auto_fallback(monkeypatch):
     chat_body = json.loads(calls[-2].data)
     api_body = json.loads(calls[-1].data)
     assert chat_body["store"] is False and chat_body["stream"] is True
+    assert "vietnamese_context" in chat_body["input"][0]["content"]
     assert chat_body["reasoning"] == {"effort": "low"}
     assert "reasoning" not in api_body
     assert calls[-2].get_header("Authorization") == "Bearer oauth-test"
@@ -269,10 +296,8 @@ def test_whole_script_scope_and_role_counts(monkeypatch, labels, roles):
     source = {label: {"vi": f"{role} kể chuyện.", "ja": f"{role}が話す。"}
               for label, role in zip(labels, roles)}
     passages = list(segment_passages(source).values())
-    output = {"assignments": [{"vietnamese_id": next(item["id"] for item in passages
-               if item["section"] == label and item["language"] == "vi"),
-               "japanese_ids": [next(item["id"] for item in passages if item["section"] == label
-                                and item["language"] == "ja")],
+    output = {"assignments": [{"japanese_id": next(item["id"] for item in passages
+               if item["section"] == label and item["language"] == "ja"),
                "role": role, "confidence": "high", "warning": ""}
                for label, role in zip(labels, roles)]}
     requests = []
@@ -291,7 +316,11 @@ def test_whole_script_scope_and_role_counts(monkeypatch, labels, roles):
     assert [item["section"] for item in result] == list(labels)
     payload = json.loads(requests[0]["input"][0]["content"])
     assert [item["section"] for item in payload["sections"]] == list(labels)
+    assert [item["japanese_script"] for item in payload["sections"]] == [source[label]["ja"] for label in labels]
+    assert [item["vietnamese_context"] for item in payload["sections"]] == [source[label]["vi"] for label in labels]
     assert requests[0]["text"]["format"]["type"] == "json_schema"
+    props = requests[0]["text"]["format"]["schema"]["properties"]["assignments"]["items"]["properties"]
+    assert "japanese_id" in props and "vietnamese_id" not in props
     assert requests[0]["store"] is False and requests[0]["stream"] is True
 
 
@@ -319,6 +348,78 @@ def test_partial_invalid_refs_keep_valid_rows_and_flag_missing():
     assert any("vai không hỗ trợ" in item for item in diagnostics)
     assert any("tham chiếu Nhật" in item for item in diagnostics)
     assert any("ID đoạn Việt" in item for item in diagnostics)
+
+
+def test_kl4_duplicate_vietnamese_context_resolves_once_per_japanese_id(tmp_path):
+    service = StudioService(tmp_path / "settings.json")
+    service.set_directories(tmp_path / "projects", tmp_path / "output")
+    state = service.create_project("KL4 overlap")
+    service.set_section(state, SectionName.P1,
+        vietnamese="MC dẫn. Nhân vật trả lời. MC kết.", japanese="司会「発言」締め。")
+    service.save_project(state)
+    ja = [item for item in segment_passages(state.sections).values()
+          if item["language"] == "ja"]
+    raw = [{"japanese_id": item["id"], "role": role,
+            "confidence": "high", "warning": ""}
+           for item, role in zip(ja, ("A", "B", "A"))]
+    rows, diagnostics = resolve_japanese_references(raw[::-1], state.sections)
+    assert not diagnostics
+    assert len(rows) == len(ja) == 3
+    assert [row["japanese"] for row in rows] == [[item["start"], item["end"]] for item in ja]
+    assert all(row["vietnamese"] is None for row in rows)
+    assert state.speaker_data["assignments"] == []  # AI draft has not replaced saved data.
+    candidate = confirmed_speaker_data(state, rows, state.speaker_data["identities"])
+    state.speaker_data = candidate
+    service.save_project(state)
+    plan, warnings = speech_plan(state)
+    assert not warnings
+    assert "".join(text for parts in plan.values() for _, text in parts) == state.sections["P1"]["ja"]
+
+    with pytest.raises(ValueError, match="lặp"):
+        resolve_japanese_references([raw[0], raw[0], raw[2]], state.sections)
+    with pytest.raises(ValueError, match="chưa phân vai đủ"):
+        resolve_japanese_references(raw[:-1], state.sections)
+
+
+def test_mocked_gpt_duplicate_japanese_id_is_rejected(monkeypatch):
+    import te.studio.ai_clients as clients
+    source = {"P1": {"vi": "Hai đoạn Việt cùng nói một ý.", "ja": "前半。後半。"}}
+    ja = [item for item in segment_passages(source).values() if item["language"] == "ja"]
+    duplicate = {"assignments": [
+        {"japanese_id": ja[0]["id"], "role": "A", "confidence": "high", "warning": ""},
+        {"japanese_id": ja[0]["id"], "role": "B", "confidence": "high", "warning": ""}]}
+    events = [{"type": "response.output_text.delta", "delta": json.dumps(duplicate)},
+              {"type": "response.completed"}]
+    monkeypatch.setattr(clients, "urlopen", lambda _request, timeout: io.BytesIO(
+        b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events)))
+    connection = OpenAIConnection("api", lambda: "mock-token")
+    with pytest.raises(AIConnectionError, match="assignments"):
+        connection.attribute_speakers({"P1": source["P1"]["vi"]}, {"P1": source["P1"]["ja"]},
+            dict(ROLES), {"model": "mock", "available_models": [{"id": "mock", "reasoning": [],
+                                                                  "structured": True}], "reasoning": "Nhanh"})
+
+
+def test_confirmation_rejects_overlap_gaps_and_unresolved_role(tmp_path):
+    service = StudioService(tmp_path / "settings.json")
+    service.set_directories(tmp_path / "projects", tmp_path / "output")
+    state = service.create_project("Review gate")
+    service.set_section(state, SectionName.P1, vietnamese="Một. Hai.", japanese="案内。発言。")
+    service.save_project(state)
+    original = deepcopy(state.speaker_data)
+    passages = [item for item in segment_passages(state.sections).values() if item["language"] == "ja"]
+    rows, _ = resolve_japanese_references([
+        {"japanese_id": item["id"], "role": "A" if index == 0 else "B",
+         "confidence": "high", "warning": ""}
+        for index, item in enumerate(passages)], state.sections)
+    with pytest.raises(ValueError, match="chồng lấn"):
+        confirmed_speaker_data(state, [rows[0], dict(rows[1], japanese=rows[0]["japanese"])],
+                               original["identities"])
+    with pytest.raises(ValueError, match="chưa phân vai"):
+        confirmed_speaker_data(state, rows[:1], original["identities"])
+    with pytest.raises(ValueError, match="chưa xác nhận"):
+        confirmed_speaker_data(state, [rows[0], dict(rows[1], role=None, confidence="review")],
+                               original["identities"])
+    assert state.speaker_data == original
 
 
 def test_filter_story_order_and_counts_without_network():

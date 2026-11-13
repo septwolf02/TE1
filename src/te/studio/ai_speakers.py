@@ -65,7 +65,8 @@ def filter_assignments(rows: list[dict], selected: str) -> list[dict]:
         raise ValueError("Bộ lọc kết quả không hợp lệ.")
     order = {section.value: index for index, section in enumerate(SectionName)}
     return sorted((row for row in rows if selected == "Toàn bài" or row["section"] == selected),
-                  key=lambda row: (order[row["section"]], row["vietnamese"][0]))
+                  key=lambda row: (order[row["section"]],
+                                   (row["japanese"] or row["vietnamese"] or [0])[0]))
 
 
 def section_counts(rows: list[dict]) -> dict[str, int]:
@@ -142,6 +143,47 @@ def resolve_speaker_references(raw: object, sections: dict) -> tuple[list[dict],
     return validate_assignments(resolved, sections), tuple(dict.fromkeys(diagnostics))
 
 
+def resolve_japanese_references(raw: object, sections: dict) -> tuple[list[dict], tuple[str, ...]]:
+    """Resolve one model-selected role per local Japanese passage ID, never a model offset."""
+    if not isinstance(raw, list) or len(raw) > 1000:
+        raise ValueError("Danh sách phân vai Nhật không hợp lệ.")
+    passages = [item for item in segment_passages(sections).values() if item["language"] == "ja"]
+    expected = {item["id"]: item for item in passages}
+    if len(raw) != len(expected):
+        raise ValueError("AI chưa phân vai đủ từng đoạn tiếng Nhật.")
+    seen = set()
+    rows = []
+    diagnostics = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"japanese_id", "role", "confidence", "warning"}:
+            raise ValueError("Dòng phân vai Nhật không đúng cấu trúc.")
+        identifier = item["japanese_id"]
+        if not isinstance(identifier, str) or identifier not in expected or identifier in seen:
+            raise ValueError("ID đoạn Nhật không tồn tại hoặc bị lặp.")
+        seen.add(identifier)
+        role = item["role"]
+        if role not in ROLES and role is not None:
+            raise ValueError("Vai Nhật phải là A/B/C/D hoặc chưa rõ.")
+        confidence = item["confidence"]
+        warning = item["warning"]
+        if confidence not in ("high", "review") or not isinstance(warning, str) or len(warning) > 500:
+            raise ValueError("Mức chắc chắn hoặc cảnh báo AI không hợp lệ.")
+        if role is None:
+            confidence = "review"
+            warning = warning or "Chưa rõ vai; chọn A/B/C/D trước khi xác nhận."
+            diagnostics.append(f"{expected[identifier]['section']}: có đoạn Nhật chưa rõ vai.")
+        passage = expected[identifier]
+        rows.append({"section": passage["section"], "role": role, "vietnamese": None,
+                     "japanese": [passage["start"], passage["end"]],
+                     "confidence": confidence, "warning": warning,
+                     "confirmed": False, "source": "ai"})
+    if seen != set(expected):
+        raise ValueError("AI bỏ sót đoạn Nhật.")
+    order = {section.value: index for index, section in enumerate(SectionName)}
+    rows.sort(key=lambda row: (order[row["section"]], row["japanese"][0]))
+    return validate_assignments(rows, sections), tuple(dict.fromkeys(diagnostics))
+
+
 def script_fingerprint(sections: dict) -> str:
     source = [[s.value, sections[s.value]["vi"], sections[s.value]["ja"]] for s in SectionName]
     return sha256(json.dumps(source, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
@@ -169,7 +211,7 @@ def validate_assignments(raw: object, sections: dict, *, strict: bool = True) ->
         offsets = {}
         for language, key in (("vi", "vietnamese"), ("ja", "japanese")):
             span = row.get(key)
-            if span is None and language == "ja":
+            if span is None:
                 offsets[language] = None
                 continue
             if (not isinstance(span, list) or len(span) != 2 or

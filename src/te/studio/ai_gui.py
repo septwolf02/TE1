@@ -13,6 +13,7 @@ from te.studio.ai_auth import ChatGPTAuth, CredentialStore
 from te.studio.ai_clients import OpenAIConnection
 from te.studio.ai_speakers import (ROLES, filter_assignments, passage, script_fingerprint,
                                    section_counts, validate_speaker_data, voice_key, voice_label)
+from te.studio.multi_voice import confirmed_speaker_data
 from te.tts import VoicevoxProvider
 
 
@@ -217,8 +218,9 @@ class SpeakerAIController:
         if not app.state or not app._save():
             return
         state = app.state
+        review_data = deepcopy(state.speaker_data)
         dialog = tk.Toplevel(app.root)
-        dialog.title("AI phân vai — xem tiếng Việt trước")
+        dialog.title("AI phân vai — tiếng Nhật là nguồn lời đọc")
         dialog.geometry("1250x850")
         dialog.transient(app.root)
         dialog.grab_set()
@@ -267,24 +269,24 @@ class SpeakerAIController:
         ttk.Checkbutton(row, text="Chỉ cần xem lại", variable=review_only).pack(side="left", padx=8)
         text_frame = ttk.Frame(dialog, padding=8)
         text_frame.pack(fill="both", expand=True)
-        vi_box = tk.Text(text_frame, wrap="word", height=12)
         ja_box = tk.Text(text_frame, wrap="word", height=12)
-        vi_box.pack(side="left", fill="both", expand=True, padx=4)
+        vi_box = tk.Text(text_frame, wrap="word", height=12)
         ja_box.pack(side="left", fill="both", expand=True, padx=4)
+        vi_box.pack(side="left", fill="both", expand=True, padx=4)
         def load_section(*_):
-            for widget, language in ((vi_box, "vi"), (ja_box, "ja")):
+            for widget, language in ((ja_box, "ja"), (vi_box, "vi")):
                 widget.configure(state="normal")
                 widget.delete("1.0", "end")
                 widget.insert("1.0", state.sections[section.get()][language])
                 widget.configure(state="disabled")
         section.trace_add("write", load_section)
         load_section()
-        ttk.Label(dialog, text="Chọn đoạn Việt và đoạn Nhật tương ứng để thêm/sửa thủ công. "
-                  "Đoạn chưa rõ có thể để trống vai hoặc đoạn Nhật.").pack(anchor="w", padx=10)
-        columns = ("section", "role", "vi", "ja", "review")
+        ttk.Label(dialog, text="Chọn đoạn Nhật để sửa vai; tiếng Việt là ngữ cảnh tham khảo. "
+                  "Mỗi đoạn Nhật cần đúng một vai trước khi xác nhận.").pack(anchor="w", padx=10)
+        columns = ("section", "ja", "role", "vi", "review")
         table = ttk.Treeview(dialog, columns=columns, show="headings", height=10)
-        for key, label, width in (("section", "P", 40), ("role", "Vai", 45),
-                                  ("vi", "Tiếng Việt", 350), ("ja", "Tiếng Nhật", 350),
+        for key, label, width in (("section", "P", 40), ("ja", "Tiếng Nhật", 350),
+                                  ("role", "Vai", 45), ("vi", "Tham chiếu Việt", 350),
                                   ("review", "Trạng thái / cảnh báo", 260)):
             table.heading(key, text=label)
             table.column(key, width=width)
@@ -325,7 +327,7 @@ class SpeakerAIController:
 
         def refresh():
             table.delete(*table.get_children())
-            all_rows = state.speaker_data["assignments"]
+            all_rows = review_data["assignments"]
             counts = section_counts(all_rows)
             counts_label.set(f"Tổng {len(all_rows)} đoạn • " + " • ".join(
                 f"{key}: {value}" for key, value in counts.items()))
@@ -335,14 +337,15 @@ class SpeakerAIController:
                 if (review_only.get() and item["confidence"] == "high"
                                        and item["role"] in ROLES and item["japanese"] is not None):
                     continue
-                stale = state.speaker_data["status"] == "stale"
+                stale = review_data["status"] == "stale"
                 try:
-                    vi = passage(state.sections, item, "vi") if not stale else "[script đã đổi]"
+                    vi = (passage(state.sections, item, "vi") if item["vietnamese"] else
+                          state.sections[item["section"]]["vi"]) if not stale else "[script đã đổi]"
                     ja = passage(state.sections, item, "ja") if not stale else "[script đã đổi]"
                 except Exception:
                     vi, ja = "[script đã đổi]", "[script đã đổi]"
-                table.insert("", "end", iid=str(index), values=(item["section"], item["role"] or "?",
-                             vi[:100], ja[:100], "stale" if stale else item["warning"] or
+                table.insert("", "end", iid=str(index), values=(item["section"], ja[:100], item["role"] or "?",
+                             vi[:100], "stale" if stale else item["warning"] or
                              ("Đã xác nhận" if item["confirmed"] else "Cần xem lại")))
         refresh()
         result_filter.trace_add("write", lambda *_: refresh())
@@ -350,7 +353,7 @@ class SpeakerAIController:
         def select_row(_event):
             selected = table.selection()
             if selected:
-                item = state.speaker_data["assignments"][int(selected[0])]
+                item = review_data["assignments"][int(selected[0])]
                 section.set(item["section"])
                 passage_role.set(item["role"] or "")
         table.bind("<<TreeviewSelect>>", select_row)
@@ -366,7 +369,7 @@ class SpeakerAIController:
             return [offset(start), offset(end)]
 
         def edit_row():
-            if state.speaker_data["status"] == "stale":
+            if review_data["status"] == "stale":
                 note.set("Dữ liệu stale: hãy phân tích lại hoặc chọn Tạo mới thủ công.")
                 return
             vi = selected_span(vi_box)
@@ -374,7 +377,7 @@ class SpeakerAIController:
             selected = table.selection()
             if selected:
                 index = int(selected[0])
-                old = state.speaker_data["assignments"][index]
+                old = review_data["assignments"][index]
                 item = deepcopy(old)
                 if not vi:
                     vi = old["vietnamese"]
@@ -382,8 +385,8 @@ class SpeakerAIController:
                     ja = old["japanese"]
             else:
                 index = None
-                if not vi:
-                    note.set("Hãy chọn đoạn tiếng Việt trước.")
+                if not ja:
+                    note.set("Hãy chọn đoạn tiếng Nhật trước.")
                     return
                 item = {"section": section.get(), "confidence": "review", "warning": "Gán thủ công"}
             item.update(section=section.get(), role=passage_role.get() or None, vietnamese=vi, japanese=ja,
@@ -396,11 +399,11 @@ class SpeakerAIController:
                 note.set(str(exc))
                 return
             if index is None:
-                state.speaker_data["assignments"].append(item)
+                review_data["assignments"].append(item)
             else:
-                state.speaker_data["assignments"][index] = item
-            state.speaker_data["fingerprint"] = script_fingerprint(state.sections)
-            state.speaker_data["status"] = "draft"
+                review_data["assignments"][index] = item
+            review_data["fingerprint"] = script_fingerprint(state.sections)
+            review_data["status"] = "draft"
             refresh()
 
         analyzing = False
@@ -411,9 +414,9 @@ class SpeakerAIController:
             if not self.model.get() or not self.available[self.provider.get()]:
                 note.set("Hãy kết nối và tải models trong AI Settings trước.")
                 return
-            if state.speaker_data["status"] != "stale" and state.speaker_data["assignments"]:
-                if not messagebox.askyesno("Phân tích lại", "Gọi AI lại và thay các gợi ý AI cũ? "
-                                           "Các sửa thủ công được giữ.", parent=dialog):
+            if review_data["assignments"]:
+                if not messagebox.askyesno("Phân vai lại toàn bài", "Gọi AI để tạo bản phân vai Nhật mới? "
+                                           "Bản đã lưu chỉ thay đổi khi bạn bấm Xác nhận và lưu.", parent=dialog):
                     return
             source = deepcopy(state.sections)
             available_sections = [s.value for s in SectionName if
@@ -450,21 +453,18 @@ class SpeakerAIController:
                 if state.sections != source:
                     note.set("Script đã đổi trong lúc AI chạy; kết quả không được áp dụng.")
                     return
-                manual = [row for row in state.speaker_data["assignments"] if row["source"] == "manual"
-                          and state.speaker_data["status"] != "stale"]
-                state.speaker_data["assignments"] = manual + items
-                state.speaker_data["identities"] = names
-                state.speaker_data["fingerprint"] = script_fingerprint(source)
-                state.speaker_data["status"] = "draft"
-                app.service.save_project(state)
-                self.refresh_assignment_status()
+                review_data["assignments"] = items
+                review_data["identities"] = names
+                review_data["fingerprint"] = script_fingerprint(source)
+                review_data["status"] = "draft"
                 for role_id in ROLES:
                     refresh_voice_status(role_id)
                 refresh()
                 tokens = (f" Tokens: {usage.get('total_tokens')}." if usage and
                           usage.get("total_tokens") is not None else "")
                 warning = " Cần xem lại: " + "; ".join(diagnostics[:3]) if diagnostics else ""
-                note.set(f"Đã nhận {len(items)} đoạn.{tokens}{warning} Kiểm tra và xác nhận thủ công.")
+                note.set(f"Đã nhận {len(items)} đoạn Nhật.{tokens}{warning} "
+                         "Bản đã lưu vẫn được giữ đến khi bạn xác nhận.")
             app._background(work, done)
 
         def load_voices():
@@ -584,25 +584,29 @@ class SpeakerAIController:
             app._background(work, lambda value: note.set(f"Đã nghe thử giọng {value}."))
 
         def confirm():
-            if state.speaker_data["status"] == "stale":
+            if (review_data["status"] == "stale" or
+                    review_data["fingerprint"] != script_fingerprint(state.sections)):
                 note.set("Script đã đổi; hãy phân tích lại hoặc sửa span trước khi xác nhận.")
                 return
-            rows = state.speaker_data["assignments"]
-            if not rows and any(value["vi"].strip() for value in state.sections.values()):
-                note.set("Chưa có assignment nào; hãy phân vai trước khi xác nhận.")
+            rows = review_data["assignments"]
+            if not rows and any(value["ja"].strip() for value in state.sections.values()):
+                note.set("Chưa có đoạn Nhật nào được phân vai.")
                 return
             if any(row["role"] not in ROLES or row["japanese"] is None for row in rows):
                 note.set("Còn vai hoặc đoạn Nhật chưa rõ; hãy sửa trước khi xác nhận.")
                 return
-            state.speaker_data["identities"] = {key: widgets["name"].get()
-                                                for key, widgets in voice_rows.items()}
-            for item in rows:
-                item["confirmed"] = True
-            state.speaker_data["fingerprint"] = script_fingerprint(state.sections)
-            state.speaker_data["status"] = "confirmed"
             try:
-                state.speaker_data = validate_speaker_data(state.speaker_data, state.sections)
-                app.service.save_project(state)
+                candidate = confirmed_speaker_data(state, rows,
+                    {key: widgets["name"].get() for key, widgets in voice_rows.items()})
+                previous = state.speaker_data
+                state.speaker_data = candidate
+                try:
+                    app.service.save_project(state)
+                except Exception:
+                    state.speaker_data = previous
+                    raise
+                review_data.clear()
+                review_data.update(deepcopy(candidate))
                 self.refresh_assignment_status()
                 for role_id in ROLES:
                     refresh_voice_status(role_id)
@@ -610,31 +614,30 @@ class SpeakerAIController:
                 note.set(str(exc))
                 return
             refresh()
-            note.set("Đã xác nhận và lưu. Chọn chế độ Nhiều giọng trong mục VOICEVOX để render.")
+            note.set("Đã xác nhận và lưu. Các đoạn Nhật đã sẵn sàng cho B2.")
 
         def reset_manual():
-            if not messagebox.askyesno("Tạo mới thủ công", "Xóa các assignment cũ của dự án? "
-                                       "Tên nhân vật và giọng đã chọn sẽ được giữ.", parent=dialog):
+            if not messagebox.askyesno("Tạo mới thủ công", "Xóa các dòng trong bản nháp hiện tại? "
+                                       "Phân vai đã lưu và các giọng được giữ đến khi bạn xác nhận bản mới.",
+                                       parent=dialog):
                 return
-            state.speaker_data["assignments"] = []
-            state.speaker_data["fingerprint"] = script_fingerprint(state.sections)
-            state.speaker_data["status"] = "draft"
-            app.service.save_project(state)
-            self.refresh_assignment_status()
+            review_data["assignments"] = []
+            review_data["fingerprint"] = script_fingerprint(state.sections)
+            review_data["status"] = "draft"
             refresh()
-            note.set("Đã tạo bản nháp trống. Chọn đoạn Việt/Nhật để gán vai thủ công.")
+            note.set("Đã tạo bản nháp trống. Bản đã lưu chưa thay đổi.")
 
         buttons = ttk.Frame(dialog, padding=8)
         buttons.pack(fill="x")
-        analyze_button = ttk.Button(buttons, text="Phân tích lại bằng AI", command=analyze)
+        analyze_button = ttk.Button(buttons, text="Phân vai lại toàn bài bằng AI", command=analyze)
         analyze_button.pack(side="left", padx=4)
         ttk.Button(buttons, text="Thêm / sửa thủ công", command=edit_row).pack(side="left", padx=4)
         ttk.Button(buttons, text="Tạo mới thủ công", command=reset_manual).pack(side="left", padx=4)
         ttk.Button(buttons, text="Xác nhận và lưu", command=confirm).pack(side="left", padx=4)
         ttk.Button(buttons, text="Tải giọng VOICEVOX", command=load_voices).pack(side="left", padx=4)
         ttk.Button(buttons, text="Đóng", command=dialog.destroy).pack(side="right")
-        if auto_analyze and state.speaker_data["status"] == "unreviewed" and not state.speaker_data["assignments"] \
+        if auto_analyze and review_data["status"] == "unreviewed" and not review_data["assignments"] \
                 and self._ready_for_analysis():
             dialog.after(100, analyze)
-        elif state.speaker_data["status"] == "stale":
-            note.set("Phân vai cũ đã stale. Bấm Phân tích lại bằng AI hoặc sửa thủ công.")
+        elif review_data["status"] == "stale":
+            note.set("Phân vai cũ đã stale. Bấm Phân vai lại toàn bài bằng AI hoặc sửa thủ công.")

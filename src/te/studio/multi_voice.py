@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from array import array
 from contextlib import nullcontext
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -19,7 +19,7 @@ from te.project.models import SectionName, SentenceAudioRecord
 from te.tts.service import _duration
 from te.tts.sentences import SentenceSpeechService, _wav_rms
 from te.tts.voicevox import VoicevoxProvider
-from .ai_speakers import ROLES, script_fingerprint
+from .ai_speakers import ROLES, script_fingerprint, validate_speaker_data
 
 
 def _digest(value: object) -> str:
@@ -96,6 +96,24 @@ def speech_plan(state) -> tuple[dict[str, list[tuple[str, str]]], tuple[str, ...
                 raise ValueError("Câu tiếng Nhật chưa bao phủ toàn bộ đoạn.")
     return result, tuple(f"{section}: đoạn Nhật chưa gán vai dùng giọng A."
                          for section in sorted(fallback))
+
+
+def confirmed_speaker_data(state, rows: list[dict], identities: dict[str, str]) -> dict:
+    """Validate a B1 candidate with the exact B2 speech planner before replacing saved data."""
+    candidate = deepcopy(state.speaker_data)
+    candidate["assignments"] = deepcopy(rows)
+    candidate["identities"] = dict(identities)
+    for item in candidate["assignments"]:
+        item["confirmed"] = True
+    candidate["fingerprint"] = script_fingerprint(state.sections)
+    candidate["status"] = "confirmed"
+    candidate = validate_speaker_data(candidate, state.sections)
+    inspected = copy(state)
+    inspected.speaker_data = candidate
+    _, warnings = speech_plan(inspected)
+    if warnings:
+        raise ValueError("Còn đoạn Nhật chưa phân vai: " + " ".join(warnings))
+    return candidate
 
 
 class MultiVoiceService:

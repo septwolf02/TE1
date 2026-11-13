@@ -7,8 +7,8 @@ import wave
 import pytest
 
 from te.project.models import SectionName
-from te.studio.ai_speakers import script_fingerprint
-from te.studio.multi_voice import MultiVoiceService, speech_plan
+from te.studio.ai_speakers import resolve_japanese_references, script_fingerprint, segment_passages
+from te.studio.multi_voice import MultiVoiceService, confirmed_speaker_data, speech_plan
 from te.studio.rendering import StudioRenderService
 from te.studio.service import StudioService
 from te.tts import SentenceSpeechService, TTSService
@@ -93,6 +93,21 @@ def test_multiple_roles_within_one_sentence_keep_audio_order_and_sentence_anchor
     assert [item[1] for item in FakeVoices.calls] == ["A", "B", "A"]
     assert state.audio_mode == "multi"
     assert service.open_project(state.directory).narration_mode == "multi"
+
+
+def test_japanese_first_rows_synthesize_each_source_piece_once(tmp_path):
+    FakeVoices.calls.clear()
+    service, state = project(tmp_path, "始「話」終。")
+    passages = [item for item in segment_passages(state.sections).values()
+                if item["language"] == "ja"]
+    rows, _ = resolve_japanese_references([
+        {"japanese_id": item["id"], "role": role, "confidence": "high", "warning": ""}
+        for item, role in zip(passages, ("A", "B", "A"))], state.sections)
+    state.speaker_data = confirmed_speaker_data(state, rows, state.speaker_data["identities"])
+    service.save_project(state)
+    assert engine(service).generate_narration(state) == 1
+    assert "".join(text for text, _, _ in FakeVoices.calls) == state.sections["P1"]["ja"]
+    assert [role for _, role, _ in FakeVoices.calls] == ["A", "B", "A"]
 
 
 def test_cache_reuses_unaffected_roles_and_inherits_parameters(tmp_path):
