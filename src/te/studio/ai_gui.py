@@ -301,7 +301,8 @@ class SpeakerAIController:
         ttk.Label(row, text="Vai của đoạn").pack(side="left", padx=(12, 3))
         ttk.Combobox(row, textvariable=passage_role, values=("A", "B", "C", "D", ""),
                      state="readonly", width=5).pack(side="left")
-        note = tk.StringVar(value="Chọn dòng để sửa; chọn text trong hai ô để gắn span.")
+        note = tk.StringVar(value="Chọn dòng để sửa; chọn text trong hai ô để gắn span. "
+                            "Bấm Tải giọng VOICEVOX để kiểm tra giọng đã lưu trên máy này.")
         ttk.Label(dialog, text="AI sẽ phân vai toàn bộ các phần có nội dung.").pack(anchor="w", padx=10)
         counts_label = tk.StringVar()
         ttk.Label(dialog, textvariable=counts_label).pack(anchor="w", padx=10)
@@ -471,7 +472,7 @@ class SpeakerAIController:
                          "Bản đã lưu vẫn được giữ đến khi bạn xác nhận.")
             app._background(work, done)
 
-        def load_voices():
+        def load_voices(*, restored=False):
             def done(speakers):
                 if not dialog.winfo_exists():
                     return
@@ -499,8 +500,36 @@ class SpeakerAIController:
                         values.insert(0, voice_label(saved))
                     widgets["combo"].configure(values=values)
                     refresh_voice_status(role_id)
-                note.set(f"Đã tìm thấy {len(voice_choices)} VOICEVOX styles.")
+                unavailable = app.service.unavailable_role_voices(state.speaker_data["voices"], speakers)
+                if unavailable:
+                    note.set("Cảnh báo: VOICEVOX không có speaker/style đã lưu cho vai " +
+                             ", ".join(unavailable) + ". Hãy chọn giọng thay thế và Lưu hàng; "
+                             "dữ liệu cũ vẫn được giữ.")
+                else:
+                    note.set(("Đã khôi phục bộ giọng mặc định. " if restored else "") +
+                             f"Đã tìm thấy {len(voice_choices)} VOICEVOX styles; các vai đã lưu đều khả dụng.")
             app._background(lambda: VoicevoxProvider(timeout=3).list_voices(state.project.tts_settings), done)
+
+        def save_default_voices():
+            try:
+                app.service.save_default_role_voices(state,
+                    {role: selected_voice(role) for role in ROLES})
+            except Exception as exc:
+                note.set(str(exc))
+                return
+            note.set("Đã lưu bộ giọng A/B/C/D làm mặc định trên máy này. Dự án hiện tại không đổi.")
+
+        def restore_default_voices():
+            try:
+                app.service.restore_default_role_voices(state)
+            except Exception as exc:
+                note.set(str(exc))
+                return
+            for role_id, widgets in voice_rows.items():
+                widgets["selected"].set(voice_label(state.speaker_data["voices"].get(role_id)))
+                refresh_voice_status(role_id)
+            note.set("Đã khôi phục giọng A/B/C/D vào dự án; đang kiểm tra VOICEVOX trên máy này…")
+            load_voices(restored=True)
 
         def save_voice(role_id):
             widgets = voice_rows[role_id]
@@ -640,6 +669,12 @@ class SpeakerAIController:
         ttk.Button(buttons, text="Xác nhận và lưu", command=confirm).pack(side="left", padx=4)
         ttk.Button(buttons, text="Tải giọng VOICEVOX", command=load_voices).pack(side="left", padx=4)
         ttk.Button(buttons, text="Đóng", command=dialog.destroy).pack(side="right")
+        defaults = ttk.Frame(dialog, padding=(8, 0, 8, 8))
+        defaults.pack(fill="x")
+        ttk.Button(defaults, text="Lưu bộ giọng A/B/C/D làm mặc định",
+                   command=save_default_voices).pack(side="left", padx=4)
+        ttk.Button(defaults, text="Khôi phục bộ giọng mặc định",
+                   command=restore_default_voices).pack(side="left", padx=4)
         if auto_analyze and review_data["status"] == "unreviewed" and not review_data["assignments"] \
                 and self._ready_for_analysis():
             dialog.after(100, analyze)

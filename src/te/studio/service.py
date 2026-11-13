@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -34,6 +35,30 @@ MOTION_PRESETS = {
 TRANSITION_PRESETS = ("cut", "fade", "crossfade")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
+VOICE_PARAMETER_LIMITS = {"speaking_rate": (0, 4), "pitch": (-0.15, 0.15),
+                          "intonation": (0, 4), "volume": (0, 4)}
+
+
+def validate_default_role_voices(raw: object) -> dict[str, dict]:
+    """Validate the machine preset independently of any project's assignments."""
+    if not isinstance(raw, dict) or set(raw) != set(ROLES):
+        raise ValueError("Bộ giọng mặc định phải có đủ vai A/B/C/D.")
+    result = {}
+    required = {"speaker_uuid", "style_id", "speaker", "style", *VOICE_PARAMETER_LIMITS}
+    for role, entry in raw.items():
+        if not isinstance(entry, dict) or set(entry) != required:
+            raise ValueError(f"Bộ giọng mặc định vai {role} không hợp lệ.")
+        if (type(entry["style_id"]) is not int or entry["style_id"] < 0 or
+                any(not isinstance(entry[key], str) or not entry[key].strip() or len(entry[key]) > 120
+                    for key in ("speaker_uuid", "speaker", "style"))):
+            raise ValueError(f"Speaker/style ID hoặc tên giọng vai {role} không hợp lệ.")
+        for key, (minimum, maximum) in VOICE_PARAMETER_LIMITS.items():
+            value = entry[key]
+            if (type(value) not in (int, float) or not math.isfinite(value) or
+                    not (minimum < value <= maximum if key != "pitch" else minimum <= value <= maximum)):
+                raise ValueError(f"Thông số {key} của vai {role} không hợp lệ.")
+        result[role] = deepcopy(entry)
+    return result
 
 
 @dataclass(frozen=True)
@@ -189,6 +214,64 @@ class StudioService:
     def save_settings(self) -> None:
         _write_json(self.config_path, self.settings)
 
+    def default_role_voices(self) -> dict[str, dict] | None:
+        preset = self.settings.get("default_role_voices")
+        return validate_default_role_voices(preset) if preset is not None else None
+
+    def save_default_role_voices(self, state: StudioProject,
+                                 selected: dict[str, dict] | None = None) -> None:
+        """Save selected role voices and effective parameters without changing the project."""
+        voices = selected if selected is not None else state.speaker_data["voices"]
+        raw = {}
+        for role in ROLES:
+            voice = voices.get(role) if isinstance(voices, dict) else None
+            if not isinstance(voice, dict):
+                raise ValueError(f"Chưa chọn giọng cho vai {role}; cần đủ A/B/C/D để lưu mặc định.")
+            parameters = state.speaker_data.get("parameters", {}).get(role, {})
+            raw[role] = {**{key: voice.get(key) for key in
+                           ("speaker_uuid", "style_id", "speaker", "style")},
+                         **{key: parameters.get(key, getattr(state.project.tts_settings, key))
+                            for key in VOICE_PARAMETER_LIMITS}}
+        preset = validate_default_role_voices(raw)
+        previous = self.settings.get("default_role_voices")
+        self.settings["default_role_voices"] = preset
+        try:
+            self.save_settings()
+        except Exception:
+            if previous is None:
+                self.settings.pop("default_role_voices", None)
+            else:
+                self.settings["default_role_voices"] = previous
+            raise
+
+    def restore_default_role_voices(self, state: StudioProject) -> None:
+        """Explicitly replace only this project's role voices and parameters."""
+        preset = self.default_role_voices()
+        if preset is None:
+            raise ValueError("Chưa lưu bộ giọng A/B/C/D mặc định trên máy này.")
+        previous = state.speaker_data
+        updated = deepcopy(previous)
+        updated["voices"] = {role: {key: preset[role][key] for key in
+                             ("speaker_uuid", "style_id", "speaker", "style")} for role in ROLES}
+        updated["parameters"] = {role: {key: preset[role][key] for key in VOICE_PARAMETER_LIMITS}
+                                 for role in ROLES}
+        state.speaker_data = validate_speaker_data(updated, state.sections)
+        try:
+            self.save_project(state)
+        except Exception:
+            state.speaker_data = previous
+            raise
+
+    @staticmethod
+    def unavailable_role_voices(voices: dict[str, dict], catalog: list[dict]) -> tuple[str, ...]:
+        """Report unavailable saved UUID/style pairs without substituting another voice."""
+        return tuple(role for role, voice in voices.items() if not any(
+            isinstance(speaker, dict) and speaker.get("speaker_uuid") == voice.get("speaker_uuid") and
+            isinstance(speaker.get("styles"), list) and any(
+                isinstance(style, dict) and style.get("id") == voice.get("style_id")
+                for style in speaker["styles"])
+            for speaker in (catalog if isinstance(catalog, list) else [])))
+
     def set_directories(self, projects_root: Path, output_root: Path) -> None:
         self.settings["projects_root"] = str(Path(projects_root).expanduser().resolve())
         self.settings["output_root"] = str(Path(output_root).expanduser().resolve())
@@ -257,6 +340,7 @@ class StudioService:
 
     def create_project(self, video_name: str, *, parent: Path | None = None,
                        channel: str | None = None) -> StudioProject:
+        preset = self.default_role_voices()
         directory = self._directory_for(video_name, parent)
         project = ProjectManager().create(directory, video_name.strip())
         state = StudioProject(directory, project, _sections_from_project(project))
@@ -264,6 +348,11 @@ class StudioService:
             self.apply_profile(state, channel)
         else:
             project.tts_settings = TTSSettings(provider="voicevox", voice_id="青山龍星", sample_rate=24000)
+        if preset:
+            state.speaker_data["voices"] = {role: {key: preset[role][key] for key in
+                ("speaker_uuid", "style_id", "speaker", "style")} for role in ROLES}
+            state.speaker_data["parameters"] = {role: {key: preset[role][key] for key in VOICE_PARAMETER_LIMITS}
+                                                for role in ROLES}
         self.save_project(state)
         return state
 

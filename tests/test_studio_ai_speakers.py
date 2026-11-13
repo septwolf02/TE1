@@ -63,6 +63,8 @@ def test_japanese_first_review_keeps_ai_request_explicit(tmp_path, monkeypatch):
     labels = [child.cget("text") for child in dialog.winfo_children() if isinstance(child, ttk.Frame)
               for child in child.winfo_children() if isinstance(child, ttk.Button)]
     assert "Phân vai lại toàn bài bằng AI" in labels
+    assert "Lưu bộ giọng A/B/C/D làm mặc định" in labels
+    assert "Khôi phục bộ giọng mặc định" in labels
     root.destroy()
 
 

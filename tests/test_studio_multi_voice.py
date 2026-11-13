@@ -1,5 +1,6 @@
 """Deterministic B2 tests without VOICEVOX, GPT or a desktop display."""
 from array import array
+from copy import deepcopy
 import json
 from pathlib import Path
 import wave
@@ -93,6 +94,28 @@ def test_multiple_roles_within_one_sentence_keep_audio_order_and_sentence_anchor
     assert [item[1] for item in FakeVoices.calls] == ["A", "B", "A"]
     assert state.audio_mode == "multi"
     assert service.open_project(state.directory).narration_mode == "multi"
+
+
+def test_new_project_role_preset_is_consumed_by_existing_multi_voice_pipeline(tmp_path):
+    FakeVoices.calls.clear()
+    service, source = project(tmp_path)
+    source.speaker_data["parameters"]["B"] = {"speaking_rate": 1.2, "pitch": 0.0,
+                                                 "intonation": 1.0, "volume": 1.0}
+    service.save_default_role_voices(source)
+    fresh = service.create_project("With role defaults")
+    service.set_section(fresh, SectionName.P1, japanese=source.sections["P1"]["ja"], vietnamese="Một.")
+    fresh.speaker_data["assignments"] = deepcopy(source.speaker_data["assignments"])
+    fresh.speaker_data["fingerprint"] = script_fingerprint(fresh.sections)
+    fresh.speaker_data["status"] = "confirmed"
+    fresh.project.tts_settings.provider = "voicevox"
+    fresh.project.tts_settings.voice_id = "A"
+    fresh.project.tts_settings.style = "ノーマル"
+    fresh.project.tts_settings.sample_rate = 24000
+    fresh.narration_mode = "multi"
+    service.save_project(fresh)
+    assert engine(service).generate_narration(fresh) == 1
+    assert [role for _, role, _ in FakeVoices.calls] == ["A", "B", "A"]
+    assert next(rate for _, role, rate in FakeVoices.calls if role == "B") == 1.2
 
 
 def test_japanese_first_rows_synthesize_each_source_piece_once(tmp_path):
