@@ -83,7 +83,8 @@ class Timeline:
     intros: list[IntroEvent] = field(default_factory=list)
     transitions: list[TransitionEvent] = field(default_factory=list)
     music: list[SectionMusic] = field(default_factory=list)
-    headline: dict = field(default_factory=lambda: {"enabled": True, "position": "center", "darkening": 0.7})
+    headline: dict = field(default_factory=lambda: {"enabled": True, "position": "center", "darkening": 0.7,
+                                                    "duration_seconds": 7})
     source_fingerprint: str | None = None
     schema_version: int = TIMELINE_VERSION
 
@@ -151,6 +152,9 @@ class Timeline:
                 raise ValueError("Invalid section music")
         if not 0 <= self.headline.get("darkening", -1) <= 1:
             raise ValueError("Invalid headline darkening")
+        duration = self.headline.get("duration_seconds", 7)
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not 5 <= duration <= 10:
+            raise ValueError("Headline duration must be between 5 and 10 seconds")
         for caption in self.captions:
             block = blocks_by_id.get(caption.segment_id)
             if block and not (block.start_ms <= caption.start_ms < caption.end_ms <= block.end_ms):

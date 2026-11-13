@@ -60,6 +60,7 @@ class PerformanceReport:
         self.video_duration_seconds: float | None = None
         self.resolution: list[int] | None = None
         self.encoder: str | None = None
+        self.encoder_diagnostics: dict | None = None
         self.status = "running"
         self.error_type: str | None = None
         self.hardware = hardware_info()
@@ -110,6 +111,7 @@ class PerformanceReport:
             "video_duration_seconds": self.video_duration_seconds,
             "resolution": self.resolution, "narration_mode": self.narration_mode,
             "video_codec": "h264", "encoder": self.encoder, "hardware": self.hardware,
+            "encoder_diagnostics": self.encoder_diagnostics,
             "status": self.status, "error_type": self.error_type,
             "stages": self.stages, "counts": self.counts,
             "total_seconds": max(0.0, now - self.started),

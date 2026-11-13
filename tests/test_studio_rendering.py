@@ -164,7 +164,40 @@ def test_encoder_probe_cpu_fallback(monkeypatch):
             return subprocess.CompletedProcess(command, 1, stderr="device unavailable")
         return original(command, *args, **kwargs)
     monkeypatch.setattr(subprocess, "run", listed_but_broken)
+    report = RenderService.probe_encoders(ffmpeg)
+    assert report["selected_encoder"] == "libx264"
+    assert report["available_h264_encoders"] == ["h264_nvenc"]
+    assert report["available_hardware_encoders"] == ["h264_nvenc"]
+    assert "device unavailable" in report["nvenc_test"]
+    assert any("h264_nvenc" in reason for reason in report["fallback_reasons"])
     assert RenderService.choose_encoder(ffmpeg)[0] == "libx264"
+
+
+def test_encoder_probe_selects_nvenc_and_manual_cpu_skips_probe(monkeypatch):
+    calls = []
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(command, 0,
+                stdout=" V..... libx264\n V..... h264_nvenc\n V..... h264_qsv\n")
+        return subprocess.CompletedProcess(command, 0, stderr="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = RenderService.probe_encoders("ffmpeg")
+    assert report["selected_encoder"] == "h264_nvenc" and report["nvenc_test"] == "passed"
+    assert report["available_h264_encoders"] == ["libx264", "h264_nvenc", "h264_qsv"]
+    assert report["available_hardware_encoders"] == ["h264_nvenc", "h264_qsv"]
+    assert "-cq" in calls[-1] and "-b:v" in calls[-1]
+    before = len(calls)
+    manual = RenderService.probe_encoders("ffmpeg", test_hardware=False)
+    assert len(calls) == before + 1 and manual["nvenc_test"] == "not_tested_manual_selection"
+
+
+def test_nvenc_encoder_args_keep_quality_and_no_bitrate_ceiling():
+    from te.render import RenderSettings
+    settings = RenderSettings()
+    assert RenderService._video_encoder_args("libx264", settings) == ["-preset", "medium", "-crf", "20"]
+    assert RenderService._video_encoder_args("h264_nvenc", settings) == [
+        "-preset", "p4", "-rc", "vbr", "-cq", "19", "-b:v", "0"]
 
 
 def test_same_project_job_lock(tmp_path):
@@ -264,10 +297,16 @@ def test_real_full_hd_export_cpu_fallback_and_saved_output_path(tmp_path, monkey
     workflow = StudioRenderService(studio)
     assert not state.project.sentence_audio_records
     original_run = RenderService._run
-    monkeypatch.setattr(RenderService, "choose_encoder",
-        staticmethod(lambda _ffmpeg: ("h264_nvenc", ())))
+    monkeypatch.setattr(RenderService, "probe_encoders",
+        staticmethod(lambda _ffmpeg, **_kwargs: {"available_h264_encoders": ["libx264", "h264_nvenc"],
+            "nvenc_test": "passed", "hardware_tests": {"h264_nvenc": "passed"},
+            "selected_encoder": "h264_nvenc", "fallback_reasons": []}))
+    attempted = []
     def hardware_fails(self, command, stage, cache):
-        if stage == "finalizing" and "h264_nvenc" in command:
+        attempted.append((stage, command))
+        if "h264_nvenc" in command:
+            if stage.startswith("segment-"):
+                Path(command[-1]).write_bytes(b"incomplete GPU clip")
             raise RenderError(stage, command, "test hardware failure")
         return original_run(self, command, stage, cache)
     monkeypatch.setattr(RenderService, "_run", hardware_fails)
@@ -283,9 +322,47 @@ def test_real_full_hd_export_cpu_fallback_and_saved_output_path(tmp_path, monkey
     assert (video["width"], video["height"], video["codec_name"]) == (1920, 1080, "h264")
     manifest = json.loads((state.directory / "generated/output/final.manifest.json").read_text(encoding="utf-8"))
     assert manifest["encoder_used"] == "libx264"
+    details = manifest["encoder_diagnostics"]
+    assert details["intermediate_encoder"] == details["final_encoder"] == "libx264"
+    assert details["nvenc_test"] == "passed"
+    assert any("clip trung gian" in reason for reason in details["fallback_reasons"])
+    assert any("khi xuất" in reason for reason in details["fallback_reasons"])
+    assert any(stage.startswith("segment-") and "h264_nvenc" in command for stage, command in attempted)
+    assert any(stage == "finalizing" and "h264_nvenc" in command for stage, command in attempted)
+    assert not list((state.directory / "generated/cache/render").glob("*.partial.mp4"))
     report = json.loads(sorted((state.directory / "generated/output/diagnostics").glob(
         "performance-*-full.json"))[-1].read_text(encoding="utf-8"))
     assert report["encoder"] == "libx264" and report["render_type"] == "full_hd"
+    assert report["encoder_diagnostics"] == details
+
+
+def test_full_hd_uses_selected_encoder_for_intermediate_and_final_commands(tmp_path, monkeypatch):
+    studio, state = studio_project(tmp_path, intro=False, key=False)
+    state.motion_preset = "none"
+    studio.save_project(state)
+    workflow = StudioRenderService(studio)
+    monkeypatch.setattr(RenderService, "probe_encoders",
+        staticmethod(lambda _ffmpeg, **_kwargs: {"available_h264_encoders": ["libx264", "h264_nvenc"],
+            "nvenc_test": "passed", "hardware_tests": {"h264_nvenc": "passed"},
+            "selected_encoder": "h264_nvenc", "fallback_reasons": []}))
+    real_run = RenderService._run
+    encoded = []
+    def simulated_gpu(self, command, stage, cache):
+        if "h264_nvenc" in command:
+            encoded.append((stage, command))
+            start = command.index("-c:v")
+            end = command.index("-pix_fmt", start)
+            command = command[:start] + ["-c:v", "libx264", "-preset", "medium", "-crf", "20"] + command[end:]
+        return real_run(self, command, stage, cache)
+    monkeypatch.setattr(RenderService, "_run", simulated_gpu)
+    output = workflow.render_video(state, preview=False)
+    assert output.is_file()
+    assert any(stage.startswith("segment-") for stage, _ in encoded)
+    assert any(stage == "finalizing" for stage, _ in encoded)
+    manifest = json.loads((state.directory / "generated/output/final.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["encoder_diagnostics"]["intermediate_encoder"] == "h264_nvenc"
+    assert manifest["encoder_diagnostics"]["final_encoder"] == "h264_nvenc"
+    assert manifest["resolution"] == [1920, 1080] and manifest["fps"] == 30
 
 
 def test_one_click_preview_reflows_200_character_sentence(tmp_path):

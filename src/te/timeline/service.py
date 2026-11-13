@@ -248,6 +248,9 @@ class TimelineService:
         timeline.validate()
 
     @staticmethod
-    def set_headline_config(timeline: Timeline, *, darkening: float = 0.7, enabled: bool = True) -> None:
+    def set_headline_config(timeline: Timeline, *, darkening: float = 0.7, enabled: bool = True,
+                            duration_seconds: float | None = None) -> None:
         timeline.headline.update({"darkening": darkening, "enabled": enabled})
+        if duration_seconds is not None:
+            timeline.headline["duration_seconds"] = duration_seconds
         timeline.validate()

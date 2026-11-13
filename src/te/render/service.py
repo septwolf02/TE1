@@ -97,28 +97,69 @@ class RenderService:
         return {"ffmpeg": ffmpeg, "ffprobe": ffprobe, "version": version}
 
     @staticmethod
-    def choose_encoder(ffmpeg: str, *, timeout: float = 8.0) -> tuple[str, tuple[str, ...]]:
-        """Actually encode a few frames; an encoder listing alone is insufficient."""
-        warnings: list[str] = []
+    def probe_encoders(ffmpeg: str, *, timeout: float = 8.0, test_hardware: bool = True) -> dict:
+        """Report listed H.264 encoders and test hardware encoding before selecting one."""
+        report = {"available_h264_encoders": [], "available_hardware_encoders": [],
+                  "nvenc_test": "not_listed",
+                  "hardware_tests": {}, "selected_encoder": "libx264", "fallback_reasons": []}
         try:
             available = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True,
                 text=True, encoding="utf-8", errors="replace", timeout=timeout, check=True).stdout
         except (OSError, subprocess.SubprocessError) as exc:
-            return "libx264", (f"Không dò được bộ mã hóa phần cứng: {exc}",)
+            report["nvenc_test"] = "not_tested"
+            report["fallback_reasons"].append(f"Không dò được bộ mã hóa phần cứng: {exc}")
+            return report
+        listed = {line.split()[1] for line in available.splitlines() if len(line.split()) > 1}
+        report["available_h264_encoders"] = [name for name in
+            ("libx264", "h264_nvenc", "h264_qsv", "h264_amf") if name in listed]
+        report["available_hardware_encoders"] = [name for name in
+            ("h264_nvenc", "h264_qsv", "h264_amf") if name in listed]
+        if not test_hardware:
+            report["nvenc_test"] = "not_tested_manual_selection"
+            return report
+        if "h264_nvenc" not in listed:
+            report["fallback_reasons"].append("FFmpeg không liệt kê h264_nvenc.")
         for encoder in ("h264_nvenc", "h264_qsv", "h264_amf"):
-            if not any(line.split()[1:2] == [encoder] for line in available.splitlines()):
+            if encoder not in listed:
                 continue
             try:
+                options = (["-preset", "p4", "-rc", "vbr", "-cq", "19", "-b:v", "0"]
+                           if encoder == "h264_nvenc" else [])
                 result = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-                    "-i", "color=c=black:s=128x72:r=30:d=0.15", "-frames:v", "4", "-an",
-                    "-c:v", encoder, "-f", "null", "-"], capture_output=True, text=True,
+                    "-i", "color=c=black:s=320x180:r=30:d=0.15", "-frames:v", "4", "-an",
+                    "-c:v", encoder, *options, "-pix_fmt", "yuv420p", "-f", "null", "-"],
+                    capture_output=True, text=True,
                     encoding="utf-8", errors="replace", timeout=timeout)
                 if result.returncode == 0:
-                    return encoder, tuple(warnings)
-                warnings.append(f"{encoder}: {result.stderr.strip()[-180:] or 'encode test failed'}")
+                    report["hardware_tests"][encoder] = "passed"
+                    if encoder == "h264_nvenc":
+                        report["nvenc_test"] = "passed"
+                    report["selected_encoder"] = encoder
+                    return report
+                reason = result.stderr.strip()[-300:] or "encode test failed"
             except (OSError, subprocess.TimeoutExpired) as exc:
-                warnings.append(f"{encoder}: {exc}")
-        return "libx264", tuple(warnings)
+                reason = str(exc)[-300:]
+            report["hardware_tests"][encoder] = "failed: " + reason
+            if encoder == "h264_nvenc":
+                report["nvenc_test"] = "failed: " + reason
+            report["fallback_reasons"].append(f"{encoder}: {reason}")
+        if not report["fallback_reasons"]:
+            report["fallback_reasons"].append("Không có bộ mã hóa phần cứng H.264 khả dụng.")
+        return report
+
+    @staticmethod
+    def choose_encoder(ffmpeg: str, *, timeout: float = 8.0) -> tuple[str, tuple[str, ...]]:
+        probe = RenderService.probe_encoders(ffmpeg, timeout=timeout)
+        return probe["selected_encoder"], tuple(probe["fallback_reasons"])
+
+    @staticmethod
+    def _video_encoder_args(encoder: str, settings: RenderSettings) -> list[str]:
+        if encoder == "libx264":
+            return ["-preset", settings.preset, "-crf", str(settings.crf)]
+        if encoder == "h264_nvenc":
+            # Constant-quality VBR avoids silently imposing the old 8 Mb/s ceiling.
+            return ["-preset", "p4", "-rc", "vbr", "-cq", str(max(0, settings.crf - 1)), "-b:v", "0"]
+        return ["-b:v", "8M" if settings.width >= 1920 else "3M"]
 
     def get_render_status(self) -> str:
         return self._status
@@ -492,6 +533,7 @@ class RenderService:
         )
         by_id = {c.id: c for c in project.subtitle_captions}
         lines = [header]
+        headline_end_ms = round(timeline.headline.get("duration_seconds", 7) * 1000)
         for caption in timeline.captions:
             source = by_id.get(caption.id)
             headline = bool(source and source.presentation == "headline" and timeline.headline.get("enabled"))
@@ -511,13 +553,19 @@ class RenderService:
                 if end <= start:
                     continue
                 text = "\\N".join(escape(line) for line in wrap_caption(part, line_limit, 2))
-                if not headline:
-                    lines.append(f"Dialogue: 0,{cls._ass_time(start)},{cls._ass_time(end)},Normal,,0,0,0,,{text}\n")
-                    continue
-                dark = round((1 - timeline.headline.get("darkening", 0.7)) * 255)
-                text = f"{{\\an5\\bord3\\shad0}}{text}"
-                lines.append(f"Dialogue: -1,{cls._ass_time(start)},{cls._ass_time(end)},Headline,,0,0,0,,{{\\an7\\bord0\\shad0\\1c&H000000&\\1a&H{dark:02X}&\\p1}}m 0 0 l {settings.width} 0 {settings.width} {settings.height} 0 {settings.height}{{\\p0}}\n")
-                lines.append(f"Dialogue: 0,{cls._ass_time(start)},{cls._ass_time(end)},Headline,,0,0,0,,{{\\alpha&H00&}}{text}\n")
+                spans = ([(start, min(end, headline_end_ms), True),
+                          (max(start, headline_end_ms), end, False)] if headline and start < headline_end_ms
+                         else [(start, end, False)])
+                for visual_start, visual_end, darkened in spans:
+                    if visual_end <= visual_start:
+                        continue
+                    start_time, end_time = cls._ass_time(visual_start), cls._ass_time(visual_end)
+                    if not darkened:
+                        lines.append(f"Dialogue: 0,{start_time},{end_time},Normal,,0,0,0,,{text}\n")
+                        continue
+                    dark = round((1 - timeline.headline.get("darkening", 0.7)) * 255)
+                    lines.append(f"Dialogue: -1,{start_time},{end_time},Headline,,0,0,0,,{{\\an7\\bord0\\shad0\\1c&H000000&\\1a&H{dark:02X}&\\p1}}m 0 0 l {settings.width} 0 {settings.width} {settings.height} 0 {settings.height}{{\\p0}}\n")
+                    lines.append(f"Dialogue: 0,{start_time},{end_time},Headline,,0,0,0,,{{\\alpha&H00&}}{{\\an5\\bord3\\shad0}}{text}\n")
         path.write_text("".join(lines), encoding="utf-8")
 
     def render_preview(self, project: Project, timeline: Timeline, directory: Path, **kwargs) -> Path:
@@ -538,13 +586,25 @@ class RenderService:
         info = self.check_ffmpeg()
         self.validate_render_inputs(project, timeline, settings)
         encoder = settings.encoder
+        encoder_diagnostics = self.probe_encoders(info["ffmpeg"],
+            test_hardware=encoder in ("auto", "h264_nvenc"))
         if encoder == "auto":
-            encoder, reasons = self.choose_encoder(info["ffmpeg"])
-            for reason in reasons:
-                emit(f"Bộ mã hóa phần cứng không khả dụng: {reason}")
+            encoder = encoder_diagnostics["selected_encoder"]
+        elif encoder == "h264_nvenc" and encoder_diagnostics["nvenc_test"] != "passed":
+            encoder_diagnostics["fallback_reasons"].append("NVIDIA được chọn nhưng NVENC không qua kiểm tra; dùng CPU.")
+            encoder = "libx264"
+        encoder_diagnostics["requested_encoder"] = settings.encoder
+        encoder_diagnostics["intermediate_encoder"] = "h264_nvenc" if encoder == "h264_nvenc" else "libx264"
+        encoder_diagnostics["final_encoder"] = encoder
+        encoder_diagnostics["nvenc_quality"] = ("preset p4, VBR CQ " + str(max(0, settings.crf - 1)) +
+                                                ", no bitrate cap" if encoder == "h264_nvenc" else None)
+        for reason in encoder_diagnostics["fallback_reasons"]:
+            emit("Bộ mã hóa phần cứng không khả dụng: " + reason)
         if performance:
             performance.encoder = encoder
+            performance.encoder_diagnostics = encoder_diagnostics
         emit(f"Bộ mã hóa xuất video: {encoder}")
+        emit(f"Bộ mã hóa clip trung gian: {encoder_diagnostics['intermediate_encoder']}")
         cache = directory / "generated" / "cache" / "render"
         output_dir = directory / "generated" / "output"
         cache.mkdir(parents=True, exist_ok=True)
@@ -568,7 +628,15 @@ class RenderService:
         try:
             if performance:
                 performance.start("ffmpeg_video_encoding")
-            for index, (start, end, kind, event) in enumerate(events, 1):
+            clip_encoder = encoder_diagnostics["intermediate_encoder"]
+            def build_clips(selected_encoder: str) -> list[Path]:
+                clips: list[Path] = []
+                for index, (start, end, kind, event) in enumerate(events, 1):
+                    clips.append(build_clip(index, start, end, kind, event, selected_encoder))
+                return [clip for clip in clips if clip is not None]
+
+            def build_clip(index, start, end, kind, event, selected_encoder):
+                nonlocal stage
                 stage = f"segment-{index}"
                 emit(f"rendering segment {index}/{len(events)}")
                 asset = media.get(event.media_id)
@@ -577,12 +645,15 @@ class RenderService:
                 if frames <= 0:
                     if kind == "visual" and event.is_key:
                         raise ValueError("KEY duration is shorter than one rendered frame")
-                    continue
+                    return None
                 clip_settings = {key: getattr(settings, key) for key in
                     ("width", "height", "fps", "crf", "preset", "transition_ms")}
-                signature = json.dumps(["visual-filter-v2", kind, asdict(event), clip_settings, info["version"],
+                signature = json.dumps(["visual-filter-v2" if selected_encoder == "libx264" else "visual-filter-v3",
+                    kind, asdict(event), clip_settings, info["version"],
                     transitions.get(start), transitions.get(end), settings.transition_ms, frames,
-                    (asset.path, Path(asset.path).stat().st_size, Path(asset.path).stat().st_mtime_ns) if asset and Path(asset.path).exists() else None], sort_keys=True, default=str)
+                    (asset.path, Path(asset.path).stat().st_size, Path(asset.path).stat().st_mtime_ns) if asset and Path(asset.path).exists() else None] +
+                    ([selected_encoder, self._video_encoder_args(selected_encoder, settings)]
+                     if selected_encoder != "libx264" else []), sort_keys=True, default=str)
                 clip = cache / f"{sha256(signature.encode()).hexdigest()}.mp4"
                 if not clip.exists():
                     effect = event.effect if kind == "visual" else "none"
@@ -606,11 +677,28 @@ class RenderService:
                         command += ["-i", asset.path]
                         if kind == "visual" and event.video_policy == "freeze_last_frame":
                             filter_text += f",tpad=stop_mode=clone:stop_duration={duration}"
+                    temporary_clip = clip.with_name(clip.stem + ".partial.mp4")
                     command += ["-an", "-vf", filter_text, "-frames:v", str(frames), "-r", str(settings.fps),
-                        "-c:v", "libx264", "-preset", settings.preset, "-crf", str(settings.crf),
-                        "-pix_fmt", "yuv420p", str(clip)]
-                    self._run(command, stage, cache)
-                used.append(clip)
+                        "-c:v", selected_encoder, *self._video_encoder_args(selected_encoder, settings),
+                        "-pix_fmt", "yuv420p", str(temporary_clip)]
+                    try:
+                        self._run(command, stage, cache)
+                        os.replace(temporary_clip, clip)
+                    finally:
+                        temporary_clip.unlink(missing_ok=True)
+                return clip
+
+            try:
+                used = build_clips(clip_encoder)
+            except RenderError as exc:
+                if clip_encoder != "h264_nvenc" or self._cancel.is_set():
+                    raise
+                reason = f"NVENC thất bại khi tạo clip trung gian: {exc.stderr[-300:]}"
+                encoder_diagnostics["fallback_reasons"].append(reason)
+                emit(reason + "; thử lại bằng CPU libx264")
+                clip_encoder = "libx264"
+                encoder_diagnostics["intermediate_encoder"] = clip_encoder
+                used = build_clips(clip_encoder)
             concat_list = cache / "concat.txt"
             concat_list.write_text("".join(f"file '{path.as_posix().replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'\n" for path in used), encoding="utf-8")
             visual = cache / "visual.mp4"
@@ -719,10 +807,7 @@ class RenderService:
             def video_command_for(selected_encoder: str, destination: Path) -> list[str]:
                 command = [info["ffmpeg"], "-y", "-i", str(visual), "-an", "-vf", video_filter,
                     "-c:v", selected_encoder]
-                if selected_encoder == "libx264":
-                    command += ["-preset", settings.preset, "-crf", str(settings.crf)]
-                else:
-                    command += ["-b:v", "8M" if settings.width >= 1920 else "3M"]
+                command += self._video_encoder_args(selected_encoder, settings)
                 return command + ["-pix_fmt", "yuv420p", "-r", str(settings.fps),
                     "-t", str(end_seconds), str(destination)]
 
@@ -760,11 +845,14 @@ class RenderService:
                 performance.start("ffmpeg_video_encoding")
             try:
                 video_file, video_command = render_video_only(encoder)
-            except RenderError:
+            except RenderError as exc:
                 if encoder == "libx264" or self._cancel.is_set():
                     raise
-                emit(f"{encoder} thất bại khi xuất; thử lại bằng CPU libx264")
+                reason = f"{encoder} thất bại khi xuất: {exc.stderr[-300:]}"
+                encoder_diagnostics["fallback_reasons"].append(reason)
+                emit(reason + "; thử lại bằng CPU libx264")
                 encoder = "libx264"
+                encoder_diagnostics["final_encoder"] = encoder
                 if performance:
                     performance.encoder = encoder
                 video_file, video_command = render_video_only(encoder)
@@ -831,6 +919,7 @@ class RenderService:
                 "rendered_at": datetime.now(timezone.utc).isoformat(), "output_path": str(output),
                 "resolution": [settings.width, settings.height], "fps": settings.fps,
                 "video_codec": "h264", "encoder_used": encoder,
+                "encoder_diagnostics": encoder_diagnostics,
                 "audio_codec": "aac", "pixel_format": "yuv420p",
                 "settings": asdict(settings), "ffmpeg_version": info["version"], "status": self._status,
                 "stage": stage,

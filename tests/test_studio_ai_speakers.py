@@ -59,7 +59,7 @@ def test_japanese_first_review_keeps_ai_request_explicit(tmp_path, monkeypatch):
     app.ai.open_review()
     dialog = root.winfo_children()[-1]
     table = next(child for child in dialog.winfo_children() if isinstance(child, ttk.Treeview))
-    assert table["columns"] == ("section", "ja", "role", "vi", "review")
+    assert table["columns"] == ("section", "ja", "role", "review")
     labels = [child.cget("text") for child in dialog.winfo_children() if isinstance(child, ttk.Frame)
               for child in child.winfo_children() if isinstance(child, ttk.Button)]
     assert "Phân vai lại toàn bài bằng AI" in labels

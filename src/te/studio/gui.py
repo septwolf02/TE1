@@ -67,6 +67,9 @@ class StudioApp:
         self.font_path = tk.StringVar(value="")
         self.motion = tk.StringVar(value="Tự động: zoom và pan")
         self.transition = tk.StringVar(value="Cắt thẳng")
+        self.render_encoder = tk.StringVar(value={"auto": "Tự động", "libx264": "CPU libx264",
+            "h264_nvenc": "NVIDIA NVENC"}.get(self.service.settings.get("render_encoder"), "Tự động"))
+        self.headline_duration = tk.StringVar(value="7")
         self.summary = tk.StringVar(value="Tạo hoặc mở dự án để bắt đầu.")
         self.key_summary = tk.StringVar(value="0 ảnh KEY")
         self.ordinary_summary = tk.StringVar(value="Chưa chọn ảnh thường")
@@ -478,6 +481,24 @@ class StudioApp:
     def _build_render_details(self) -> None:
         self._build_motion()
         box = self._group("Output và chẩn đoán")
+        choice = ttk.Frame(box)
+        choice.pack(anchor="w", pady=3)
+        ttk.Label(choice, text="Bộ mã hóa Full HD").pack(side="left")
+        encoder_combo = ttk.Combobox(choice, textvariable=self.render_encoder,
+            values=("Tự động", "CPU libx264", "NVIDIA NVENC"), state="readonly", width=20)
+        encoder_combo.pack(side="left", padx=6)
+        def save_encoder(_event):
+            self.service.settings["render_encoder"] = {
+                "Tự động": "auto", "CPU libx264": "libx264", "NVIDIA NVENC": "h264_nvenc"
+            }[self.render_encoder.get()]
+            self.service.save_settings()
+        encoder_combo.bind("<<ComboboxSelected>>", save_encoder)
+        headline_row = ttk.Frame(box)
+        headline_row.pack(anchor="w", pady=3)
+        ttk.Label(headline_row, text="Tiêu đề mở đầu (giây)").pack(side="left")
+        ttk.Combobox(headline_row, textvariable=self.headline_duration,
+            values=("5", "6", "7", "8", "9", "10"), state="readonly", width=5).pack(side="left", padx=6)
+        self.headline_duration.trace_add("write", lambda *_: self._dirty())
         ttk.Label(box, textvariable=self.performance_summary, wraplength=900).pack(anchor="w", pady=3)
         ttk.Button(box, text="Mở báo cáo thời gian", command=self._open_performance_report).pack(anchor="w")
         files = ttk.Frame(box)
@@ -550,6 +571,7 @@ class StudioApp:
         self.media_count.set(self.service.media_folder_status(state))
         self.min_duration.set(str(state.image_min_seconds))
         self.max_duration.set(str(state.image_max_seconds))
+        self.headline_duration.set(str(int(state.headline_duration_seconds)))
         settings = state.project.tts_settings
         self.voice.set(settings.voice_id)
         self.narration_mode.set("Nhiều giọng A/B/C/D" if state.narration_mode == "multi" else "Một giọng")
@@ -604,6 +626,7 @@ class StudioApp:
                                 else "single")
         state.image_min_seconds = float(self.min_duration.get())
         state.image_max_seconds = float(self.max_duration.get())
+        state.headline_duration_seconds = float(self.headline_duration.get())
         state.motion_preset = MOTION_LABELS[self.motion.get()]
         state.transition = TRANSITION_LABELS[self.transition.get()]
         settings = state.project.tts_settings

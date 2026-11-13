@@ -166,6 +166,7 @@ class StudioProject:
     audio_mode: str = "single"
     multi_voice_manifest: dict[str, str] = field(default_factory=dict)
     audio_configuration_signature: str | None = None
+    headline_duration_seconds: float = 7.0
 
 
 class StudioService:
@@ -296,7 +297,8 @@ class StudioService:
             data.get("subtitle_size", 156),
             validate_speaker_data(data.get("speaker_data", default_speaker_data()), sections),
             data.get("narration_mode", "single"), data.get("audio_mode", "single"),
-            data.get("multi_voice_manifest", {}), data.get("audio_configuration_signature"))
+            data.get("multi_voice_manifest", {}), data.get("audio_configuration_signature"),
+            data.get("headline_duration_seconds", 7.0))
 
     @staticmethod
     def _apply_sections(project: Project, sections: dict[str, dict[str, str]]) -> None:
@@ -386,6 +388,8 @@ class StudioService:
             raise ValueError("Thời lượng ảnh phải nằm trong khoảng 0–60 giây.")
         if not 36 <= state.subtitle_size <= 240:
             raise ValueError("Cỡ chữ phụ đề phải từ 36 đến 240.")
+        if not 5 <= state.headline_duration_seconds <= 10:
+            raise ValueError("Thời lượng tiêu đề mở đầu phải từ 5 đến 10 giây.")
         working = deepcopy(state.project)
         self._apply_sections(working, state.sections)
         working.validate()
@@ -401,6 +405,7 @@ class StudioService:
                 "intro_preferences": deepcopy(state.intro_preferences),
                 "font_path": state.font_path,
                 "subtitle_size": state.subtitle_size,
+                "headline_duration_seconds": state.headline_duration_seconds,
                 "last_final": state.last_final,
                 "key_drafts": deepcopy(state.key_drafts),
                 "speaker_data": deepcopy(speaker_data),

@@ -287,12 +287,12 @@ class SpeakerAIController:
                 widget.configure(state="disabled")
         section.trace_add("write", load_section)
         load_section()
-        ttk.Label(dialog, text="Chọn đoạn Nhật để sửa vai; tiếng Việt là ngữ cảnh tham khảo. "
+        ttk.Label(dialog, text="Chọn đoạn Nhật để sửa vai; xem toàn bài Việt ở khung phía trên. "
                   "Mỗi đoạn Nhật cần đúng một vai trước khi xác nhận.").pack(anchor="w", padx=10)
-        columns = ("section", "ja", "role", "vi", "review")
+        columns = ("section", "ja", "role", "review")
         table = ttk.Treeview(dialog, columns=columns, show="headings", height=10)
         for key, label, width in (("section", "P", 40), ("ja", "Tiếng Nhật", 350),
-                                  ("role", "Vai", 45), ("vi", "Tham chiếu Việt", 350),
+                                  ("role", "Vai", 45),
                                   ("review", "Trạng thái / cảnh báo", 260)):
             table.heading(key, text=label)
             table.column(key, width=width)
@@ -345,13 +345,11 @@ class SpeakerAIController:
                     continue
                 stale = review_data["status"] == "stale"
                 try:
-                    vi = (passage(state.sections, item, "vi") if item["vietnamese"] else
-                          state.sections[item["section"]]["vi"]) if not stale else "[script đã đổi]"
                     ja = passage(state.sections, item, "ja") if not stale else "[script đã đổi]"
                 except Exception:
-                    vi, ja = "[script đã đổi]", "[script đã đổi]"
+                    ja = "[script đã đổi]"
                 table.insert("", "end", iid=str(index), values=(item["section"], ja[:100], item["role"] or "?",
-                             vi[:100], "stale" if stale else item["warning"] or
+                             "stale" if stale else item["warning"] or
                              ("Đã xác nhận" if item["confirmed"] else "Cần xem lại")))
         refresh()
         result_filter.trace_add("write", lambda *_: refresh())

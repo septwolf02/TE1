@@ -270,6 +270,7 @@ class StudioRenderService:
         timeline, warnings = timeline_service.build_timeline(project, state.directory,
             previous=previous, effect_sequence=MOTION_PRESETS[state.motion_preset],
             intro_overlap=True, intro_enabled=state.intro_preferences)
+        timeline.headline["duration_seconds"] = state.headline_duration_seconds
         for transition in timeline.transitions:
             transition.preset = state.transition
         self._distribute_images(project, timeline, state.image_min_seconds, state.image_max_seconds)
@@ -352,8 +353,11 @@ class StudioRenderService:
                 [item.end_ms for item in timeline.blocks] +
                 [item.end_ms for item in timeline.intros] +
                 [item.end_ms for item in timeline.placements], default=0) / 1000
+        selected_encoder = self.studio.settings.get("render_encoder", "auto")
+        if selected_encoder not in ("auto", "libx264", "h264_nvenc"):
+            selected_encoder = "auto"
         settings = (RenderSettings(960, 540, 30, 28, "veryfast", font_path=state.font_path)
-                    if preview else RenderSettings(font_path=state.font_path, encoder="auto"))
+                    if preview else RenderSettings(font_path=state.font_path, encoder=selected_encoder))
         settings = replace(settings, font_family=self._font_family(state))
         settings = replace(settings, subtitle_font_size=state.subtitle_size)
         if performance:
