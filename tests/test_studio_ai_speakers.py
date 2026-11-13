@@ -10,7 +10,7 @@ import pytest
 
 from te.project.models import SectionName
 from te.studio.ai_auth import ChatGPTAuth, CredentialStore
-from te.studio.ai_clients import AIConnectionError, OpenAIConnection
+from te.studio.ai_clients import AIConnectionError, OpenAIConnection, normalize_reasoning_levels
 from te.studio.ai_speakers import (ROLES, filter_assignments, resolve_speaker_references,
                                    resolve_japanese_references,
                                    script_fingerprint, section_counts, segment_passages,
@@ -261,6 +261,80 @@ def test_model_catalogs_stream_contract_and_no_auto_fallback(monkeypatch):
     assert "reasoning" not in api_body
     assert calls[-2].get_header("Authorization") == "Bearer oauth-test"
     assert calls[-1].get_header("Authorization") == "Bearer sk-test"
+
+
+def test_dictionary_reasoning_catalog_is_safe_for_gui_and_request(monkeypatch):
+    import te.studio.ai_clients as clients
+    from te.studio.ai_gui import SpeakerAIController
+
+    requests = []
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        if request.full_url.endswith("/models"):
+            return io.BytesIO(json.dumps({"models": [
+                {"slug": "gpt-dict", "visibility": "list", "display_name": "Dictionary model",
+                 "supported_reasoning_levels": [
+                     {"effort": "low", "label": "Fast"}, {"id": "medium"}, "high",
+                     {"unknown": "low"}, None, {"effort": 4}, "low"]},
+                {"visibility": "list", "slug": None}, None]}).encode())
+        output = {"assignments": [{"japanese_id": item["id"], "role": "A",
+                  "confidence": "high", "warning": ""}
+                  for item in segment_passages(sections()).values() if item["language"] == "ja"]}
+        events = [{"type": "response.output_text.delta", "delta": json.dumps(output)},
+                  {"type": "response.completed"}]
+        return io.BytesIO(b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events))
+    monkeypatch.setattr(clients, "urlopen", fake_urlopen)
+    connection = OpenAIConnection("chatgpt", lambda: "mock-token")
+    models = connection.models()
+    assert models == [{"id": "gpt-dict", "label": "Dictionary model",
+                       "reasoning": ["low", "medium", "high"], "structured": False}]
+
+    class Variable:
+        def __init__(self, value=""):
+            self.value = value
+        def get(self):
+            return self.value
+        def set(self, value):
+            self.value = value
+    settings = {"ai": {"models": {}}}
+    combo = SimpleNamespace(configure=lambda **kwargs: None)
+    controller = SpeakerAIController.__new__(SpeakerAIController)
+    controller.app = SimpleNamespace(service=SimpleNamespace(settings=settings, save_settings=lambda: None))
+    controller.available = {"chatgpt": [], "api": []}
+    controller.provider = Variable("chatgpt")
+    controller.model = Variable()
+    controller.model_combo = combo
+    controller.status = Variable()
+    controller._models_loaded(models, "chatgpt")
+    assert controller.model.get() == "gpt-dict"
+    assert controller.status.get() == "Đã tải 1 models. Reasoning hỗ trợ: low, medium, high"
+
+    source = sections()
+    connection.attribute_speakers({key: value["vi"] for key, value in source.items()},
+                                  {key: value["ja"] for key, value in source.items()}, dict(ROLES),
+                                  {"model": controller.model.get(), "available_models": models,
+                                   "reasoning": "Nhanh"})
+    assert json.loads(requests[-1].data)["reasoning"] == {"effort": "low"}
+
+
+def test_malformed_reasoning_catalog_metadata_never_crashes_callback():
+    from te.studio.ai_gui import SpeakerAIController
+    assert normalize_reasoning_levels({"effort": "low"}) == []
+    assert normalize_reasoning_levels([{"effort": "surprise"}, 23, None]) == []
+    controller = SpeakerAIController.__new__(SpeakerAIController)
+    controller.app = SimpleNamespace(service=SimpleNamespace(
+        settings={"ai": {"models": {}}}, save_settings=lambda: None))
+    controller.available = {"chatgpt": [], "api": []}
+    controller.provider = SimpleNamespace(get=lambda: "chatgpt")
+    messages = []
+    controller.model_combo = SimpleNamespace(configure=lambda **kwargs: None)
+    controller.model = SimpleNamespace(set=lambda value: messages.append(value), get=lambda: "bad")
+    controller.status = SimpleNamespace(set=lambda value: messages.append(value))
+    controller._models_loaded([None, {"id": None}, {"id": "bad", "reasoning": [23, {}]}], "chatgpt")
+    assert controller.available["chatgpt"][0]["reasoning"] == []
+    assert "Reasoning chưa được catalog xác nhận" in messages[-1]
+    controller._models_loaded({"wrong": "shape"}, "chatgpt")
+    assert "không có mục hợp lệ" in messages[-1]
 
 
 def test_api_quota_error_is_reported_without_fallback(monkeypatch):

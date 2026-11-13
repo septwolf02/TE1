@@ -10,7 +10,7 @@ import time
 
 from te.project.models import SectionName
 from te.studio.ai_auth import ChatGPTAuth, CredentialStore
-from te.studio.ai_clients import OpenAIConnection
+from te.studio.ai_clients import OpenAIConnection, normalize_model
 from te.studio.ai_speakers import (ROLES, filter_assignments, passage, script_fingerprint,
                                    section_counts, validate_speaker_data, voice_key, voice_label)
 from te.studio.multi_voice import confirmed_speaker_data
@@ -126,9 +126,15 @@ class SpeakerAIController:
             self.app.service.save_settings()
 
     def _models_loaded(self, models, provider):
+        models = ([normalized for item in models if (normalized := normalize_model(item)) is not None]
+                  if isinstance(models, list) else [])
         self.available[provider] = models
         if provider == self.provider.get():
             self.model_combo.configure(values=[item["id"] for item in models])
+            if not models:
+                self.model.set("")
+                self.status.set("Model catalog không có mục hợp lệ; hãy tải lại danh sách models.")
+                return
             saved = self._prefs().setdefault("models", {}).get(provider)
             ids = [item["id"] for item in models]
             self.model.set(saved if saved in ids else next((item for item in ids if "luna" in item), ids[0]))

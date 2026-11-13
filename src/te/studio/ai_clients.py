@@ -16,6 +16,40 @@ class AIConnectionError(RuntimeError):
     pass
 
 
+REASONING_LEVELS = frozenset(("none", "minimal", "low", "medium", "high", "xhigh"))
+
+
+def normalize_reasoning_levels(raw: object) -> list[str]:
+    """Keep only supported effort names from either catalog representation."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    levels = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            entry = next((entry[key] for key in ("effort", "level", "id", "name", "value")
+                          if isinstance(entry.get(key), str)), None)
+        if isinstance(entry, str):
+            level = entry.strip().lower()
+            if level in REASONING_LEVELS and level not in levels:
+                levels.append(level)
+    return levels
+
+
+def normalize_model(item: object) -> dict | None:
+    if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip():
+        return None
+    identifier = item["id"].strip()
+    label = item.get("label")
+    return {"id": identifier, "label": label if isinstance(label, str) and label else identifier,
+            "reasoning": normalize_reasoning_levels(item.get("reasoning")),
+            "structured": item.get("structured") is True}
+
+
+def _catalog_entries(data: dict, key: str) -> list[dict]:
+    entries = data.get(key)
+    return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+
 def _error_message(exc: HTTPError) -> str:
     try:
         data = json.loads(exc.read().decode("utf-8"))
@@ -56,16 +90,26 @@ class OpenAIConnection:
     def models(self) -> list[dict]:
         with self._request("/models") as response:
             data = json.load(response)
+        if not isinstance(data, dict):
+            raise AIConnectionError("Model catalog không hợp lệ.")
         if self.provider == "chatgpt":
-            models = [{"id": item["slug"], "label": item.get("display_name", item["slug"]),
-                       "reasoning": item.get("supported_reasoning_levels", []),
-                       "structured": item.get("supports_structured_outputs") is True or
-                                     "json_schema" in (item.get("supported_response_formats") or [])}
-                      for item in data.get("models", []) if item.get("visibility") == "list" and item.get("slug")]
+            models = []
+            for item in _catalog_entries(data, "models"):
+                if item.get("visibility") != "list":
+                    continue
+                formats = item.get("supported_response_formats")
+                structured = (item.get("supports_structured_outputs") is True or
+                              isinstance(formats, list) and "json_schema" in formats)
+                models.append(normalize_model({"id": item.get("slug"), "label": item.get("display_name"),
+                                               "reasoning": item.get("supported_reasoning_levels"),
+                                               "structured": structured}))
         else:
-            models = [{"id": item["id"], "label": item["id"], "reasoning": [],
-                       "structured": item.get("supports_structured_outputs") is True}
-                      for item in data.get("data", []) if item.get("id", "").startswith("gpt-")]
+            models = [normalize_model({"id": item.get("id"), "reasoning": [],
+                                       "structured": item.get("supports_structured_outputs") is True})
+                      for item in _catalog_entries(data, "data")
+                      if isinstance(item.get("id"), str) and item["id"].startswith("gpt-")]
+        models = [item for item in models if item is not None]
+        if self.provider == "api":
             models.sort(key=lambda item: item["id"])
         if not models:
             raise AIConnectionError("Account không có model phù hợp được liệt kê.")
@@ -76,7 +120,11 @@ class OpenAIConnection:
         sections = {key: {"vi": vietnamese_script[key], "ja": japanese_script[key]}
                     for key in vietnamese_script}
         model = model_settings["model"]
-        if model not in {item["id"] for item in model_settings["available_models"]}:
+        raw_models = model_settings.get("available_models")
+        available = ([normalized for item in raw_models
+                      if (normalized := normalize_model(item)) is not None]
+                     if isinstance(raw_models, list) else [])
+        if model not in {item["id"] for item in available}:
             raise ValueError("Model chưa được xác nhận trong danh sách account.")
         passages = segment_passages({section.value: sections.get(section.value, {"vi": "", "ja": ""})
                                       for section in SectionName})
@@ -109,7 +157,7 @@ class OpenAIConnection:
                 "input": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
                 "store": False, "stream": True}
         # Only send reasoning when the selected catalog entry explicitly advertises the level.
-        selected = next(item for item in model_settings["available_models"] if item["id"] == model)
+        selected = next(item for item in available if item["id"] == model)
         if selected.get("structured"):
             body["text"] = {"format": {"type": "json_schema", "name": "speaker_attribution",
                 "strict": True, "schema": {"type": "object", "additionalProperties": False,
