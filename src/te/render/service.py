@@ -594,7 +594,7 @@ class RenderService:
             encoder_diagnostics["fallback_reasons"].append("NVIDIA được chọn nhưng NVENC không qua kiểm tra; dùng CPU.")
             encoder = "libx264"
         encoder_diagnostics["requested_encoder"] = settings.encoder
-        encoder_diagnostics["intermediate_encoder"] = "h264_nvenc" if encoder == "h264_nvenc" else "libx264"
+        encoder_diagnostics["intermediate_encoder"] = encoder
         encoder_diagnostics["final_encoder"] = encoder
         encoder_diagnostics["nvenc_quality"] = ("preset p4, VBR CQ " + str(max(0, settings.crf - 1)) +
                                                 ", no bitrate cap" if encoder == "h264_nvenc" else None)
@@ -691,9 +691,9 @@ class RenderService:
             try:
                 used = build_clips(clip_encoder)
             except RenderError as exc:
-                if clip_encoder != "h264_nvenc" or self._cancel.is_set():
+                if clip_encoder == "libx264" or self._cancel.is_set():
                     raise
-                reason = f"NVENC thất bại khi tạo clip trung gian: {exc.stderr[-300:]}"
+                reason = f"{clip_encoder} thất bại khi tạo clip trung gian: {exc.stderr[-300:]}"
                 encoder_diagnostics["fallback_reasons"].append(reason)
                 emit(reason + "; thử lại bằng CPU libx264")
                 clip_encoder = "libx264"

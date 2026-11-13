@@ -192,12 +192,52 @@ def test_encoder_probe_selects_nvenc_and_manual_cpu_skips_probe(monkeypatch):
     assert len(calls) == before + 1 and manual["nvenc_test"] == "not_tested_manual_selection"
 
 
+@pytest.mark.parametrize("listed,working,expected", [
+    (("h264_nvenc", "h264_qsv", "h264_amf"), "h264_qsv", "h264_qsv"),
+    (("h264_nvenc", "h264_amf"), "h264_amf", "h264_amf"),
+    (("h264_nvenc", "h264_qsv", "h264_amf"), None, "libx264"),
+])
+def test_auto_encoder_priority_after_hardware_probe(monkeypatch, listed, working, expected):
+    attempted = []
+    def fake_run(command, **_kwargs):
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(command, 0,
+                stdout="".join(f" V..... {name}\n" for name in listed))
+        encoder = command[command.index("-c:v") + 1]
+        attempted.append(encoder)
+        return subprocess.CompletedProcess(command, 0 if encoder == working else 1,
+            stderr="device unavailable" if encoder != working else "")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = RenderService.probe_encoders("ffmpeg")
+    assert report["selected_encoder"] == expected
+    assert attempted == (list(listed[:listed.index(working) + 1]) if working else list(listed))
+    assert report["nvenc_test"].startswith("failed:")
+
+
 def test_nvenc_encoder_args_keep_quality_and_no_bitrate_ceiling():
     from te.render import RenderSettings
     settings = RenderSettings()
     assert RenderService._video_encoder_args("libx264", settings) == ["-preset", "medium", "-crf", "20"]
     assert RenderService._video_encoder_args("h264_nvenc", settings) == [
         "-preset", "p4", "-rc", "vbr", "-cq", "19", "-b:v", "0"]
+
+
+def test_studio_full_hd_uses_machine_preference_and_preview_keeps_cpu(tmp_path, monkeypatch):
+    studio, state = studio_project(tmp_path, intro=False, key=False)
+    workflow = StudioRenderService(studio)
+    selections = []
+    def fake_render(_project, _timeline, directory, *, settings, **_kwargs):
+        selections.append(settings.encoder)
+        output = directory / "fake-render.mp4"
+        output.write_bytes(b"render fixture")
+        return output
+    monkeypatch.setattr(workflow.render, "render_project", fake_render)
+    monkeypatch.setattr(workflow, "_publish", lambda source, _root, _name: source)
+    for choice in ("auto", "libx264", "h264_nvenc"):
+        studio.settings["render_encoder"] = choice
+        workflow.render_video(state, preview=False)
+    workflow.render_video(state, preview=True)
+    assert selections == ["auto", "libx264", "h264_nvenc", "libx264"]
 
 
 def test_same_project_job_lock(tmp_path):
@@ -336,19 +376,22 @@ def test_real_full_hd_export_cpu_fallback_and_saved_output_path(tmp_path, monkey
     assert report["encoder_diagnostics"] == details
 
 
-def test_full_hd_uses_selected_encoder_for_intermediate_and_final_commands(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hardware_encoder", ["h264_nvenc", "h264_qsv", "h264_amf"])
+def test_full_hd_uses_selected_encoder_for_intermediate_and_final_commands(
+        tmp_path, monkeypatch, hardware_encoder):
     studio, state = studio_project(tmp_path, intro=False, key=False)
     state.motion_preset = "none"
     studio.save_project(state)
     workflow = StudioRenderService(studio)
     monkeypatch.setattr(RenderService, "probe_encoders",
-        staticmethod(lambda _ffmpeg, **_kwargs: {"available_h264_encoders": ["libx264", "h264_nvenc"],
-            "nvenc_test": "passed", "hardware_tests": {"h264_nvenc": "passed"},
-            "selected_encoder": "h264_nvenc", "fallback_reasons": []}))
+        staticmethod(lambda _ffmpeg, **_kwargs: {"available_h264_encoders": ["libx264", hardware_encoder],
+            "nvenc_test": "passed" if hardware_encoder == "h264_nvenc" else "not_listed",
+            "hardware_tests": {hardware_encoder: "passed"},
+            "selected_encoder": hardware_encoder, "fallback_reasons": []}))
     real_run = RenderService._run
     encoded = []
     def simulated_gpu(self, command, stage, cache):
-        if "h264_nvenc" in command:
+        if hardware_encoder in command:
             encoded.append((stage, command))
             start = command.index("-c:v")
             end = command.index("-pix_fmt", start)
@@ -360,8 +403,8 @@ def test_full_hd_uses_selected_encoder_for_intermediate_and_final_commands(tmp_p
     assert any(stage.startswith("segment-") for stage, _ in encoded)
     assert any(stage == "finalizing" for stage, _ in encoded)
     manifest = json.loads((state.directory / "generated/output/final.manifest.json").read_text(encoding="utf-8"))
-    assert manifest["encoder_diagnostics"]["intermediate_encoder"] == "h264_nvenc"
-    assert manifest["encoder_diagnostics"]["final_encoder"] == "h264_nvenc"
+    assert manifest["encoder_diagnostics"]["intermediate_encoder"] == hardware_encoder
+    assert manifest["encoder_diagnostics"]["final_encoder"] == hardware_encoder
     assert manifest["resolution"] == [1920, 1080] and manifest["fps"] == 30
 
 

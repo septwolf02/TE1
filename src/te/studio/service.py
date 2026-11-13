@@ -180,8 +180,10 @@ class StudioService:
                 raise ValueError("Cấu hình TE Studio không tương thích.")
         else:
             data = {"version": STUDIO_VERSION, "projects_root": str(projects_root),
-                    "output_root": str(output_root), "profiles": {}, "profile_aliases": {}}
+                    "output_root": str(output_root), "profiles": {}, "profile_aliases": {},
+                    "render_encoder": "auto"}
         data.setdefault("profile_aliases", {})
+        data.setdefault("render_encoder", "auto")
         self.settings = data
 
     def save_settings(self) -> None:

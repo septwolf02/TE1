@@ -17,6 +17,26 @@ def make_service(tmp_path):
     return service
 
 
+def test_render_encoder_preference_is_machine_level_and_legacy_defaults_to_auto(tmp_path):
+    from te.studio.gui import RENDER_ENCODER_LABELS
+    service = make_service(tmp_path)
+    state = service.create_project("Encoder preference")
+    assert service.settings["render_encoder"] == "auto"
+    assert RENDER_ENCODER_LABELS["Tự động – ưu tiên GPU"] == "auto"
+    service.settings["render_encoder"] = "libx264"
+    service.save_settings()
+    assert StudioService(service.config_path).settings["render_encoder"] == "libx264"
+    assert "render_encoder" not in json.loads((state.directory / "studio.json").read_text(encoding="utf-8"))
+    service.settings["render_encoder"] = "h264_nvenc"
+    service.save_settings()
+    assert StudioService(service.config_path).settings["render_encoder"] == "h264_nvenc"
+    legacy = json.loads(service.config_path.read_text(encoding="utf-8"))
+    legacy.pop("render_encoder")
+    service.config_path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert StudioService(service.config_path).settings["render_encoder"] == "auto"
+    assert service.open_project(state.directory).project.id == state.project.id
+
+
 def test_create_open_save_rename_duplicate_unicode_and_sections(tmp_path):
     service = make_service(tmp_path)
     state = service.create_project("大谷 – câu chuyện", channel=None)

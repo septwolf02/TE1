@@ -30,6 +30,8 @@ MOTION_LABELS = {
     "Chỉ pan": "pan", "Không chuyển động": "none",
 }
 TRANSITION_LABELS = {"Cắt thẳng": "cut", "Mờ dần": "fade", "Chuyển mờ": "crossfade"}
+RENDER_ENCODER_LABELS = {"Tự động – ưu tiên GPU": "auto", "CPU libx264": "libx264",
+                         "NVIDIA NVENC": "h264_nvenc"}
 
 
 class StudioApp:
@@ -67,8 +69,8 @@ class StudioApp:
         self.font_path = tk.StringVar(value="")
         self.motion = tk.StringVar(value="Tự động: zoom và pan")
         self.transition = tk.StringVar(value="Cắt thẳng")
-        self.render_encoder = tk.StringVar(value={"auto": "Tự động", "libx264": "CPU libx264",
-            "h264_nvenc": "NVIDIA NVENC"}.get(self.service.settings.get("render_encoder"), "Tự động"))
+        self.render_encoder = tk.StringVar(value=next((label for label, value in RENDER_ENCODER_LABELS.items()
+            if value == self.service.settings.get("render_encoder")), "Tự động – ưu tiên GPU"))
         self.headline_duration = tk.StringVar(value="7")
         self.summary = tk.StringVar(value="Tạo hoặc mở dự án để bắt đầu.")
         self.key_summary = tk.StringVar(value="0 ảnh KEY")
@@ -485,12 +487,10 @@ class StudioApp:
         choice.pack(anchor="w", pady=3)
         ttk.Label(choice, text="Bộ mã hóa Full HD").pack(side="left")
         encoder_combo = ttk.Combobox(choice, textvariable=self.render_encoder,
-            values=("Tự động", "CPU libx264", "NVIDIA NVENC"), state="readonly", width=20)
+            values=tuple(RENDER_ENCODER_LABELS), state="readonly", width=24)
         encoder_combo.pack(side="left", padx=6)
         def save_encoder(_event):
-            self.service.settings["render_encoder"] = {
-                "Tự động": "auto", "CPU libx264": "libx264", "NVIDIA NVENC": "h264_nvenc"
-            }[self.render_encoder.get()]
+            self.service.settings["render_encoder"] = RENDER_ENCODER_LABELS[self.render_encoder.get()]
             self.service.save_settings()
         encoder_combo.bind("<<ComboboxSelected>>", save_encoder)
         headline_row = ttk.Frame(box)
