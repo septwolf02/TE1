@@ -223,6 +223,41 @@ def test_vietnamese_only_draft_section_survives_reopen(tmp_path):
     assert not any(segment.section == SectionName.P3 for segment in reopened.project.segments)
 
 
+def test_clear_ordinary_folder_preserves_key_intro_and_source_files(tmp_path, monkeypatch):
+    from PIL import Image
+    import te.studio.service as studio_service
+    from te.project.models import MediaCategory
+    service = make_service(tmp_path)
+    state = service.create_project("Clear folder")
+    service.set_section(state, SectionName.P1, japanese="一。", vietnamese="Một.")
+    service.save_project(state)
+    folder = tmp_path / "ordinary"
+    folder.mkdir()
+    normal = folder / "normal.png"
+    key = folder / "key-photo.png"
+    Image.new("RGB", (80, 45)).save(normal)
+    Image.new("RGB", (80, 45)).save(key)
+    intro = tmp_path / "P1.mp4"
+    intro.write_bytes(b"fixture")
+    monkeypatch.setattr(studio_service, "_video_metadata", lambda _path: (1920, 1080, 3.0))
+    service.set_intro(state, SectionName.P1, intro)
+    service.select_media_folder(state, folder)
+    draft = service.add_key_draft(state, key)
+    ordinary = next(asset for asset in state.project.media if asset.path == str(normal))
+    MediaAssignmentService().assign_media(state.project, state.project.segments[0].id,
+                                          ordinary.id, locked=True)
+    service.save_project(state)
+    assert service.clear_media_folder(state) == 1
+    reopened = service.open_project(state.directory)
+    assert reopened.project.media_library_path is None
+    assert reopened.project.media_assignments == []
+    assert any(asset.id == draft["media_id"] and asset.category == MediaCategory.KEY
+               for asset in reopened.project.media)
+    assert len(reopened.key_drafts) == 1
+    assert service.intro_path(reopened, SectionName.P1) == str(intro)
+    assert normal.exists() and key.exists() and intro.exists()
+
+
 def test_legacy_v8_project_and_interrupted_sidecar_recovery(tmp_path):
     service = make_service(tmp_path)
     directory = tmp_path / "legacy"
@@ -268,7 +303,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     app.vn_text.insert("1.0", "Lời Việt đầu tiên.")
     app.subtitle_chars.set("18")
     app.subtitle_size.set("180")
-    pending = [app.body]
+    pending = [app._details["media"]]
     button_labels = []
     while pending:
         widget = pending.pop()
@@ -276,6 +311,31 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
             button_labels.append(widget.cget("text"))
         pending.extend(widget.winfo_children())
     assert "Xáo trộn lại ảnh" in button_labels
+    main_labels = []
+    pending = [app.body]
+    while pending:
+        widget = pending.pop()
+        if isinstance(widget, ttk.Button):
+            main_labels.append(widget.cget("text"))
+            assert widget.cget("command")
+        pending.extend(widget.winfo_children())
+    assert "AI phân vai" in main_labels
+    assert "Cài đặt AI" in main_labels
+    assert "Xem nhanh 960×540" in main_labels
+    assert "Xuất Full HD 1920×1080" in main_labels
+    assert main_labels.count("Chi tiết / Cài đặt") == 6
+    assert root.minsize() == (920, 690)
+    assert set(app._details) == {"ai", "management", "keys", "media", "intros",
+                                 "voice", "subtitles", "output"}
+    for key in app._details:
+        app._show_detail(key)
+        root.update_idletasks()
+        assert app._details[key].winfo_viewable()
+        app._close_detail(key)
+        assert not app._details[key].winfo_viewable()
+    root.geometry("1100x750")
+    root.update()
+    assert app.vn_text.winfo_width() > 200 and app.jp_text.winfo_width() > 200
     app._script_changed()
     app._switch_section(SectionName.P2)
     assert app.state.sections["P1"]["ja"] == "初めての日本語。"
@@ -291,7 +351,9 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     key_file.write_bytes(b"test image")
     app.service.add_key_draft(app.state, key_file)
     app._refresh_key_rows()
-    panel = app.key_rows.winfo_children()[0]
+    draft_id = app.state.key_drafts[0]["id"]
+    app._open_key_entry("draft", draft_id)
+    panel = root.winfo_children()[-1].winfo_children()[0]
     combos = [child for child in panel.winfo_children() if isinstance(child, ttk.Combobox)]
     assert len(combos) == 3
     combos[0].set("P2")
@@ -311,7 +373,9 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     second_key.write_bytes(b"second test image")
     app.service.add_key_draft(app.state, second_key)
     app._refresh_key_rows()
-    draft_panel = app.key_rows.winfo_children()[0]
+    draft_id = app.state.key_drafts[0]["id"]
+    app._open_key_entry("draft", draft_id)
+    draft_panel = root.winfo_children()[-1].winfo_children()[0]
     draft_combos = [child for child in draft_panel.winfo_children() if isinstance(child, ttk.Combobox)]
     draft_combos[1].set(draft_combos[1]["values"][0])
     assert not draft_combos[2].get()
@@ -320,6 +384,20 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
                           if isinstance(child, ttk.Button) and child["text"] == "Xác nhận VN–JP")
     second_confirm.invoke()
     assert len(app.state.project.key_placements) == 2
+    app.speed.set("1.2")
+    app.pitch.set("0.05")
+    app.subtitle_color.set("#FFEEDD")
+    app.motion.set("Chỉ pan")
+    app.intro_enabled[SectionName.P2].set(False)
+    app._set_intro_preference(SectionName.P2, False)
+    assert app._save()
+    assert "1.2×" in app.voice_summary.get()
+    assert "#FFEEDD" in app.subtitle_summary.get()
+    assert "Chỉ pan" in app.output_summary.get()
+    app._load_state(app.service.open_project(path))
+    assert app.speed.get() == "1.2"
+    assert app.subtitle_color.get() == "#FFEEDD"
+    assert app.intro_enabled[SectionName.P2].get() is False
     root.destroy()
     reopened = app.service.open_project(path)
     assert reopened.sections["P1"]["ja"] == "初めての日本語。もう一文。"
@@ -327,6 +405,10 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     assert reopened.subtitle_size == 180
     assert reopened.sections["P2"]["vi"] == "Phần thứ hai."
     assert len(reopened.project.key_placements) == 2
+    assert reopened.project.tts_settings.speaking_rate == 1.2
+    assert reopened.project.tts_settings.pitch == 0.05
+    assert reopened.project.subtitle_style["text_color"] == "#FFEEDD"
+    assert reopened.motion_preset == "pan"
 
 
 @pytest.mark.skipif(os.environ.get("TE_STUDIO_GUI_SMOKE") != "1", reason="requires a desktop display")

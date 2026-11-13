@@ -6,6 +6,7 @@ import tempfile
 import tkinter as tk
 from tkinter import messagebox, ttk
 from pathlib import Path
+import time
 
 from te.project.models import SectionName
 from te.studio.ai_auth import ChatGPTAuth, CredentialStore
@@ -26,6 +27,7 @@ class SpeakerAIController:
         self.reasoning = tk.StringVar(value=prefs.get("reasoning", "Nhanh"))
         self.api_key = tk.StringVar()
         self.status = tk.StringVar(value="Chưa kết nối AI; vẫn có thể phân vai thủ công.")
+        self.assignment_status = tk.StringVar(value="Chưa phân vai")
         self.available: dict[str, list[dict]] = {"chatgpt": [], "api": []}
 
     def _prefs(self):
@@ -49,12 +51,33 @@ class SpeakerAIController:
         raise PermissionError("Chưa lưu OpenAI API key.")
 
     def build(self):
-        box = self.app._group("AI Settings và phân vai A/B/C/D")
+        box = self.app._group("AI phân vai")
         row = ttk.Frame(box)
         row.pack(fill="x", pady=3)
         ttk.Label(row, text="Kết nối").pack(side="left")
         ttk.Combobox(row, textvariable=self.provider, values=("chatgpt", "api"),
                      state="readonly", width=14).pack(side="left", padx=5)
+        ttk.Label(row, text="Model").pack(side="left", padx=(10, 0))
+        self.model_combo = ttk.Combobox(row, textvariable=self.model, state="readonly", width=30)
+        self.model_combo.pack(side="left", padx=5)
+        self.model_combo.bind("<<ComboboxSelected>>", lambda _event: self._save_model())
+        ttk.Label(row, text="Reasoning").pack(side="left", padx=(10, 2))
+        ttk.Combobox(row, textvariable=self.reasoning, values=("Nhanh", "Vừa"),
+                     state="readonly", width=10).pack(side="left")
+        self.reasoning.trace_add("write", lambda *_: self._save_reasoning())
+        ttk.Label(row, textvariable=self.assignment_status).pack(side="left", padx=10)
+        ttk.Button(row, text="AI phân vai", command=lambda: self.open_review(auto_analyze=True)).pack(
+            side="right", padx=4)
+        ttk.Button(row, text="Cài đặt AI", command=lambda: self.app._show_detail("ai")).pack(
+            side="right", padx=4)
+        ttk.Label(box, textvariable=self.status).pack(anchor="w")
+        self.app._create_detail("ai", "Cài đặt AI", self._build_settings)
+        self._provider_changed()
+
+    def _build_settings(self):
+        box = self.app._group("Kết nối AI")
+        row = ttk.Frame(box)
+        row.pack(fill="x", pady=3)
         ttk.Button(row, text="Continue with ChatGPT", command=self._connect_chatgpt).pack(side="left", padx=3)
         ttk.Button(row, text="Reconnect", command=lambda: self._connect_chatgpt(consent=True)).pack(side="left", padx=3)
         ttk.Button(row, text="Disconnect", command=self._disconnect).pack(side="left", padx=3)
@@ -66,21 +89,9 @@ class SpeakerAIController:
         ttk.Button(api, text="Save securely", command=self._save_api_key).pack(side="left")
         ttk.Button(api, text="Test connection", command=self._test_api).pack(side="left", padx=5)
         ttk.Label(api, text="API có thể phát sinh phí riêng; chỉ gọi khi bạn bấm phân vai.").pack(side="left")
-        controls = ttk.Frame(box)
-        controls.pack(fill="x", pady=3)
-        ttk.Label(controls, text="Model").pack(side="left")
-        self.model_combo = ttk.Combobox(controls, textvariable=self.model, state="readonly", width=35)
-        self.model_combo.pack(side="left", padx=5)
-        self.model_combo.bind("<<ComboboxSelected>>", lambda _event: self._save_model())
-        ttk.Button(controls, text="Tải models", command=self._load_models).pack(side="left")
-        ttk.Label(controls, text="Reasoning").pack(side="left", padx=(12, 2))
-        ttk.Combobox(controls, textvariable=self.reasoning, values=("Nhanh", "Vừa"),
-                     state="readonly", width=10).pack(side="left")
-        self.reasoning.trace_add("write", lambda *_: self._save_reasoning())
-        ttk.Button(controls, text="AI phân vai", command=self.open_review).pack(side="left", padx=10)
+        ttk.Button(box, text="Tải models cho kết nối đang chọn", command=self._load_models).pack(anchor="w", pady=5)
         ttk.Label(box, textvariable=self.status).pack(anchor="w")
         ttk.Label(box, text="Giọng A/B/C/D chỉ lưu cho B2; render hiện tại vẫn dùng một giọng VOICEVOX.").pack(anchor="w")
-        self._provider_changed()
 
     def _provider_changed(self):
         provider = self.provider.get()
@@ -176,11 +187,32 @@ class SpeakerAIController:
 
     def project_loaded(self):
         if self.app.state:
+            self.refresh_assignment_status()
             status = self.app.state.speaker_data["status"]
             if status == "stale":
                 self.status.set("Phân vai cũ đã stale do script đổi; hãy xem lại trước khi xác nhận.")
 
-    def open_review(self):
+    def refresh_assignment_status(self):
+        if self.app.state:
+            data = self.app.state.speaker_data
+            self.assignment_status.set(f"{len(data['assignments'])} đoạn • {data['status']}")
+
+    def _ready_for_analysis(self) -> bool:
+        provider = self.provider.get()
+        model = self.model.get()
+        if not model or not any(item["id"] == model for item in self.available[provider]):
+            return False
+        try:
+            if provider == "api":
+                return bool(self.credentials.get("api_key"))
+            record = self._auth().record()
+            return bool(record and "chatgpt.tokens.use.direct" in record.get("scopes", [])
+                        and "resource.invoke" in record.get("scopes", [])
+                        and (record.get("expires_at", 0) > time.time() or record.get("refresh_token")))
+        except Exception:
+            return False
+
+    def open_review(self, *, auto_analyze=False):
         app = self.app
         if not app.state or not app._save():
             return
@@ -422,6 +454,7 @@ class SpeakerAIController:
                 state.speaker_data["fingerprint"] = script_fingerprint(source)
                 state.speaker_data["status"] = "draft"
                 app.service.save_project(state)
+                self.refresh_assignment_status()
                 for role_id in ROLES:
                     refresh_voice_status(role_id)
                 refresh()
@@ -524,6 +557,7 @@ class SpeakerAIController:
             try:
                 state.speaker_data = validate_speaker_data(state.speaker_data, state.sections)
                 app.service.save_project(state)
+                self.refresh_assignment_status()
                 for role_id in ROLES:
                     refresh_voice_status(role_id)
             except Exception as exc:
@@ -540,15 +574,21 @@ class SpeakerAIController:
             state.speaker_data["fingerprint"] = script_fingerprint(state.sections)
             state.speaker_data["status"] = "draft"
             app.service.save_project(state)
+            self.refresh_assignment_status()
             refresh()
             note.set("Đã tạo bản nháp trống. Chọn đoạn Việt/Nhật để gán vai thủ công.")
 
         buttons = ttk.Frame(dialog, padding=8)
         buttons.pack(fill="x")
-        analyze_button = ttk.Button(buttons, text="AI phân vai", command=analyze)
+        analyze_button = ttk.Button(buttons, text="Phân tích lại bằng AI", command=analyze)
         analyze_button.pack(side="left", padx=4)
         ttk.Button(buttons, text="Thêm / sửa thủ công", command=edit_row).pack(side="left", padx=4)
         ttk.Button(buttons, text="Tạo mới thủ công", command=reset_manual).pack(side="left", padx=4)
         ttk.Button(buttons, text="Xác nhận và lưu", command=confirm).pack(side="left", padx=4)
         ttk.Button(buttons, text="Tải giọng VOICEVOX", command=load_voices).pack(side="left", padx=4)
         ttk.Button(buttons, text="Đóng", command=dialog.destroy).pack(side="right")
+        if auto_analyze and state.speaker_data["status"] == "unreviewed" and not state.speaker_data["assignments"] \
+                and self._ready_for_analysis():
+            dialog.after(100, analyze)
+        elif state.speaker_data["status"] == "stale":
+            note.set("Phân vai cũ đã stale. Bấm Phân tích lại bằng AI hoặc sửa thủ công.")

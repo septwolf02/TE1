@@ -570,6 +570,29 @@ class StudioService:
         self.save_project(state)
         return self.eligible_image_count(state)
 
+    def clear_media_folder(self, state: StudioProject) -> int:
+        """Detach the selected ordinary folder, keeping source files, KEY and intros."""
+        root = state.project.media_library_path
+        if not root:
+            return 0
+        working = deepcopy(state.project)
+        removed = {asset.id for asset in working.media if asset.category == MediaCategory.NORMAL
+                   and Path(asset.path).is_relative_to(Path(root))}
+        assignments = [item for item in working.media_assignments if item.media_id in removed]
+        for item in assignments:
+            MediaAssignmentService().unassign_media(working, item.segment_id, force=True)
+        working.media = [asset for asset in working.media if asset.id not in removed]
+        working.media_library_path = None
+        working.validate()
+        previous = state.project
+        state.project = working
+        try:
+            self.save_project(state)
+        except Exception:
+            state.project = previous
+            raise
+        return len(assignments)
+
     def reshuffle_images(self, state: StudioProject) -> int:
         """Reassign only unlocked automatic ordinary visuals; never touch KEY/manual media."""
         working = deepcopy(state.project)

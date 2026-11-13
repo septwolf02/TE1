@@ -59,10 +59,18 @@ class StudioApp:
         self.subtitle_color = tk.StringVar(value="#FFFFFF")
         self.subtitle_chars = tk.StringVar(value="24")
         self.subtitle_size = tk.StringVar(value="156")
+        self.subtitle_lines = tk.StringVar(value="2 (cố định)")
+        self.subtitle_position = tk.StringVar(value="bottom_center")
         self.font_path = tk.StringVar(value="")
         self.motion = tk.StringVar(value="Tự động: zoom và pan")
         self.transition = tk.StringVar(value="Cắt thẳng")
         self.summary = tk.StringVar(value="Tạo hoặc mở dự án để bắt đầu.")
+        self.key_summary = tk.StringVar(value="0 ảnh KEY")
+        self.ordinary_summary = tk.StringVar(value="Chưa chọn ảnh thường")
+        self.intro_summary = tk.StringVar(value="P1 — | P2 — | P3 — | P4 —")
+        self.voice_summary = tk.StringVar(value="Chưa chọn giọng")
+        self.subtitle_summary = tk.StringVar(value="Phụ đề Nhật")
+        self.output_summary = tk.StringVar(value="Chuyển động và thư mục xuất")
         self.section_status = tk.StringVar()
         self.render_status = tk.StringVar(value="Sẵn sàng tạo lời đọc hoặc render.")
         self._job_queue: Queue[tuple[str, object]] = Queue()
@@ -72,65 +80,121 @@ class StudioApp:
         self.ai = SpeakerAIController(self)
         self.intro_paths = {section: tk.StringVar() for section in SECTIONS}
         self.root.title("TE Studio — Trình biên tập")
-        self.root.geometry("1200x900")
+        self.root.geometry("1400x900")
         self.root.minsize(920, 690)
+        self._details: dict[str, tk.Toplevel] = {}
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._choose_initial_project()
 
     def _build(self) -> None:
-        outer = ttk.Frame(self.root)
+        outer = ttk.Frame(self.root, padding=8)
         outer.pack(fill="both", expand=True)
-        canvas = tk.Canvas(outer, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        body = ttk.Frame(canvas, padding=14)
-        window = canvas.create_window((0, 0), window=body, anchor="nw")
-        body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
-        canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(-int(event.delta / 120), "units"))
-        self.body = body
+        self.body = outer
+        self._group_expand = False
         self._build_header()
+        script_host = ttk.Frame(outer)
+        script_host.pack(fill="both", expand=True)
+        self.body, self._group_expand = script_host, True
         self._build_script()
+        self.body, self._group_expand = outer, False
         self.ai.build()
-        self._build_keys()
-        self._build_media()
-        self._build_intros()
-        self._build_voice()
-        self._build_motion()
+        modules = ttk.Frame(outer)
+        modules.pack(fill="x", pady=4)
+        modules.columnconfigure((0, 1), weight=1, uniform="module")
+        cards = (("3. Ảnh KEY", self.key_summary, "keys"),
+                 ("4. Ảnh thường", self.ordinary_summary, "media"),
+                 ("5. Intro P1–P4", self.intro_summary, "intros"),
+                 ("6. VOICEVOX", self.voice_summary, "voice"),
+                 ("Phụ đề Nhật", self.subtitle_summary, "subtitles"),
+                 ("Render/output settings", self.output_summary, "output"))
+        for index, (title, status, key) in enumerate(cards):
+            card = ttk.LabelFrame(modules, text=title, padding=5)
+            card.grid(row=index // 2, column=index % 2, sticky="ew", padx=4, pady=2)
+            card.columnconfigure(0, weight=1)
+            ttk.Label(card, textvariable=status, wraplength=360).grid(row=0, column=0, sticky="ew", padx=4)
+            ttk.Button(card, text="Chi tiết / Cài đặt", command=lambda k=key: self._show_detail(k)).grid(
+                row=0, column=1, padx=4)
         self._build_render()
-        self._build_footer()
+        self._create_detail("management", "Quản lý dự án và kênh", self._build_management)
+        self._create_detail("keys", "Ảnh KEY", self._build_keys)
+        self._create_detail("media", "Ảnh thường", self._build_media)
+        self._create_detail("intros", "Intro P1–P4", self._build_intros)
+        self._create_detail("voice", "VOICEVOX", self._build_voice)
+        self._create_detail("subtitles", "Phụ đề Nhật", self._build_subtitles)
+        self._create_detail("output", "Render/output settings", self._build_render_details)
+        self.body = outer
 
     def _group(self, title: str) -> ttk.LabelFrame:
         group = ttk.LabelFrame(self.body, text=title, padding=10)
-        group.pack(fill="x", pady=6)
+        group.pack(fill="both" if self._group_expand else "x", expand=self._group_expand, pady=3)
         return group
 
+    def _create_detail(self, key: str, title: str, builder) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("980x640")
+        dialog.minsize(700, 400)
+        dialog.transient(self.root)
+        dialog.withdraw()
+        previous = self.body
+        self.body = ttk.Frame(dialog, padding=10)
+        self.body.pack(fill="both", expand=True)
+        builder()
+        footer = ttk.Frame(dialog, padding=8)
+        footer.pack(fill="x")
+        ttk.Button(footer, text="Lưu và đóng", command=lambda k=key: self._close_detail(k)).pack(side="right")
+        ttk.Button(footer, text="Lưu", command=self._save_clicked).pack(side="right", padx=5)
+        dialog.protocol("WM_DELETE_WINDOW", lambda k=key: self._close_detail(k))
+        self._details[key] = dialog
+        self.body = previous
+
+    def _show_detail(self, key: str) -> None:
+        dialog = self._details[key]
+        dialog.deiconify()
+        dialog.lift()
+        dialog.grab_set()
+
+    def _close_detail(self, key: str) -> None:
+        if self.state and not self._save():
+            return
+        dialog = self._details[key]
+        dialog.grab_release()
+        dialog.withdraw()
+        self._refresh_compact_summaries()
+
     def _build_header(self) -> None:
-        box = self._group("1. Tên video và kênh")
+        box = self._group("1. Dự án")
         box.columnconfigure(1, weight=1)
-        ttk.Label(box, text="Tên video *").grid(row=0, column=0, sticky="w", padx=4)
+        ttk.Label(box, text="Tên video").grid(row=0, column=0, sticky="w", padx=4)
         ttk.Entry(box, textvariable=self.video_name).grid(row=0, column=1, sticky="ew", padx=4)
         ttk.Label(box, text="Kênh").grid(row=0, column=2, sticky="w", padx=4)
         self.channel_combo = ttk.Combobox(box, textvariable=self.channel, state="readonly", width=23)
         self.channel_combo.grid(row=0, column=3, sticky="ew", padx=4)
         self.channel_combo.bind("<<ComboboxSelected>>", lambda _e: self._channel_selected())
         actions = ttk.Frame(box)
-        actions.grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        for label, command in (("Tạo dự án", self._new_project), ("Mở dự án", self._open_project),
-                               ("Lưu", self._save_clicked), ("Đổi tên", self._rename_project),
-                               ("Nhân bản", self._duplicate_project),
-                               ("Tạo kênh", self._create_channel), ("Đổi tên kênh", self._rename_channel),
-                               ("Áp dụng mặc định kênh", self._apply_channel),
-                               ("Lưu cài đặt vào kênh", self._save_channel),
-                               ("Thư mục mặc định", self._configure_roots)):
+        actions.grid(row=0, column=4, sticky="e")
+        for label, command in (("Tạo", self._new_project), ("Mở", self._open_project),
+                               ("Lưu", self._save_clicked),
+                               ("Quản lý…", lambda: self._show_detail("management"))):
             ttk.Button(actions, text=label, command=command).pack(side="left", padx=2)
-        ttk.Label(box, textvariable=self._save_status).grid(row=2, column=0, columnspan=4,
-                                                             sticky="w", pady=(7, 0))
+        ttk.Label(box, textvariable=self._save_status).grid(row=1, column=0, columnspan=5,
+                                                             sticky="w", pady=(2, 0))
         self.video_name.trace_add("write", lambda *_: self._dirty())
         self._refresh_channels()
+
+    def _build_management(self) -> None:
+        box = self._group("Dự án và kênh")
+        actions = (("Đổi tên dự án", self._rename_project), ("Nhân bản dự án", self._duplicate_project),
+                   ("Tạo kênh", self._create_channel), ("Đổi tên kênh", self._rename_channel),
+                   ("Áp dụng mặc định kênh", self._apply_channel),
+                   ("Lưu cài đặt vào kênh", self._save_channel),
+                   ("Thư mục mặc định", self._configure_roots))
+        for index, (label, command) in enumerate(actions):
+            ttk.Button(box, text=label, command=command, width=29).grid(
+                row=index // 2, column=index % 2, sticky="w", padx=5, pady=5)
+        ttk.Label(box, textvariable=self.summary, wraplength=850).grid(row=4, column=0,
+                                                                       columnspan=2, sticky="w", pady=10)
 
     def _build_script(self) -> None:
         box = self._group("2. Kịch bản tiếng Việt – tiếng Nhật")
@@ -145,10 +209,11 @@ class StudioApp:
             side="left", padx=12)
         ttk.Label(tabs, textvariable=self.section_status).pack(side="right")
         panel = ttk.Frame(box)
-        panel.pack(fill="both", expand=True, pady=6)
+        panel.pack(fill="both", expand=True, pady=3)
         panel.columnconfigure((0, 1), weight=1)
-        ttk.Label(panel, text="Bản tham chiếu tiếng Việt (giữ nguyên đoạn văn)").grid(row=0, column=0, sticky="w")
-        ttk.Label(panel, text="Lời dẫn tiếng Nhật gửi tới VOICEVOX").grid(row=0, column=1, sticky="w")
+        panel.rowconfigure(1, weight=1)
+        ttk.Label(panel, text="Tiếng Việt").grid(row=0, column=0, sticky="w")
+        ttk.Label(panel, text="Tiếng Nhật").grid(row=0, column=1, sticky="w")
         self.vn_text = tk.Text(panel, height=12, wrap="word", undo=True, font=("Segoe UI", 11))
         self.jp_text = tk.Text(panel, height=12, wrap="word", undo=True, font=("Yu Gothic", 11))
         self.vn_text.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
@@ -158,7 +223,6 @@ class StudioApp:
             widget.bind("<FocusOut>", lambda _e: self._capture_section())
             widget.bind("<MouseWheel>", lambda event, w=widget:
                 (w.yview_scroll(-int(event.delta / 120), "units"), "break")[1])
-        ttk.Label(box, text="Chuyển P1–P4 không làm mất nội dung; TE không tự dịch hoặc viết lại kịch bản.").pack(anchor="w")
 
     def _open_full_script_import(self) -> None:
         if not self.state:
@@ -266,14 +330,25 @@ class StudioApp:
         box = self._group("3. Ảnh KEY và câu tiết lộ")
         ttk.Button(box, text="Thêm ảnh KEY…", command=self._add_key).pack(anchor="w")
         ttk.Label(box, text="Chọn câu tiếng Nhật, nhập câu tiếng Việt tương ứng rồi bấm Xác nhận. Không tự ghép câu.").pack(anchor="w", pady=3)
-        self.key_rows = ttk.Frame(box)
-        self.key_rows.pack(fill="x")
+        listing = ttk.Frame(box)
+        listing.pack(fill="both", expand=True)
+        canvas = tk.Canvas(listing, height=390, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(listing, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.key_rows = ttk.Frame(canvas)
+        window = canvas.create_window((0, 0), window=self.key_rows, anchor="nw")
+        self.key_rows.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
 
     def _build_media(self) -> None:
         box = self._group("4. Thư mục ảnh thường của video này")
         row = ttk.Frame(box)
         row.pack(fill="x")
         ttk.Button(row, text="Chọn thư mục…", command=self._choose_media_folder).pack(side="left")
+        ttk.Button(row, text="Tải lại danh sách", command=self._reload_media_folder).pack(side="left", padx=5)
+        ttk.Button(row, text="Bỏ thư mục…", command=self._clear_media_folder).pack(side="left", padx=5)
         ttk.Button(row, text="Xáo trộn lại ảnh", command=self._reshuffle_images).pack(side="left", padx=5)
         ttk.Label(row, textvariable=self.media_path, wraplength=700).pack(side="left", padx=8)
         ttk.Label(box, textvariable=self.media_count).pack(anchor="w", pady=3)
@@ -305,7 +380,7 @@ class StudioApp:
             ttk.Label(row, textvariable=self.intro_paths[section], wraplength=750).pack(side="left", padx=5)
 
     def _build_voice(self) -> None:
-        box = self._group("6. Giọng VOICEVOX và phụ đề")
+        box = self._group("Giọng VOICEVOX")
         top = ttk.Frame(box)
         top.pack(fill="x")
         ttk.Button(top, text="Dò lại VOICEVOX", command=self._refresh_voice).pack(side="left")
@@ -321,10 +396,18 @@ class StudioApp:
         ttk.Label(row, text="Kiểu giọng").pack(side="left")
         self.style_combo = ttk.Combobox(row, textvariable=self.style, width=18)
         self.style_combo.pack(side="left", padx=5)
+        parameters = ttk.Frame(box)
+        parameters.pack(fill="x", pady=5)
         for label, variable in (("Tốc độ", self.speed), ("Cao độ", self.pitch),
                                 ("Ngữ điệu", self.intonation), ("Âm lượng", self.volume)):
-            ttk.Label(row, text=label).pack(side="left", padx=(8, 0))
-            ttk.Entry(row, textvariable=variable, width=6).pack(side="left", padx=3)
+            ttk.Label(parameters, text=label).pack(side="left", padx=(8, 0))
+            ttk.Entry(parameters, textvariable=variable, width=7).pack(side="left", padx=3)
+        for variable in (self.voice, self.style, self.speed, self.pitch, self.intonation,
+                         self.volume):
+            variable.trace_add("write", lambda *_: self._dirty())
+
+    def _build_subtitles(self) -> None:
+        box = self._group("Phụ đề Nhật")
         subtitle = ttk.Frame(box)
         subtitle.pack(fill="x")
         ttk.Label(subtitle, text="Phông phụ đề").pack(side="left")
@@ -340,10 +423,12 @@ class StudioApp:
         ttk.Label(font, text="File phông Nhật (tùy chọn)").pack(side="left")
         ttk.Entry(font, textvariable=self.font_path, width=68).pack(side="left", padx=5)
         ttk.Button(font, text="Chọn file…", command=self._choose_font).pack(side="left")
-        for variable in (self.voice, self.style, self.speed, self.pitch, self.intonation,
-                         self.volume, self.subtitle_font, self.subtitle_color, self.subtitle_chars,
-                         self.subtitle_size,
-                         self.font_path):
+        ttk.Label(box, text="Số dòng (theo project schema):").pack(anchor="w")
+        ttk.Label(box, textvariable=self.subtitle_lines).pack(anchor="w")
+        ttk.Label(box, text="Vị trí:").pack(anchor="w")
+        ttk.Label(box, textvariable=self.subtitle_position).pack(anchor="w")
+        for variable in (self.subtitle_font, self.subtitle_color, self.subtitle_chars,
+                         self.subtitle_size, self.font_path):
             variable.trace_add("write", lambda *_: self._dirty())
 
     def _choose_font(self) -> None:
@@ -365,31 +450,30 @@ class StudioApp:
         for variable in (self.motion, self.transition):
             variable.trace_add("write", lambda *_: self._dirty())
 
-    def _build_footer(self) -> None:
-        box = self._group("9. Lưu và tình trạng dự án")
-        ttk.Label(box, textvariable=self.summary, wraplength=1050).pack(anchor="w")
-        ttk.Button(box, text="Lưu dự án ngay", command=self._save_clicked).pack(anchor="w", pady=5)
-        future = ttk.LabelFrame(self.body, text="Hàng đợi render — dự kiến Giai đoạn 3", padding=10)
-        future.pack(fill="x", pady=6)
-        ttk.Button(future, text="Thêm vào hàng đợi render (chưa khả dụng)", state="disabled").pack(anchor="w")
-
     def _build_render(self) -> None:
-        box = self._group("8. Tạo lời đọc, xem nhanh và xuất video")
+        box = self._group("Tạo lời đọc và render")
         row = ttk.Frame(box)
         row.pack(fill="x", pady=3)
         for label, action in (("Tạo / cập nhật lời đọc Nhật", self._generate_narration),
                               ("Xem nhanh 960×540", self._render_preview),
                               ("Xuất Full HD 1920×1080", self._render_full)):
             ttk.Button(row, text=label, command=action).pack(side="left", padx=4)
+        ttk.Button(row, text="Mở thư mục xuất", command=self._open_output_folder).pack(side="left", padx=4)
+        ttk.Button(row, text="Cài đặt / Log", command=lambda: self._show_detail("output")).pack(side="left", padx=4)
+        ttk.Label(box, textvariable=self.render_status).pack(anchor="w", pady=1)
+
+    def _build_render_details(self) -> None:
+        self._build_motion()
+        box = self._group("Output và chẩn đoán")
         files = ttk.Frame(box)
         files.pack(fill="x", pady=3)
         for label, action in (("Mở bản xem nhanh", self._open_preview),
                               ("Mở video cuối", self._open_final),
                               ("Mở thư mục xuất", self._open_output_folder)):
             ttk.Button(files, text=label, command=action).pack(side="left", padx=4)
-        ttk.Label(box, textvariable=self.render_status, wraplength=1050).pack(anchor="w", pady=3)
         self.render_log = tk.Text(box, height=5, state="disabled", wrap="word")
-        self.render_log.pack(fill="x")
+        self.render_log.pack(fill="both", expand=True)
+        ttk.Button(box, text="Thêm vào hàng đợi render (chưa khả dụng)", state="disabled").pack(anchor="w")
 
     def _choose_initial_project(self) -> None:
         self._new_project()
@@ -462,6 +546,8 @@ class StudioApp:
         self.subtitle_color.set(state.project.subtitle_style.get("text_color", "#FFFFFF"))
         self.subtitle_chars.set(str(state.project.subtitle_style.get("max_chars_per_line", 24)))
         self.subtitle_size.set(str(state.subtitle_size))
+        self.subtitle_lines.set(str(state.project.subtitle_style.get("max_lines", 2)) + " (cố định)")
+        self.subtitle_position.set(state.project.subtitle_style.get("position", "bottom_center"))
         self.font_path.set(state.font_path or "")
         self.motion.set(next((label for label, value in MOTION_LABELS.items()
                               if value == state.motion_preset), next(iter(MOTION_LABELS))))
@@ -666,11 +752,37 @@ class StudioApp:
         except Exception as exc:
             self._fail(str(exc))
 
-    def _choose_media_folder(self) -> None:
+    def _reload_media_folder(self) -> None:
+        if not self.state or not self.state.project.media_library_path:
+            self._fail("Dự án chưa chọn thư mục ảnh thường.")
+            return
+        self._choose_media_folder(Path(self.state.project.media_library_path))
+
+    def _clear_media_folder(self) -> None:
+        if not self.state or not self.state.project.media_library_path or not self._save():
+            return
+        root = Path(self.state.project.media_library_path)
+        media_ids = {asset.id for asset in self.state.project.media if asset.category == "normal"
+                     and Path(asset.path).is_relative_to(root)}
+        count = sum(item.media_id in media_ids for item in self.state.project.media_assignments)
+        if not messagebox.askyesno("Bỏ thư mục ảnh thường",
+                f"Bỏ thư mục ảnh thường và {count} gán ảnh liên quan khỏi dự án? "
+                "Ảnh gốc, KEY và intro được giữ nguyên.", parent=self._details["media"]):
+            return
+        try:
+            self.service.clear_media_folder(self.state)
+            self.media_path.set("Chưa chọn")
+            self.media_count.set("Chưa chọn thư mục ảnh")
+            self._refresh_gallery()
+            self._refresh_summary()
+        except Exception as exc:
+            self._fail(str(exc))
+
+    def _choose_media_folder(self, selected_path: Path | None = None) -> None:
         state = self.state
         if not state or not self._save():
             return
-        path = filedialog.askdirectory(title="Chọn thư mục ảnh thường cho video này", parent=self.root)
+        path = selected_path or filedialog.askdirectory(title="Chọn thư mục ảnh thường cho video này", parent=self.root)
         if not path:
             return
         snapshot = deepcopy(state)
@@ -680,7 +792,7 @@ class StudioApp:
         def done(count):
             if self.state is state:
                 state.project = snapshot.project
-                self.media_path.set(path)
+                self.media_path.set(str(path))
                 self.media_count.set(f"{count} ảnh thường phù hợp" if count else "Thư mục chưa có ảnh thường phù hợp")
                 self._save()
                 self._refresh_gallery()
@@ -750,49 +862,72 @@ class StudioApp:
             asset = media.get(media_id)
             if not asset:
                 continue
-            panel = ttk.Frame(self.key_rows, padding=5, relief="groove")
-            panel.pack(fill="x", pady=4)
-            photo = self._thumbnail(Path(asset.path)) if asset.available else None
-            if photo:
-                ttk.Label(panel, image=photo).grid(row=0, column=0, rowspan=3, padx=5)
-            ttk.Label(panel, text=asset.filename + (" — thiếu file" if not asset.available else ""),
-                      wraplength=200).grid(row=0, column=1, sticky="w")
             if kind == "draft":
-                duration, offset, identifier, status = self._render_key_draft(panel, item)
+                section = item.get("section", "P1")
+                duration = item.get("duration_seconds")
+                identifier = item["id"]
             else:
                 unit = next((u for u in self.state.project.sentence_units if u.id == item.sentence_id), None)
                 segment = next((s for s in self.state.project.segments if unit and s.id == unit.segment_id), None)
-                ttk.Label(panel, text=segment.section.value if segment else "Cần xem lại").grid(row=0, column=2)
-                ttk.Label(panel, text=unit.synthesis_text if unit else "Câu Nhật đã mất",
-                          wraplength=350).grid(row=0, column=3, sticky="w")
-                ttk.Label(panel, text=item.confirmed_vietnamese_text,
-                          wraplength=350).grid(row=1, column=1, columnspan=3, sticky="w")
-                duration = tk.StringVar(value="" if item.duration_ms is None else str(item.duration_ms / 1000))
-                offset = tk.StringVar(value=str(item.offset_ms))
+                section = segment.section.value if segment else "?"
+                duration = item.duration_ms / 1000 if item.duration_ms is not None else None
                 identifier = item.id
-                status = ("Cần xem lại thủ công" if item.status == "manual_review" else
-                          "Đã xác nhận • khóa KEY" if item.locked else "Đã xác nhận")
-                def update(placement=item, dur=duration, off=offset):
-                    try:
-                        KeyPlacementService.set_timing(self.state.project, self.state.directory,
-                            placement.id, offset_ms=int(off.get()),
-                            duration_ms=round(float(dur.get()) * 1000) if dur.get() else None)
-                        self.service.save_project(self.state)
-                        self._refresh_key_rows()
-                    except Exception as exc:
-                        self._fail(str(exc))
-                ttk.Button(panel, text="Lưu thời điểm", command=update).grid(row=2, column=3, sticky="e")
-                ttk.Button(panel, text="Chọn lại câu", command=lambda i=item.id: self._retarget_key(i)).grid(
-                    row=0, column=4, sticky="e")
+            line = ttk.Frame(self.key_rows, padding=4)
+            line.pack(fill="x")
+            ttk.Label(line, text=f"{section} | {asset.filename[:48]} | " +
+                      self._key_duration_label(duration),
+                      width=65).pack(side="left", padx=4)
+            ttk.Button(line, text="Chỉnh sửa", command=lambda k=kind, i=identifier: self._open_key_entry(k, i)).pack(
+                side="left", padx=4)
+            ttk.Button(line, text="Xóa", command=lambda i=identifier: self._remove_key(i)).pack(side="left")
+        self._refresh_compact_summaries()
+
+    def _open_key_entry(self, kind: str, identifier: str) -> None:
+        if not self.state:
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Chỉnh sửa ảnh KEY")
+        dialog.geometry("900x410")
+        dialog.transient(self._details["keys"])
+        dialog.grab_set()
+        panel = ttk.Frame(dialog, padding=12)
+        panel.pack(fill="both", expand=True)
+        if kind == "draft":
+            item = next(item for item in self.state.key_drafts if item["id"] == identifier)
+            duration, offset, _, _ = self._render_key_draft(panel, item)
+            ttk.Label(panel, text="Thời lượng (giây)").grid(row=4, column=1, sticky="w")
+            ttk.Entry(panel, textvariable=duration, width=8).grid(row=4, column=2, sticky="w")
+            ttk.Label(panel, text="Lệch (ms)").grid(row=5, column=1, sticky="w")
+            ttk.Entry(panel, textvariable=offset, width=8).grid(row=5, column=2, sticky="w")
+        else:
+            item = next(item for item in self.state.project.key_placements if item.id == identifier)
+            unit = next((u for u in self.state.project.sentence_units if u.id == item.sentence_id), None)
+            ttk.Label(panel, text="Tiếng Nhật: " + (unit.synthesis_text if unit else "Câu đã thay đổi"),
+                      wraplength=800).pack(anchor="w", pady=6)
+            ttk.Label(panel, text="Tiếng Việt: " + item.confirmed_vietnamese_text,
+                      wraplength=800).pack(anchor="w", pady=6)
+            duration = tk.StringVar(value="" if item.duration_ms is None else str(item.duration_ms / 1000))
+            offset = tk.StringVar(value=str(item.offset_ms))
             timing = ttk.Frame(panel)
-            timing.grid(row=2, column=1, columnspan=2, sticky="w")
-            ttk.Label(timing, text="Thời lượng (giây)").pack(side="left")
-            ttk.Entry(timing, textvariable=duration, width=7).pack(side="left", padx=4)
-            ttk.Label(timing, text="Lệch (ms)").pack(side="left")
-            ttk.Entry(timing, textvariable=offset, width=7).pack(side="left", padx=4)
-            ttk.Label(panel, text=status).grid(row=1, column=4, padx=5)
-            ttk.Button(panel, text="Xóa KEY", command=lambda i=identifier: self._remove_key(i)).grid(row=2, column=4)
-            panel.columnconfigure(3, weight=1)
+            timing.pack(anchor="w", pady=8)
+            for label, variable in (("Thời lượng (giây)", duration), ("Lệch (ms)", offset)):
+                ttk.Label(timing, text=label).pack(side="left", padx=3)
+                ttk.Entry(timing, textvariable=variable, width=8).pack(side="left", padx=3)
+            def update():
+                try:
+                    KeyPlacementService.set_timing(self.state.project, self.state.directory,
+                        item.id, offset_ms=int(offset.get()),
+                        duration_ms=round(float(duration.get()) * 1000) if duration.get() else None)
+                    self.service.save_project(self.state)
+                    self._refresh_key_rows()
+                    self._refresh_summary()
+                    dialog.destroy()
+                except Exception as exc:
+                    self._fail(str(exc))
+            ttk.Button(panel, text="Lưu thời điểm", command=update).pack(anchor="w", pady=5)
+            ttk.Button(panel, text="Chọn lại câu", command=lambda: self._retarget_key(identifier)).pack(
+                anchor="w", pady=5)
+        ttk.Button(dialog, text="Đóng", command=dialog.destroy).pack(side="right", padx=12, pady=8)
 
     def _render_key_draft(self, panel, item):
         section = tk.StringVar(value=item.get("section", "P1"))
@@ -898,6 +1033,7 @@ class StudioApp:
                     offset_ms=int(offset.get()), duration_seconds=float(duration.get()) if duration.get() else None)
                 self._refresh_key_rows()
                 self._refresh_summary()
+                panel.winfo_toplevel().destroy()
             except Exception as exc:
                 self._fail(str(exc))
         ttk.Button(panel, text="Xác nhận VN–JP", command=confirm).grid(row=2, column=3, sticky="e")
@@ -1107,6 +1243,43 @@ class StudioApp:
                          f"{keys} KEY đã xác nhận, {drafts} chưa xác nhận, {review} cần xem lại • "
                          f"{missing} file media bị thiếu. "
                          f"Dự án: {self.state.directory}")
+        self._refresh_compact_summaries()
+        self.ai.refresh_assignment_status()
+
+    def _refresh_compact_summaries(self) -> None:
+        if not self.state:
+            return
+        state = self.state
+        media = {item.id: item for item in state.project.media}
+        keys = [(item.get("section", "P1"), item["media_id"], item.get("duration_seconds"))
+                for item in state.key_drafts]
+        for item in state.project.key_placements:
+            unit = next((u for u in state.project.sentence_units if u.id == item.sentence_id), None)
+            segment = next((s for s in state.project.segments if unit and s.id == unit.segment_id), None)
+            keys.append((segment.section.value if segment else "?", item.media_id,
+                         item.duration_ms / 1000 if item.duration_ms is not None else None))
+        brief = [f"{section} {media[media_id].filename[:23]} {self._key_duration_label(duration)}"
+                 for section, media_id, duration in keys[:2]
+                 if media_id in media]
+        self.key_summary.set(f"{len(keys)} ảnh KEY" + (" • " + "; ".join(brief) if brief else ""))
+        self.ordinary_summary.set(f"{self.service.eligible_image_count(state)} ảnh • "
+                                  f"{self.min_duration.get()}–{self.max_duration.get()}s • "
+                                  f"{Path(state.project.media_library_path).name[:25] if state.project.media_library_path else 'Chưa chọn thư mục'}")
+        self.intro_summary.set(" | ".join(f"{section.value} {'✓' if self.service.intro_path(state, section) else '—'}"
+                                          for section in SECTIONS))
+        self.voice_summary.set(f"{self.voice.get()} • {self.style.get() or 'mặc định'} • {self.speed.get()}×")
+        self.subtitle_summary.set(f"{self.subtitle_font.get()} • {self.subtitle_size.get()}px • "
+                                  f"{self.subtitle_color.get()}")
+        self.output_summary.set(f"{self.motion.get()} • {self.transition.get()}")
+
+    @staticmethod
+    def _key_duration_label(duration: object) -> str:
+        if duration in (None, ""):
+            return "mặc định"
+        try:
+            return f"{float(duration):g} s"
+        except (TypeError, ValueError):
+            return "thời lượng chưa hợp lệ"
 
     def _append_render_log(self, message: str) -> None:
         self.render_status.set(message)
@@ -1126,6 +1299,8 @@ class StudioApp:
                         widget.configure(state="disabled")
                     visit(widget)
             visit(self.body)
+            for dialog in self._details.values():
+                visit(dialog)
         else:
             for widget, state in self._disabled_widgets:
                 try:

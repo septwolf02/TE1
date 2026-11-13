@@ -2,6 +2,7 @@
 from copy import deepcopy
 import io
 import json
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
@@ -13,6 +14,30 @@ from te.studio.ai_speakers import (ROLES, filter_assignments, resolve_speaker_re
                                    script_fingerprint, section_counts, segment_passages,
                                    validate_assignments, voice_key, voice_label)
 from te.studio.service import StudioService
+
+
+def test_auto_attribution_requires_live_connection_and_loaded_model(monkeypatch):
+    from te.studio.ai_gui import SpeakerAIController
+
+    controller = SpeakerAIController.__new__(SpeakerAIController)
+    controller.provider = SimpleNamespace(get=lambda: "api")
+    controller.model = SimpleNamespace(get=lambda: "gpt-test")
+    controller.available = {"api": [{"id": "gpt-test"}], "chatgpt": []}
+    controller.credentials = SimpleNamespace(get=lambda _key: None)
+    assert not controller._ready_for_analysis()
+    controller.credentials = SimpleNamespace(get=lambda _key: "saved-secret")
+    assert controller._ready_for_analysis()
+    controller.available["api"] = []
+    assert not controller._ready_for_analysis()
+
+    controller.provider = SimpleNamespace(get=lambda: "chatgpt")
+    controller.available["chatgpt"] = [{"id": "gpt-test"}]
+    monkeypatch.setattr(controller, "_auth", lambda: SimpleNamespace(record=lambda: None))
+    assert not controller._ready_for_analysis()
+    monkeypatch.setattr(controller, "_auth", lambda: SimpleNamespace(record=lambda: {
+        "scopes": ["chatgpt.tokens.use.direct", "resource.invoke"],
+        "expires_at": 0, "refresh_token": "refresh"}))
+    assert controller._ready_for_analysis()
 
 
 def sections():
