@@ -1,10 +1,12 @@
 # TE — Sports Video Editor
 
+Hướng dẫn AI phân vai A/B/C/D và hai cách kết nối: [Upgrade B1](docs/ai-speaker-b1.md).
+
 Local-first Windows application for Japanese sports storytelling videos. TE provides Python 3.12 project data and local FFmpeg rendering. Fake TTS supports offline tests and VOICEVOX supports real Japanese speech through a locally running engine.
 
 ## Get started
 
-See [Windows setup](docs/windows-setup.md). The backend has no runtime dependencies; the optional Studio GUI uses Pillow for image thumbnails. A project is a directory containing `project.json` and `timeline.json`.
+See [Windows setup](docs/windows-setup.md). The backend has no runtime dependencies; the optional Studio GUI installs Pillow for thumbnails, keyring for protected credentials, and PyJWT for ChatGPT ID-token validation. A project is a directory containing `project.json` and `timeline.json`.
 
 ```python
 from pathlib import Path

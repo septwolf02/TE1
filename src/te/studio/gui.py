@@ -19,6 +19,7 @@ from te.studio.service import StudioProject, StudioService, MOTION_PRESETS, TRAN
 from te.media.key_service import KeyPlacementService
 from te.studio.rendering import StudioRenderService
 from te.render.service import RenderError
+from te.studio.ai_gui import SpeakerAIController
 
 
 SECTIONS = tuple(SectionName)
@@ -68,6 +69,7 @@ class StudioApp:
         self._job_running = False
         self._disabled_widgets: list[tuple[object, str]] = []
         self.renderer = StudioRenderService(self.service)
+        self.ai = SpeakerAIController(self)
         self.intro_paths = {section: tk.StringVar() for section in SECTIONS}
         self.root.title("TE Studio — Trình biên tập")
         self.root.geometry("1200x900")
@@ -92,6 +94,7 @@ class StudioApp:
         self.body = body
         self._build_header()
         self._build_script()
+        self.ai.build()
         self._build_keys()
         self._build_media()
         self._build_intros()
@@ -478,6 +481,7 @@ class StudioApp:
         self._refresh_key_rows()
         self._refresh_gallery()
         self._refresh_summary()
+        self.ai.project_loaded()
         self._save_status.set(state.recovery_warning or f"Đã mở: {state.directory}")
 
     def _dirty(self) -> None:

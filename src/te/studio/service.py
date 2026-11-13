@@ -21,6 +21,7 @@ from te.tts.sentences import SentenceSpeechService
 from te.subtitles import split_japanese_sentences
 from te.studio.full_script_import import (FullScriptImportPlan, alignment_warnings,
                                           parse_full_script)
+from te.studio.ai_speakers import default_speaker_data, validate_speaker_data
 
 
 STUDIO_VERSION = 1
@@ -160,6 +161,7 @@ class StudioProject:
     font_path: str | None = None
     last_final: str | None = None
     subtitle_size: int = 156
+    speaker_data: dict = field(default_factory=default_speaker_data)
 
 
 class StudioService:
@@ -287,7 +289,8 @@ class StudioService:
             data.get("image_min_seconds", 7.0), data.get("image_max_seconds", 12.0),
             data.get("intro_preferences", {s.value: True for s in SectionName}),
             data.get("key_drafts", []), warning, data.get("font_path"), data.get("last_final"),
-            data.get("subtitle_size", 156))
+            data.get("subtitle_size", 156),
+            validate_speaker_data(data.get("speaker_data", default_speaker_data()), sections))
 
     @staticmethod
     def _apply_sections(project: Project, sections: dict[str, dict[str, str]]) -> None:
@@ -371,8 +374,10 @@ class StudioService:
         working = deepcopy(state.project)
         self._apply_sections(working, state.sections)
         working.validate()
+        speaker_data = validate_speaker_data(state.speaker_data, state.sections)
         ProjectManager().save(state.directory, working)
         state.project = working
+        state.speaker_data = speaker_data
         data = {"version": STUDIO_VERSION, "project_digest": self._project_digest(state.directory),
                 "channel": state.channel, "sections": deepcopy(state.sections),
                 "motion_preset": state.motion_preset, "transition": state.transition,
@@ -382,7 +387,8 @@ class StudioService:
                 "font_path": state.font_path,
                 "subtitle_size": state.subtitle_size,
                 "last_final": state.last_final,
-                "key_drafts": deepcopy(state.key_drafts)}
+                "key_drafts": deepcopy(state.key_drafts),
+                "speaker_data": deepcopy(speaker_data)}
         _write_json(state.directory / "studio.json", data)
         state.recovery_warning = None
 
@@ -416,7 +422,7 @@ class StudioService:
         duplicated = StudioProject(directory, clone, deepcopy(state.sections), state.channel,
             state.motion_preset, state.transition, state.image_min_seconds, state.image_max_seconds,
             deepcopy(state.intro_preferences), deepcopy(state.key_drafts), font_path=state.font_path,
-            subtitle_size=state.subtitle_size)
+            subtitle_size=state.subtitle_size, speaker_data=deepcopy(state.speaker_data))
         self.save_project(duplicated)
         return duplicated
 
