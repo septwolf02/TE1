@@ -149,7 +149,7 @@ def script_fingerprint(sections: dict) -> str:
 
 def default_speaker_data() -> dict:
     return {"identities": dict(ROLES), "assignments": [], "voices": {},
-            "fingerprint": None, "status": "unreviewed"}
+            "parameters": {}, "fingerprint": None, "status": "unreviewed"}
 
 
 def validate_assignments(raw: object, sections: dict, *, strict: bool = True) -> list[dict]:
@@ -220,6 +220,15 @@ def validate_speaker_data(data: dict, sections: dict) -> dict:
             for role, value in voices.items()):
         raise ValueError("Giọng VOICEVOX theo vai không hợp lệ.")
     result["voices"] = voices
+    parameters = data.get("parameters", {})
+    if not isinstance(parameters, dict) or any(role not in ROLES or not isinstance(value, dict) or
+            set(value) != {"speaking_rate", "pitch", "intonation", "volume"} or
+            any(type(number) not in (int, float) for number in value.values()) or
+            not 0 < value["speaking_rate"] <= 4 or not -0.15 <= value["pitch"] <= 0.15 or
+            not 0 < value["intonation"] <= 4 or not 0 < value["volume"] <= 4
+            for role, value in parameters.items()):
+        raise ValueError("Thông số VOICEVOX theo vai không hợp lệ.")
+    result["parameters"] = parameters
     result["fingerprint"] = fingerprint if isinstance(fingerprint, str) else None
     result["status"] = data.get("status") if data.get("status") in (
         "unreviewed", "draft", "confirmed", "stale") else "unreviewed"

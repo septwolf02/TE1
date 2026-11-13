@@ -385,6 +385,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     second_confirm.invoke()
     assert len(app.state.project.key_placements) == 2
     app.speed.set("1.2")
+    app.narration_mode.set("Nhiều giọng A/B/C/D")
     app.pitch.set("0.05")
     app.subtitle_color.set("#FFEEDD")
     app.motion.set("Chỉ pan")
@@ -396,6 +397,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     assert "Chỉ pan" in app.output_summary.get()
     app._load_state(app.service.open_project(path))
     assert app.speed.get() == "1.2"
+    assert app.narration_mode.get() == "Nhiều giọng A/B/C/D"
     assert app.subtitle_color.get() == "#FFEEDD"
     assert app.intro_enabled[SectionName.P2].get() is False
     root.destroy()
@@ -406,6 +408,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     assert reopened.sections["P2"]["vi"] == "Phần thứ hai."
     assert len(reopened.project.key_placements) == 2
     assert reopened.project.tts_settings.speaking_rate == 1.2
+    assert reopened.narration_mode == "multi"
     assert reopened.project.tts_settings.pitch == 0.05
     assert reopened.project.subtitle_style["text_color"] == "#FFEEDD"
     assert reopened.motion_preset == "pan"

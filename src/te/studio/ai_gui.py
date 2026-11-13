@@ -225,7 +225,7 @@ class SpeakerAIController:
         voice_table = ttk.LabelFrame(dialog, text="Giọng theo vai (lưu cho B2)", padding=8)
         voice_table.pack(fill="x", padx=8, pady=5)
         for column, title in enumerate(("Vai", "Tên nhân vật", "Giọng đã lưu", "Chọn giọng VOICEVOX",
-                                        "Nghe thử", "Lưu", "Trạng thái")):
+                                        "Nghe thử", "Lưu", "Trạng thái", "Thông số")):
             ttk.Label(voice_table, text=title).grid(row=0, column=column, sticky="w", padx=4)
         voice_rows = {}
         voice_choices: dict[str, dict] = {}
@@ -247,6 +247,8 @@ class SpeakerAIController:
             ttk.Button(voice_table, text="Lưu hàng", command=lambda r=role_id: save_voice(r)).grid(
                 row=number, column=5, padx=4)
             ttk.Label(voice_table, textvariable=status, width=19).grid(row=number, column=6, sticky="w", padx=4)
+            ttk.Button(voice_table, text="Chỉnh thông số", command=lambda r=role_id: edit_parameters(r)).grid(
+                row=number, column=7, padx=4)
             voice_rows[role_id] = {"name": name, "selected": selected_voice, "saved": saved_text,
                                    "status": status, "combo": combo}
         voice_table.columnconfigure(2, weight=1)
@@ -314,7 +316,8 @@ class SpeakerAIController:
             changed = (widgets["name"].get() != saved_name or
                        voice_key(selected) != voice_key(saved_voice))
             widgets["status"].set("Chưa lưu" if changed else
-                                  "Đã lưu" if saved_voice else "Đã lưu • chưa chọn giọng")
+                                  ("Đã lưu • tùy chỉnh" if role_id in state.speaker_data.get("parameters", {})
+                                   else "Đã lưu") if saved_voice else "Đã lưu • chưa chọn giọng")
 
         for role_id, widgets in voice_rows.items():
             widgets["name"].trace_add("write", lambda *_, r=role_id: refresh_voice_status(r))
@@ -508,31 +511,74 @@ class SpeakerAIController:
                 note.set(str(exc))
                 return
             refresh_voice_status(role_id)
-            note.set(f"Đã lưu tên và giọng của vai {role_id}. Render vẫn dùng một giọng đến B2.")
+            note.set(f"Đã lưu tên và giọng của vai {role_id}.")
+
+        def edit_parameters(role_id):
+            editor = tk.Toplevel(dialog)
+            editor.title(f"Thông số VOICEVOX vai {role_id}")
+            editor.transient(dialog)
+            editor.grab_set()
+            names = (("speaking_rate", "Tốc độ"), ("pitch", "Cao độ"),
+                     ("intonation", "Ngữ điệu"), ("volume", "Âm lượng"))
+            saved = state.speaker_data.get("parameters", {}).get(role_id, {})
+            defaults = state.project.tts_settings
+            values = {}
+            for index, (key, label) in enumerate(names):
+                ttk.Label(editor, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=6)
+                value = tk.StringVar(value=str(saved.get(key, getattr(defaults, key))))
+                values[key] = value
+                ttk.Entry(editor, textvariable=value, width=12).grid(row=index, column=1, padx=12, pady=6)
+            def save():
+                try:
+                    candidate = {key: float(value.get()) for key, value in values.items()}
+                    updated = deepcopy(state.speaker_data)
+                    updated.setdefault("parameters", {})[role_id] = candidate
+                    state.speaker_data = validate_speaker_data(updated, state.sections)
+                    app.service.save_project(state)
+                    refresh_voice_status(role_id)
+                    editor.destroy()
+                    note.set(f"Đã lưu thông số vai {role_id}.")
+                except Exception as exc:
+                    note.set(str(exc))
+            def reset():
+                updated = deepcopy(state.speaker_data)
+                updated.setdefault("parameters", {}).pop(role_id, None)
+                state.speaker_data = validate_speaker_data(updated, state.sections)
+                app.service.save_project(state)
+                refresh_voice_status(role_id)
+                editor.destroy()
+                note.set(f"Vai {role_id} kế thừa thông số từ mục 6.")
+            ttk.Button(editor, text="Lưu", command=save).grid(row=4, column=0, padx=8, pady=10)
+            ttk.Button(editor, text="Kế thừa mặc định", command=reset).grid(row=4, column=1, padx=8, pady=10)
+            ttk.Button(editor, text="Hủy", command=editor.destroy).grid(row=4, column=2, padx=8, pady=10)
 
         def preview_voice(role_id):
             voice = selected_voice(role_id)
-            if voice is None:
+            if voice is None and role_id != "A":
                 note.set(f"Vai {role_id} chưa chọn giọng để nghe thử.")
                 return
             note.set(f"Đang tạo mẫu giọng {role_id}…")
             def work():
                 import winsound
                 provider = VoicevoxProvider(timeout=20)
-                speakers = provider.list_voices(state.project.tts_settings)
-                speaker = next((item for item in speakers if
-                    item.get("speaker_uuid") == voice["speaker_uuid"] or
-                    item.get("name") == voice.get("speaker")), None)
-                style = next((item for item in speaker.get("styles", [])
-                              if item.get("id") == voice["style_id"]), None) if speaker else None
-                if not speaker or not style:
-                    raise ValueError("Giọng hoặc style này không còn trong VOICEVOX Engine.")
                 settings = deepcopy(state.project.tts_settings)
-                settings.voice_id = speaker.get("speaker_uuid") or speaker["name"]
-                settings.style = style["name"]
+                if voice:
+                    speakers = provider.list_voices(settings)
+                    speaker = next((item for item in speakers if
+                        item.get("speaker_uuid") == voice["speaker_uuid"] or
+                        item.get("name") == voice.get("speaker")), None)
+                    style = next((item for item in speaker.get("styles", [])
+                                  if item.get("id") == voice["style_id"]), None) if speaker else None
+                    if not speaker or not style:
+                        raise ValueError("Giọng hoặc style này không còn trong VOICEVOX Engine.")
+                    settings.voice_id = speaker.get("speaker_uuid") or speaker["name"]
+                    settings.style = style["name"]
+                for key, value in state.speaker_data.get("parameters", {}).get(role_id, {}).items():
+                    setattr(settings, key, value)
                 with tempfile.TemporaryDirectory(prefix="te-voice-preview-") as folder:
                     path = Path(folder) / "preview.wav"
-                    provider.synthesize("こんにちは。声のテストです。", settings, path)
+                    provider.synthesize("こんにちは。声のテストです。", settings, path,
+                                        style_id=voice["style_id"] if voice else None)
                     winsound.PlaySound(str(path), winsound.SND_FILENAME)
                 return role_id
             app._background(work, lambda value: note.set(f"Đã nghe thử giọng {value}."))
@@ -564,7 +610,7 @@ class SpeakerAIController:
                 note.set(str(exc))
                 return
             refresh()
-            note.set("Đã xác nhận và lưu. Render vẫn dùng một giọng cho đến B2.")
+            note.set("Đã xác nhận và lưu. Chọn chế độ Nhiều giọng trong mục VOICEVOX để render.")
 
         def reset_manual():
             if not messagebox.askyesno("Tạo mới thủ công", "Xóa các assignment cũ của dự án? "

@@ -57,7 +57,7 @@ class VoicevoxProvider:
             self.preferred_voices.index(item.get("name")) if item.get("name") in self.preferred_voices else len(self.preferred_voices),
             item.get("name", "")))
 
-    def _select(self, settings: TTSSettings) -> tuple[dict, dict]:
+    def _select(self, settings: TTSSettings, style_id: int | None = None) -> tuple[dict, dict]:
         speaker = next((item for item in self.list_voices(settings)
                         if item.get("name") == settings.voice_id or item.get("speaker_uuid") == settings.voice_id), None)
         if speaker is None:
@@ -65,7 +65,9 @@ class VoicevoxProvider:
         styles = speaker.get("styles", [])
         if not styles:
             raise VoicevoxError(f"VOICEVOX speaker has no styles: {settings.voice_id}")
-        if settings.style is None:
+        if style_id is not None:
+            style = next((item for item in styles if item.get("id") == style_id), None)
+        elif settings.style is None:
             style = next((item for item in styles if item.get("name") == "ノーマル"), styles[0])
         else:
             style = next((item for item in styles if item.get("name") == settings.style), None)
@@ -73,10 +75,11 @@ class VoicevoxProvider:
             raise VoicevoxError(f"VOICEVOX style '{settings.style}' is unavailable for {speaker['name']}")
         return speaker, style
 
-    def synthesize(self, text: str, settings: TTSSettings, output_path: Path) -> dict:
+    def synthesize(self, text: str, settings: TTSSettings, output_path: Path,
+                   *, style_id: int | None = None) -> dict:
         if settings.output_format != "wav":
             raise ValueError("VOICEVOX output must be WAV")
-        speaker, style = self._select(settings)
+        speaker, style = self._select(settings, style_id)
         style_id = style["id"]
         query_path = "/audio_query?" + urlencode({"text": text, "speaker": style_id})
         query = self._json(settings, "POST", query_path, b"")

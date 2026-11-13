@@ -19,6 +19,7 @@ from te.render import RenderService, RenderSettings
 from te.timeline import TimelineService
 from te.tts import SentenceSpeechService, TTSService, VoicevoxProvider
 from .service import MOTION_PRESETS, StudioProject, StudioService, _safe_name
+from .multi_voice import MultiVoiceService, configuration_signature, speech_plan
 
 
 Progress = Callable[[str], None]
@@ -55,10 +56,11 @@ def project_job_lock(directory: Path):
 
 class StudioRenderService:
     def __init__(self, studio: StudioService | None = None, render: RenderService | None = None,
-                 speech: SentenceSpeechService | None = None):
+                 speech: SentenceSpeechService | None = None, multi_voice: MultiVoiceService | None = None):
         self.studio = studio or StudioService()
         self.render = render or RenderService()
         self.speech = speech or SentenceSpeechService()
+        self.multi_voice = multi_voice or MultiVoiceService()
 
     @staticmethod
     def _emit(progress: Progress | None, message: str) -> None:
@@ -119,6 +121,11 @@ class StudioRenderService:
                     unit.vietnamese_reference != placement.confirmed_vietnamese_text):
                 raise ValueError("Cặp câu VN–JP của KEY cần xem lại; hãy xác nhận lại trước khi render.")
         if need_audio:
+            if state.audio_mode != state.narration_mode:
+                raise ValueError("Chế độ lời đọc đã đổi; hãy cập nhật WAV trước khi render.")
+            if (state.narration_mode == "multi" and
+                    state.audio_configuration_signature != configuration_signature(state)):
+                raise ValueError("Giọng hoặc phân vai đã đổi; hãy cập nhật WAV đa giọng trước khi render.")
             if problem := self._audio_problem(project):
                 raise ValueError(problem)
             subtitle = TimelineService().subtitles
@@ -136,14 +143,26 @@ class StudioRenderService:
 
     def _generate_narration_locked(self, state: StudioProject, progress: Progress | None) -> int:
         self.validate_inputs(state, need_audio=False, need_render_tools=False)
+        if state.narration_mode == "multi":
+            speech_plan(state)  # Reject stale/overlapping attribution before generating any WAV.
         working = deepcopy(state.project)
         count = 0
         try:
+            if state.narration_mode == "multi":
+                manifest, warnings, count = self.multi_voice.prepare(state, working, progress)
+                for warning in warnings:
+                    self._emit(progress, "Cảnh báo: " + warning)
+            elif state.audio_mode == "multi":
+                working.sentence_audio_records.clear()
+                working.audio_records.clear()
+                for segment in working.segments:
+                    segment.audio_ref = None
             for index, segment in enumerate(working.segments, 1):
                 units = [unit for unit in working.sentence_units if unit.segment_id == segment.id]
                 settings = segment.tts_override or working.tts_settings
-                needs_generation = not units or any(
+                needs_generation = state.narration_mode == "single" and (not units or any(
                     self.speech._sentence_status(working, unit, settings) != "ready" for unit in units)
+                )
                 if needs_generation and settings.provider == "voicevox":
                     VoicevoxProvider(timeout=5).check_connection(settings)
                 self._emit(progress, f"Lời đọc {index}/{len(working.segments)}: {segment.section.value}")
@@ -157,8 +176,13 @@ class StudioRenderService:
             self.studio.save_project(state)
             raise
         state.project = working
+        state.audio_mode = state.narration_mode
+        state.multi_voice_manifest = manifest if state.narration_mode == "multi" else {}
+        state.audio_configuration_signature = (configuration_signature(state)
+                                               if state.narration_mode == "multi" else None)
         self.studio.save_project(state)
-        self._emit(progress, f"Đã đồng bộ {len(working.segments)} đoạn; {count} đoạn cần tạo WAV mới.")
+        unit_name = "câu" if state.narration_mode == "multi" else "đoạn"
+        self._emit(progress, f"Đã đồng bộ {len(working.segments)} đoạn; {count} {unit_name} cần tạo WAV mới.")
         return count
 
     @staticmethod

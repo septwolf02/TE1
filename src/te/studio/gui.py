@@ -20,6 +20,7 @@ from te.media.key_service import KeyPlacementService
 from te.studio.rendering import StudioRenderService
 from te.render.service import RenderError
 from te.studio.ai_gui import SpeakerAIController
+from te.studio.multi_voice import speech_plan
 
 
 SECTIONS = tuple(SectionName)
@@ -50,6 +51,7 @@ class StudioApp:
         self.min_duration = tk.StringVar(value="7")
         self.max_duration = tk.StringVar(value="12")
         self.voice = tk.StringVar(value="青山龍星")
+        self.narration_mode = tk.StringVar(value="Một giọng")
         self.style = tk.StringVar()
         self.speed = tk.StringVar(value="1.0")
         self.pitch = tk.StringVar(value="0.0")
@@ -381,6 +383,13 @@ class StudioApp:
 
     def _build_voice(self) -> None:
         box = self._group("Giọng VOICEVOX")
+        mode = ttk.Frame(box)
+        mode.pack(fill="x", pady=4)
+        ttk.Label(mode, text="Chế độ lời đọc").pack(side="left")
+        ttk.Combobox(mode, textvariable=self.narration_mode,
+                     values=("Một giọng", "Nhiều giọng A/B/C/D"), state="readonly", width=27).pack(
+                         side="left", padx=6)
+        self.narration_mode.trace_add("write", lambda *_: self._dirty())
         top = ttk.Frame(box)
         top.pack(fill="x")
         ttk.Button(top, text="Dò lại VOICEVOX", command=self._refresh_voice).pack(side="left")
@@ -537,6 +546,7 @@ class StudioApp:
         self.max_duration.set(str(state.image_max_seconds))
         settings = state.project.tts_settings
         self.voice.set(settings.voice_id)
+        self.narration_mode.set("Nhiều giọng A/B/C/D" if state.narration_mode == "multi" else "Một giọng")
         self.style.set(settings.style or "")
         self.speed.set(str(settings.speaking_rate))
         self.pitch.set(str(settings.pitch))
@@ -583,6 +593,8 @@ class StudioApp:
         self._capture_section()
         state.project.name = self.video_name.get().strip()
         state.channel = self.channel.get() or None
+        state.narration_mode = ("multi" if self.narration_mode.get() == "Nhiều giọng A/B/C/D"
+                                else "single")
         state.image_min_seconds = float(self.min_duration.get())
         state.image_max_seconds = float(self.max_duration.get())
         state.motion_preset = MOTION_LABELS[self.motion.get()]
@@ -1267,7 +1279,19 @@ class StudioApp:
                                   f"{Path(state.project.media_library_path).name[:25] if state.project.media_library_path else 'Chưa chọn thư mục'}")
         self.intro_summary.set(" | ".join(f"{section.value} {'✓' if self.service.intro_path(state, section) else '—'}"
                                           for section in SECTIONS))
-        self.voice_summary.set(f"{self.voice.get()} • {self.style.get() or 'mặc định'} • {self.speed.get()}×")
+        if state.narration_mode == "multi":
+            try:
+                plan, warnings = speech_plan(state)
+                roles = sorted({role for parts in plan.values() for role, content in parts if content.strip()})
+                missing = [role for role in roles if role != "A" and role not in state.speaker_data["voices"]]
+                status = ("Thiếu giọng " + ", ".join(missing) if missing else "Đã sẵn sàng")
+                if warnings:
+                    status += " • Có đoạn dùng giọng A mặc định"
+                self.voice_summary.set(f"Đa giọng: {'/'.join(roles)} — {status}")
+            except ValueError:
+                self.voice_summary.set("Đa giọng: Cần xác nhận phân vai")
+        else:
+            self.voice_summary.set(f"Một giọng • {self.voice.get()} • {self.style.get() or 'mặc định'} • {self.speed.get()}×")
         self.subtitle_summary.set(f"{self.subtitle_font.get()} • {self.subtitle_size.get()}px • "
                                   f"{self.subtitle_color.get()}")
         self.output_summary.set(f"{self.motion.get()} • {self.transition.get()}")
@@ -1316,6 +1340,28 @@ class StudioApp:
             return
         if not self.state or not self._save():
             return
+        if self.state.narration_mode == "multi":
+            try:
+                plan, warnings = speech_plan(self.state)
+                roles = {role for parts in plan.values() for role, content in parts if content.strip()}
+                missing = sorted(role for role in roles if role != "A" and
+                                 role not in self.state.speaker_data["voices"])
+                if missing:
+                    raise ValueError("Thiếu giọng " + ", ".join(missing) + ".")
+                if warnings:
+                    messagebox.showwarning("Đoạn Nhật chưa gán vai",
+                        "\n".join(warnings) + "\nCác đoạn này sẽ dùng giọng A.", parent=self.root)
+            except ValueError as exc:
+                choice = messagebox.askyesnocancel("Đa giọng chưa sẵn sàng",
+                    f"{exc}\n\nCó: mở AI phân vai. Không: dùng Một giọng. Hủy: dừng thao tác.", parent=self.root)
+                if choice is None:
+                    return
+                if choice:
+                    self.ai.open_review()
+                    return
+                self.narration_mode.set("Một giọng")
+                if not self._save():
+                    return
         self._set_job_busy(True)
         self._append_render_log(label)
         state = self.state
@@ -1363,6 +1409,9 @@ class StudioApp:
             return (f"FFmpeg không hoàn tất bước {error.stage}. "
                     "Xem log trong generated/cache/render của dự án.")
         value = str(error)
+        if value.startswith(("Giọng hoặc style của vai", "Thiếu giọng ",
+                             "Phân vai đã cũ", "Span tiếng Nhật", "Đoạn phân vai")):
+            return value
         translations = {
             "KEY image placements overlap": "Hai ảnh KEY chồng thời gian; hãy sửa thời lượng hoặc độ lệch KEY.",
             "KEY offset must keep reveal": "Độ lệch KEY đưa ảnh ra ngoài đoạn lời dẫn; hãy sửa lại.",

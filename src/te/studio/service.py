@@ -162,6 +162,10 @@ class StudioProject:
     last_final: str | None = None
     subtitle_size: int = 156
     speaker_data: dict = field(default_factory=default_speaker_data)
+    narration_mode: str = "single"
+    audio_mode: str = "single"
+    multi_voice_manifest: dict[str, str] = field(default_factory=dict)
+    audio_configuration_signature: str | None = None
 
 
 class StudioService:
@@ -290,7 +294,9 @@ class StudioService:
             data.get("intro_preferences", {s.value: True for s in SectionName}),
             data.get("key_drafts", []), warning, data.get("font_path"), data.get("last_final"),
             data.get("subtitle_size", 156),
-            validate_speaker_data(data.get("speaker_data", default_speaker_data()), sections))
+            validate_speaker_data(data.get("speaker_data", default_speaker_data()), sections),
+            data.get("narration_mode", "single"), data.get("audio_mode", "single"),
+            data.get("multi_voice_manifest", {}), data.get("audio_configuration_signature"))
 
     @staticmethod
     def _apply_sections(project: Project, sections: dict[str, dict[str, str]]) -> None:
@@ -363,6 +369,15 @@ class StudioService:
                 splitter.split_segment(project, segment.id)
 
     def save_project(self, state: StudioProject) -> None:
+        if state.narration_mode not in ("single", "multi") or state.audio_mode not in ("single", "multi"):
+            raise ValueError("Chế độ lời đọc không hợp lệ.")
+        if not isinstance(state.multi_voice_manifest, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in state.multi_voice_manifest.items()):
+            raise ValueError("Dữ liệu cache đa giọng không hợp lệ.")
+        if state.audio_configuration_signature is not None and not isinstance(
+                state.audio_configuration_signature, str):
+            raise ValueError("Dấu vân tay lời đọc không hợp lệ.")
         if not state.project.name.strip():
             raise ValueError("Tên video không được để trống.")
         if state.motion_preset not in MOTION_PRESETS or state.transition not in TRANSITION_PRESETS:
@@ -388,7 +403,10 @@ class StudioService:
                 "subtitle_size": state.subtitle_size,
                 "last_final": state.last_final,
                 "key_drafts": deepcopy(state.key_drafts),
-                "speaker_data": deepcopy(speaker_data)}
+                "speaker_data": deepcopy(speaker_data),
+                "narration_mode": state.narration_mode, "audio_mode": state.audio_mode,
+                "multi_voice_manifest": deepcopy(state.multi_voice_manifest)}
+        data["audio_configuration_signature"] = state.audio_configuration_signature
         _write_json(state.directory / "studio.json", data)
         state.recovery_warning = None
 
@@ -439,7 +457,8 @@ class StudioService:
         duplicated = StudioProject(directory, clone, deepcopy(state.sections), state.channel,
             state.motion_preset, state.transition, state.image_min_seconds, state.image_max_seconds,
             deepcopy(state.intro_preferences), deepcopy(state.key_drafts), font_path=state.font_path,
-            subtitle_size=state.subtitle_size, speaker_data=deepcopy(state.speaker_data))
+            subtitle_size=state.subtitle_size, speaker_data=deepcopy(state.speaker_data),
+            narration_mode=state.narration_mode)
         self.save_project(duplicated)
         return duplicated
 
