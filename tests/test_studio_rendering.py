@@ -283,6 +283,9 @@ def test_real_full_hd_export_cpu_fallback_and_saved_output_path(tmp_path, monkey
     assert (video["width"], video["height"], video["codec_name"]) == (1920, 1080, "h264")
     manifest = json.loads((state.directory / "generated/output/final.manifest.json").read_text(encoding="utf-8"))
     assert manifest["encoder_used"] == "libx264"
+    report = json.loads(sorted((state.directory / "generated/output/diagnostics").glob(
+        "performance-*-full.json"))[-1].read_text(encoding="utf-8"))
+    assert report["encoder"] == "libx264" and report["render_type"] == "full_hd"
 
 
 def test_one_click_preview_reflows_200_character_sentence(tmp_path):

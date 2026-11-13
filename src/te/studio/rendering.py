@@ -4,6 +4,8 @@ from __future__ import annotations
 from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import replace
+from contextlib import nullcontext
+from datetime import datetime, timezone
 import math
 import os
 from pathlib import Path
@@ -16,10 +18,12 @@ from te.media.key_service import OrdinaryImageBag
 from te.project.manager import ProjectManager
 from te.project.models import AssignmentType, MediaCategory, MediaType, new_id
 from te.render import RenderService, RenderSettings
+from te.render.service import RenderError
 from te.timeline import TimelineService
 from te.tts import SentenceSpeechService, TTSService, VoicevoxProvider
 from .service import MOTION_PRESETS, StudioProject, StudioService, _safe_name
 from .multi_voice import MultiVoiceService, configuration_signature, speech_plan
+from .performance import PerformanceReport
 
 
 Progress = Callable[[str], None]
@@ -141,7 +145,8 @@ class StudioRenderService:
         with project_job_lock(state.directory):
             return self._generate_narration_locked(state, progress)
 
-    def _generate_narration_locked(self, state: StudioProject, progress: Progress | None) -> int:
+    def _generate_narration_locked(self, state: StudioProject, progress: Progress | None,
+                                   performance: PerformanceReport | None = None) -> int:
         self.validate_inputs(state, need_audio=False, need_render_tools=False)
         if state.narration_mode == "multi":
             speech_plan(state)  # Reject stale/overlapping attribution before generating any WAV.
@@ -149,7 +154,7 @@ class StudioRenderService:
         count = 0
         try:
             if state.narration_mode == "multi":
-                manifest, warnings, count = self.multi_voice.prepare(state, working, progress)
+                manifest, warnings, count = self.multi_voice.prepare(state, working, progress, performance)
                 for warning in warnings:
                     self._emit(progress, "Cảnh báo: " + warning)
             elif state.audio_mode == "multi":
@@ -160,16 +165,18 @@ class StudioRenderService:
             for index, segment in enumerate(working.segments, 1):
                 units = [unit for unit in working.sentence_units if unit.segment_id == segment.id]
                 settings = segment.tts_override or working.tts_settings
-                needs_generation = state.narration_mode == "single" and (not units or any(
-                    self.speech._sentence_status(working, unit, settings) != "ready" for unit in units)
-                )
+                with performance.measure("wav_cache_lookup") if performance else nullcontext():
+                    needs_generation = state.narration_mode == "single" and (not units or any(
+                        self.speech._sentence_status(working, unit, settings) != "ready" for unit in units)
+                    )
                 if needs_generation and settings.provider == "voicevox":
-                    VoicevoxProvider(timeout=5).check_connection(settings)
+                    with performance.measure("voicevox_setup") if performance else nullcontext():
+                        VoicevoxProvider(timeout=5).check_connection(settings)
                 self._emit(progress, f"Lời đọc {index}/{len(working.segments)}: {segment.section.value}")
                 line_limit = self.render.caption_line_limit(RenderSettings(subtitle_font_size=state.subtitle_size),
                     working.subtitle_style["max_chars_per_line"])
                 self.speech.sync_segment(working, state.directory, segment.id, rebuild_timeline=False,
-                                         caption_max_chars=line_limit)
+                                         caption_max_chars=line_limit, performance=performance)
                 count += int(needs_generation)
         except Exception:
             state.project = ProjectManager().open(state.directory)
@@ -305,25 +312,55 @@ class StudioRenderService:
 
     def render_video(self, state: StudioProject, *, preview: bool,
                      progress: Progress | None = None) -> Path:
-        with project_job_lock(state.directory):
-            return self._render_video_locked(state, preview=preview, progress=progress)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        path = state.directory / "generated" / "output" / "diagnostics" / (
+            f"performance-{stamp}-{'preview' if preview else 'full'}.json")
+        report = PerformanceReport(path, state.project.id, preview=preview,
+                                   narration_mode=state.narration_mode)
+        report.resolution = [960, 540] if preview else [1920, 1080]
+        error = None
+        try:
+            with project_job_lock(state.directory):
+                result = self._render_video_locked(state, preview=preview, progress=progress,
+                                                   performance=report)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            status = ("cancelled" if isinstance(error, RenderError) and self.render._cancel.is_set()
+                      else "failed") if error else "success"
+            try:
+                report.finish(status, error)
+            except OSError:
+                pass  # A diagnostics write must not hide the original render result.
+        return result
 
     def _render_video_locked(self, state: StudioProject, *, preview: bool,
-                             progress: Progress | None = None) -> Path:
+                             progress: Progress | None = None,
+                             performance: PerformanceReport | None = None) -> Path:
         self._emit(progress, "Đang kiểm tra kịch bản, ảnh, KEY, intro, FFmpeg và phông Nhật…")
-        inspected = deepcopy(state)
-        MediaLibraryService().refresh_library(inspected.project)
-        self.validate_inputs(inspected, need_audio=False)
+        with performance.measure("asset_timeline_preparation") if performance else nullcontext():
+            inspected = deepcopy(state)
+            MediaLibraryService().refresh_library(inspected.project)
+            self.validate_inputs(inspected, need_audio=False)
         self._emit(progress, "Đang kiểm tra và cập nhật WAV/phụ đề theo từng câu…")
-        self._generate_narration_locked(state, progress)
-        timeline = self.prepare_timeline(state, progress)
+        self._generate_narration_locked(state, progress, performance)
+        with performance.measure("asset_timeline_preparation") if performance else nullcontext():
+            timeline = self.prepare_timeline(state, progress)
+        if performance:
+            performance.video_duration_seconds = max(
+                [item.end_ms for item in timeline.blocks] +
+                [item.end_ms for item in timeline.intros] +
+                [item.end_ms for item in timeline.placements], default=0) / 1000
         settings = (RenderSettings(960, 540, 30, 28, "veryfast", font_path=state.font_path)
                     if preview else RenderSettings(font_path=state.font_path, encoder="auto"))
         settings = replace(settings, font_family=self._font_family(state))
         settings = replace(settings, subtitle_font_size=state.subtitle_size)
+        if performance:
+            performance.resolution = [settings.width, settings.height]
         self._emit(progress, "Đang render bản xem nhanh…" if preview else "Đang render Full HD…")
         source = self.render.render_project(state.project, timeline, state.directory, preview=preview,
-            overwrite=True, settings=settings, progress=progress)
+            overwrite=True, settings=settings, progress=progress, performance=performance)
         if preview:
             return source
         destination = self._publish(source, Path(self.studio.settings["output_root"]), state.project.name)

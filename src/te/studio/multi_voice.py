@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from array import array
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -183,9 +184,10 @@ class MultiVoiceService:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
-    def prepare(self, state, working, progress=None) -> tuple[dict[str, str], tuple[str, ...], int]:
+    def prepare(self, state, working, progress=None, performance=None) -> tuple[dict[str, str], tuple[str, ...], int]:
         plan, warnings = speech_plan(state)
-        settings, engine_version = self._settings(state, plan)
+        with performance.measure("voicevox_setup") if performance else nullcontext():
+            settings, engine_version = self._settings(state, plan)
         chunk_dir = state.directory / "generated" / "audio" / "multi_voice"
         sentence_dir = state.directory / "generated" / "audio" / "sentences"
         chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -218,9 +220,14 @@ class MultiVoiceService:
                                      for current, uuid, style_id in [settings[role]]])
                 manifest[unit.id] = signature
                 previous = records.get(unit.id)
-                if (state.audio_mode == "multi" and state.multi_voice_manifest.get(unit.id) == signature
-                        and previous and SentenceSpeechService._sentence_status(
-                            working, unit, segment.tts_override or working.tts_settings) == "ready"):
+                with performance.measure("wav_cache_lookup") if performance else nullcontext():
+                    sentence_hit = bool(state.audio_mode == "multi" and
+                        state.multi_voice_manifest.get(unit.id) == signature and previous and
+                        SentenceSpeechService._sentence_status(
+                            working, unit, segment.tts_override or working.tts_settings) == "ready")
+                if sentence_hit:
+                    if performance:
+                        performance.cache_hit(previous.path)
                     continue
                 paths = []
                 for role, text in chunks:
@@ -228,28 +235,35 @@ class MultiVoiceService:
                     key = _digest((text, uuid, style_id, asdict(current), engine_version))
                     path = chunk_dir / f"{key}.wav"
                     usable = False
-                    if path.is_file():
-                        try:
-                            usable = _duration(path) > 0 and _wav_rms(path) >= 50
-                        except (OSError, ValueError, wave.Error):
-                            pass
+                    with performance.measure("wav_cache_lookup") if performance else nullcontext():
+                        if path.is_file():
+                            try:
+                                usable = _duration(path) > 0 and _wav_rms(path) >= 50
+                            except (OSError, ValueError, wave.Error):
+                                pass
                     if not usable:
                         temporary = None
                         try:
                             with NamedTemporaryFile(dir=chunk_dir, suffix=".wav", delete=False) as stream:
                                 temporary = Path(stream.name)
-                            self.provider.synthesize(text, current, temporary, style_id=style_id)
-                            _duration(temporary)
-                            if _wav_rms(temporary) < 50:
-                                raise ValueError(f"WAV của vai {role} không có âm thanh.")
+                            with performance.measure("narration_synthesis") if performance else nullcontext():
+                                self.provider.synthesize(text, current, temporary, style_id=style_id)
+                                _duration(temporary)
+                                if _wav_rms(temporary) < 50:
+                                    raise ValueError(f"WAV của vai {role} không có âm thanh.")
                             os.replace(temporary, path)
                             temporary = None
+                            if performance:
+                                performance.increment("new_wavs")
                         finally:
                             if temporary is not None:
                                 temporary.unlink(missing_ok=True)
+                    elif performance:
+                        performance.cache_hit(path)
                     paths.append(path)
                 destination = sentence_dir / f"{unit.id}.wav"
-                self._compose(paths, destination, working.tts_settings.sample_rate)
+                with performance.measure("audio_composition_muxing") if performance else nullcontext():
+                    self._compose(paths, destination, working.tts_settings.sample_rate)
                 if _wav_rms(destination) < 50:
                     raise ValueError("WAV đa giọng sau khi ghép không có âm thanh.")
                 first_role = chunks[0][0]

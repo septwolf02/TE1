@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from contextlib import nullcontext
 from array import array
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -207,7 +208,8 @@ class SentenceSpeechService:
                 temporary.unlink(missing_ok=True)
 
     def sync_segment(self, project: Project, directory: Path, segment_id: str, *,
-                     rebuild_timeline: bool = True, caption_max_chars: int | None = None) -> list[tuple[SentenceUnit, int, int]]:
+                     rebuild_timeline: bool = True, caption_max_chars: int | None = None,
+                     performance=None) -> list[tuple[SentenceUnit, int, int]]:
         directory = Path(directory).resolve()
         if ProjectManager().open(directory).id != project.id:
             raise ValueError("Project directory does not match project")
@@ -216,20 +218,34 @@ class SentenceSpeechService:
         units = self.split_segment(project, segment_id)
         changed = False
         for unit in units:
-            if self._sentence_status(project, unit, settings) != "ready":
-                record = self._generate_sentence(project, directory, unit, settings)
+            with performance.measure("wav_cache_lookup") if performance else nullcontext():
+                ready = self._sentence_status(project, unit, settings) == "ready"
+            if ready:
+                if performance:
+                    record = next(r for r in project.sentence_audio_records if r.sentence_id == unit.id)
+                    performance.cache_hit(record.path)
+            else:
+                with performance.measure("narration_synthesis") if performance else nullcontext():
+                    record = self._generate_sentence(project, directory, unit, settings)
                 changed = True
                 if record.status != "ready":
+                    if performance:
+                        performance.stages["narration_synthesis"]["status"] = "failed"
                     ProjectManager().save(directory, project)
                     raise RuntimeError(f"Sentence {unit.id} TTS failed: {record.error}")
+                if performance:
+                    performance.increment("new_wavs")
         composite = self.tts._record(project, segment_id)
         anchors = self._anchors(project, units)
         if composite and composite.duration_seconds is not None and round(composite.duration_seconds * 1000) != anchors[-1][1]:
             changed = True
-        if changed or not composite or self.tts.get_audio_status(project, segment_id) != "ready":
+        with performance.measure("wav_cache_lookup") if performance else nullcontext():
+            composite_ready = bool(composite and self.tts.get_audio_status(project, segment_id) == "ready")
+        if changed or not composite_ready:
             destination = directory / "generated" / "audio" / f"{segment.id}.wav"
             destination.parent.mkdir(parents=True, exist_ok=True)
-            anchors = self._combine(project, units, destination)
+            with performance.measure("audio_composition_muxing") if performance else nullcontext():
+                anchors = self._combine(project, units, destination)
             first = next(record for record in project.sentence_audio_records if record.sentence_id == units[0].id)
             record = AudioRecord(segment.id, str(destination), settings.provider, settings.voice_id, settings,
                 _duration(destination), "ready", datetime.now(timezone.utc).isoformat(),
@@ -242,7 +258,8 @@ class SentenceSpeechService:
             else:
                 project.audio_records.append(record)
             segment.audio_ref = record.path
-        self._sync_captions(project, segment_id, units, anchors, caption_max_chars)
+        with performance.measure("subtitle_preparation") if performance else nullcontext():
+            self._sync_captions(project, segment_id, units, anchors, caption_max_chars)
         ProjectManager().save(directory, project)
         if rebuild_timeline:
             self.rebuild_if_ready(project, directory)

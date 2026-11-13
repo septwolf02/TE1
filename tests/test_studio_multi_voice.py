@@ -1,5 +1,6 @@
 """Deterministic B2 tests without VOICEVOX, GPT or a desktop display."""
 from array import array
+import json
 from pathlib import Path
 import wave
 
@@ -218,6 +219,10 @@ def test_multi_voice_timeline_keeps_key_intro_and_section_boundary(tmp_path):
     assert [item.text for item in state.project.subtitle_captions] == ["A。", "B。", "後半。"]
     output = renderer.render_video(state, preview=True)
     assert output.is_file() and output.stat().st_size > 0
+    performance = sorted((state.directory / "generated/output/diagnostics").glob("performance-*.json"))[-1]
+    report = json.loads(performance.read_text(encoding="utf-8"))
+    assert report["narration_mode"] == "multi" and report["status"] == "success"
+    assert report["counts"]["wav_cache_hits"] >= 3
     RenderService._verify_packet_timestamps(RenderService.check_ffmpeg()["ffprobe"], output)
     state.speaker_data["parameters"]["B"] = {"speaking_rate": 1.3, "pitch": 0.0,
                                                 "intonation": 1.0, "volume": 1.0}

@@ -525,7 +525,8 @@ class RenderService:
 
     def render_project(self, project: Project, timeline: Timeline, directory: Path, *,
                        preview: bool = False, settings: RenderSettings | None = None,
-                       overwrite: bool = False, progress: Callable[[str], None] | None = None) -> Path:
+                       overwrite: bool = False, progress: Callable[[str], None] | None = None,
+                       performance=None) -> Path:
         settings = settings or (RenderSettings(960, 540, 30, 28, "veryfast") if preview else RenderSettings())
         directory = Path(directory).resolve()
         self._cancel.clear()
@@ -541,6 +542,8 @@ class RenderService:
             encoder, reasons = self.choose_encoder(info["ffmpeg"])
             for reason in reasons:
                 emit(f"Bộ mã hóa phần cứng không khả dụng: {reason}")
+        if performance:
+            performance.encoder = encoder
         emit(f"Bộ mã hóa xuất video: {encoder}")
         cache = directory / "generated" / "cache" / "render"
         output_dir = directory / "generated" / "output"
@@ -563,6 +566,8 @@ class RenderService:
         stage = "preparing"
         diagnostic_video: Path | None = None
         try:
+            if performance:
+                performance.start("ffmpeg_video_encoding")
             for index, (start, end, kind, event) in enumerate(events, 1):
                 stage = f"segment-{index}"
                 emit(f"rendering segment {index}/{len(events)}")
@@ -611,8 +616,12 @@ class RenderService:
             visual = cache / "visual.mp4"
             self._run([info["ffmpeg"], "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
                        "-c", "copy", str(visual)], "concatenating", cache)
+            if performance:
+                performance.stop("ffmpeg_video_encoding")
             stage = "audio-mixing"
             emit("mixing audio")
+            if performance:
+                performance.start("audio_composition_muxing")
             audio_command = [info["ffmpeg"], "-y"]
             filters = []
             narration_labels = []
@@ -678,22 +687,34 @@ class RenderService:
                 try:
                     audio_actual_command = audio_command + [str(audio_temp)]
                     self._run(audio_actual_command, stage, cache)
+                    if performance:
+                        performance.stop("audio_composition_muxing")
+                        performance.start("final_verification")
                     self._verify_packet_timestamps(info["ffprobe"], audio_temp)
+                    if performance:
+                        performance.stop("final_verification")
+                        performance.start("audio_composition_muxing")
                     os.replace(audio_temp, audio_file)
                 finally:
                     audio_temp.unlink(missing_ok=True)
             else:
                 (cache / "audio-mixing.log").write_text(
                     f"Reused cached AAC narration: {audio_file}\n", encoding="utf-8")
+            if performance:
+                performance.stop("audio_composition_muxing")
 
             ass = cache / "captions.ass"
             video_filter = f"fps={settings.fps},format=yuv420p"
             font_path = None
             if timeline.captions:
                 emit("burning subtitles")
+                if performance:
+                    performance.start("subtitle_preparation")
                 font_family, font_path = self._resolve_font(settings)
                 self._write_ass(project, timeline, ass, settings, font_family)
                 video_filter += "," + _ass_filter(ass, font_path.parent if font_path else None)
+                if performance:
+                    performance.stop("subtitle_preparation")
 
             def video_command_for(selected_encoder: str, destination: Path) -> list[str]:
                 command = [info["ffmpeg"], "-y", "-i", str(visual), "-an", "-vf", video_filter,
@@ -718,7 +739,13 @@ class RenderService:
                     command = video_command_for(selected_encoder, temporary)
                     try:
                         self._run(command, "finalizing", cache)
+                        if performance:
+                            performance.stop("ffmpeg_video_encoding")
+                            performance.start("final_verification")
                         self._verify_packet_timestamps(info["ffprobe"], temporary, "v:0")
+                        if performance:
+                            performance.stop("final_verification")
+                            performance.start("ffmpeg_video_encoding")
                         os.replace(temporary, destination)
                     finally:
                         temporary.unlink(missing_ok=True)
@@ -729,6 +756,8 @@ class RenderService:
 
             stage = "finalizing"
             emit("encoding video separately from narration")
+            if performance:
+                performance.start("ffmpeg_video_encoding")
             try:
                 video_file, video_command = render_video_only(encoder)
             except RenderError:
@@ -736,7 +765,11 @@ class RenderService:
                     raise
                 emit(f"{encoder} thất bại khi xuất; thử lại bằng CPU libx264")
                 encoder = "libx264"
+                if performance:
+                    performance.encoder = encoder
                 video_file, video_command = render_video_only(encoder)
+            if performance:
+                performance.stop("ffmpeg_video_encoding")
 
             stage = "muxing"
             emit("muxing video and AAC narration")
@@ -756,9 +789,16 @@ class RenderService:
                     "end_ms": intro.end_ms, "media_id": intro.media_id} for intro in timeline.intros],
             })
             try:
+                if performance:
+                    performance.start("audio_composition_muxing")
                 self._run(mux_command, stage, cache)
+                if performance:
+                    performance.stop("audio_composition_muxing")
+                    performance.start("final_verification")
                 self._verify_packet_timestamps(info["ffprobe"], partial)
                 self._verify_packet_timestamps(info["ffprobe"], partial, "v:0")
+                if performance:
+                    performance.stop("final_verification")
             except Exception as exc:
                 if partial.is_file():
                     diagnostic_video = self._keep_narration_diagnostic(
@@ -768,7 +808,11 @@ class RenderService:
             stage = "verifying-intro-narration"
             emit("verifying intro narration")
             try:
+                if performance:
+                    performance.start("final_verification")
                 self._verify_intro_narration(project, timeline, partial, info["ffmpeg"])
+                if performance:
+                    performance.stop("final_verification")
             except Exception as exc:
                 diagnostic_video = self._keep_narration_diagnostic(
                     partial, output_dir, cache, info["ffmpeg"], exc)

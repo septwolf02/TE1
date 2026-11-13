@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -75,6 +76,7 @@ class StudioApp:
         self.output_summary = tk.StringVar(value="Chuyển động và thư mục xuất")
         self.section_status = tk.StringVar()
         self.render_status = tk.StringVar(value="Sẵn sàng tạo lời đọc hoặc render.")
+        self.performance_summary = tk.StringVar(value="Thời gian dựng: chưa có báo cáo.")
         self._job_queue: Queue[tuple[str, object]] = Queue()
         self._job_running = False
         self._disabled_widgets: list[tuple[object, str]] = []
@@ -152,6 +154,8 @@ class StudioApp:
         self.body = previous
 
     def _show_detail(self, key: str) -> None:
+        if key == "output":
+            self._refresh_performance_summary()
         dialog = self._details[key]
         dialog.deiconify()
         dialog.lift()
@@ -474,6 +478,8 @@ class StudioApp:
     def _build_render_details(self) -> None:
         self._build_motion()
         box = self._group("Output và chẩn đoán")
+        ttk.Label(box, textvariable=self.performance_summary, wraplength=900).pack(anchor="w", pady=3)
+        ttk.Button(box, text="Mở báo cáo thời gian", command=self._open_performance_report).pack(anchor="w")
         files = ttk.Frame(box)
         files.pack(fill="x", pady=3)
         for label, action in (("Mở bản xem nhanh", self._open_preview),
@@ -577,6 +583,7 @@ class StudioApp:
         self._refresh_key_rows()
         self._refresh_gallery()
         self._refresh_summary()
+        self._refresh_performance_summary()
         self.ai.project_loaded()
         self._save_status.set(state.recovery_warning or f"Đã mở: {state.directory}")
 
@@ -1312,6 +1319,36 @@ class StudioApp:
         self.render_log.see("end")
         self.render_log.configure(state="disabled")
 
+    def _latest_performance_report(self) -> Path | None:
+        if not self.state:
+            return None
+        folder = self.state.directory / "generated" / "output" / "diagnostics"
+        return next(iter(sorted(folder.glob("performance-*.json"), reverse=True)), None)
+
+    def _refresh_performance_summary(self) -> None:
+        path = self._latest_performance_report()
+        if path is None:
+            self.performance_summary.set("Thời gian dựng: chưa có báo cáo.")
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            total = data["total_seconds"]
+            label = "Preview" if data["render_type"] == "preview" else "Full HD"
+            status = {"success": "hoàn tất", "failed": "lỗi", "cancelled": "đã hủy"}.get(
+                data["status"], data["status"])
+            self.performance_summary.set(
+                f"Thời gian dựng: {label} • {total:.1f}s • {status} • "
+                f"WAV mới {data['counts']['new_wavs']}, dùng cache {data['counts']['wav_cache_hits']}")
+        except (OSError, ValueError, KeyError, TypeError):
+            self.performance_summary.set("Thời gian dựng: báo cáo chưa đọc được.")
+
+    def _open_performance_report(self) -> None:
+        path = self._latest_performance_report()
+        if path:
+            self._open_path(path)
+        else:
+            self._fail("Dự án chưa có báo cáo thời gian dựng.")
+
     def _set_job_busy(self, busy: bool) -> None:
         if busy:
             self._disabled_widgets.clear()
@@ -1387,6 +1424,7 @@ class StudioApp:
             elif kind == "done":
                 self._append_render_log(f"Hoàn tất: {value}")
                 self._refresh_summary()
+                self._refresh_performance_summary()
                 if (isinstance(value, Path) and self.state and
                         self.state.last_final == str(value) and
                         messagebox.askyesno("Video đã hoàn tất", f"Đã xuất video:\n{value}\n\nMở video ngay?",
@@ -1397,6 +1435,7 @@ class StudioApp:
                 message = self._production_error(value)
                 self._append_render_log("Lỗi: " + message)
                 self._fail(message)
+                self._refresh_performance_summary()
                 finished = True
         if finished:
             self._set_job_busy(False)
