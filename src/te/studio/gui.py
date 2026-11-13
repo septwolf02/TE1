@@ -22,6 +22,7 @@ from te.studio.rendering import StudioRenderService
 from te.render.service import RenderError
 from te.studio.ai_gui import SpeakerAIController
 from te.studio.multi_voice import speech_plan
+from te.studio.render_queue import RenderQueue
 
 
 SECTIONS = tuple(SectionName)
@@ -86,6 +87,9 @@ class StudioApp:
         self._job_running = False
         self._disabled_widgets: list[tuple[object, str]] = []
         self.renderer = StudioRenderService(self.service)
+        self._queue_events: Queue[tuple[str, object]] = Queue()
+        self._queue_pending = 0
+        self.queue = RenderQueue(self.service, on_change=lambda: self._queue_events.put(("changed", None)))
         self.ai = SpeakerAIController(self)
         self.intro_paths = {section: tk.StringVar() for section in SECTIONS}
         self.root.title("TE Studio — Trình biên tập")
@@ -95,6 +99,8 @@ class StudioApp:
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._choose_initial_project()
+        self._refresh_queue()
+        self.root.after(500, self._poll_queue)
 
     def _build(self) -> None:
         outer = ttk.Frame(self.root, padding=8)
@@ -132,6 +138,7 @@ class StudioApp:
         self._create_detail("voice", "VOICEVOX", self._build_voice)
         self._create_detail("subtitles", "Phụ đề Nhật", self._build_subtitles)
         self._create_detail("output", "Render/output settings", self._build_render_details)
+        self._create_detail("queue", "Hàng đợi Render", self._build_queue)
         self.body = outer
 
     def _group(self, title: str) -> ttk.LabelFrame:
@@ -478,6 +485,7 @@ class StudioApp:
             ttk.Button(row, text=label, command=action).pack(side="left", padx=4)
         ttk.Button(row, text="Mở thư mục xuất", command=self._open_output_folder).pack(side="left", padx=4)
         ttk.Button(row, text="Cài đặt / Log", command=lambda: self._show_detail("output")).pack(side="left", padx=4)
+        ttk.Button(row, text="Hàng đợi Render", command=lambda: self._show_detail("queue")).pack(side="left", padx=4)
         ttk.Label(box, textvariable=self.render_status).pack(anchor="w", pady=1)
 
     def _build_render_details(self) -> None:
@@ -509,7 +517,169 @@ class StudioApp:
             ttk.Button(files, text=label, command=action).pack(side="left", padx=4)
         self.render_log = tk.Text(box, height=5, state="disabled", wrap="word")
         self.render_log.pack(fill="both", expand=True)
-        ttk.Button(box, text="Thêm vào hàng đợi render (chưa khả dụng)", state="disabled").pack(anchor="w")
+        ttk.Button(box, text="Thêm vào hàng đợi", command=self._enqueue_render).pack(anchor="w")
+
+    def _build_queue(self) -> None:
+        box = self._group("Hàng đợi Render • Full HD tuần tự")
+        controls = ttk.Frame(box)
+        controls.pack(fill="x", pady=4)
+        actions = (("Thêm vào hàng đợi", self._enqueue_render),
+                   ("Bắt đầu / Tiếp tục", self._queue_start),
+                   ("Tạm dừng sau tác vụ hiện tại", self._queue_pause),
+                   ("Hủy tác vụ đang chạy", self._queue_cancel),
+                   ("Xóa tác vụ đang chờ", self._queue_remove),
+                   ("Thử lại tác vụ lỗi", self._queue_retry),
+                   ("Cập nhật tác vụ từ project", self._queue_update))
+        for index, (label, command) in enumerate(actions):
+            ttk.Button(controls, text=label, command=command).grid(
+                row=index // 4, column=index % 4, sticky="w", padx=3, pady=3)
+        columns = ("order", "project", "status", "stage", "encoder", "started", "ended")
+        self.queue_tree = ttk.Treeview(box, columns=columns, show="headings", height=13)
+        for key, title, width in (("order", "#", 35), ("project", "Project", 145),
+                                  ("status", "Trạng thái", 85), ("stage", "Bước", 220),
+                                  ("encoder", "Encoder", 95), ("started", "Bắt đầu UTC", 135),
+                                  ("ended", "Kết thúc UTC", 135)):
+            self.queue_tree.heading(key, text=title)
+            self.queue_tree.column(key, width=width)
+        self.queue_tree.pack(fill="both", expand=True, pady=4)
+        self.queue_tree.bind("<<TreeviewSelect>>", lambda _event: self._queue_selection())
+        self.queue_details = tk.StringVar(value="Chọn tác vụ để xem MP4, lỗi và báo cáo thời gian.")
+        ttk.Label(box, textvariable=self.queue_details, wraplength=850).pack(anchor="w", pady=4)
+        files = ttk.Frame(box)
+        files.pack(anchor="w")
+        ttk.Button(files, text="Mở thư mục đầu ra", command=self._queue_open_output).pack(side="left", padx=4)
+        ttk.Button(files, text="Mở báo cáo thời gian", command=self._queue_open_performance).pack(side="left", padx=4)
+
+    def _selected_queue_job(self) -> dict | None:
+        selected = self.queue_tree.selection()
+        return next((job for job in self.queue.jobs() if selected and job["id"] == selected[0]), None)
+
+    def _queue_selection(self) -> None:
+        job = self._selected_queue_job()
+        if job:
+            self.queue_details.set(f"MP4: {job['output_path'] or 'chưa có'} • "
+                f"Báo cáo: {job['performance_path'] or 'chưa có'} • "
+                f"Lỗi: {job['error'] or 'không'}")
+
+    def _refresh_queue(self) -> None:
+        if not hasattr(self, "queue_tree"):
+            return
+        selected = self.queue_tree.selection()
+        self.queue_tree.delete(*self.queue_tree.get_children())
+        for index, job in enumerate(self.queue.jobs(), 1):
+            def when(value):
+                return value.replace("T", " ")[:19] if value else ""
+            self.queue_tree.insert("", "end", iid=job["id"], values=(index, job["project_name"],
+                job["status"], job["stage"], job["actual_encoder"] or job["selected_encoder"],
+                when(job["started_at"]), when(job["ended_at"])))
+        if selected and self.queue_tree.exists(selected[0]):
+            self.queue_tree.selection_set(selected[0])
+        self._queue_selection()
+        if self.queue.last_error:
+            self.queue_details.set("Lỗi hàng đợi: " + self.queue.last_error)
+
+    def _poll_queue(self) -> None:
+        changed = False
+        selected = None
+        error = None
+        while True:
+            try:
+                kind, value = self._queue_events.get_nowait()
+            except Empty:
+                break
+            changed = True
+            if kind == "select":
+                selected = str(value)
+                self._queue_pending = max(0, self._queue_pending - 1)
+            elif kind == "updated":
+                self._queue_pending = max(0, self._queue_pending - 1)
+            elif kind == "error":
+                error = str(value)
+                self._queue_pending = max(0, self._queue_pending - 1)
+        if changed:
+            self._refresh_queue()
+        if selected and self.queue_tree.exists(selected):
+            self.queue_tree.selection_set(selected)
+            self._queue_selection()
+        if error:
+            self._fail(error)
+        if self.root.winfo_exists():
+            self.root.after(500, self._poll_queue)
+
+    def _enqueue_render(self) -> None:
+        if not self.state or not self._save():
+            return
+        snapshot = deepcopy(self.state)
+        self.queue_details.set("Đang tạo snapshot và kiểm tra media…")
+        self._queue_pending += 1
+        def worker():
+            try:
+                job = self.queue.enqueue(snapshot)
+            except Exception as exc:
+                self._queue_events.put(("error", str(exc)))
+            else:
+                self._queue_events.put(("select", job["id"]))
+        Thread(target=worker, daemon=True).start()
+
+    def _queue_start(self) -> None:
+        try:
+            self.queue.start()
+        except Exception as exc:
+            self._fail(str(exc))
+
+    def _queue_pause(self) -> None:
+        self.queue.pause_after_current()
+        self.queue_details.set("Sẽ dừng sau tác vụ đang chạy; các tác vụ chờ được giữ lại.")
+
+    def _queue_cancel(self) -> None:
+        self.queue.cancel_current()
+        self.queue_details.set("Đã yêu cầu hủy tác vụ; hàng đợi sẽ tiếp tục nếu chưa tạm dừng.")
+
+    def _queue_remove(self) -> None:
+        job = self._selected_queue_job()
+        if job:
+            try:
+                self.queue.remove_queued(job["id"])
+            except Exception as exc:
+                self._fail(str(exc))
+
+    def _queue_retry(self) -> None:
+        job = self._selected_queue_job()
+        if job:
+            try:
+                self.queue.retry(job["id"])
+            except Exception as exc:
+                self._fail(str(exc))
+
+    def _queue_update(self) -> None:
+        job = self._selected_queue_job()
+        if not job or not self.state or not self._save():
+            return
+        snapshot = deepcopy(self.state)
+        self.queue_details.set("Đang cập nhật snapshot từ project…")
+        self._queue_pending += 1
+        def worker():
+            try:
+                self.queue.update_from_project(job["id"], snapshot)
+            except Exception as exc:
+                self._queue_events.put(("error", str(exc)))
+            else:
+                self._queue_events.put(("updated", None))
+        Thread(target=worker, daemon=True).start()
+
+    def _queue_open_output(self) -> None:
+        job = self._selected_queue_job()
+        output = Path(job["output_path"]).parent if job and job["output_path"] else \
+            Path(job["configuration"]["output_root"] if job else self.service.settings["output_root"])
+        output.mkdir(parents=True, exist_ok=True)
+        self._open_path(output)
+
+    def _queue_open_performance(self) -> None:
+        job = self._selected_queue_job()
+        if job and job["performance_path"]:
+            self._open_path(Path(job["performance_path"]))
+        else:
+            self._fail("Tác vụ chưa có báo cáo thời gian dựng.")
 
     def _choose_initial_project(self) -> None:
         self._new_project()
@@ -1487,10 +1657,16 @@ class StudioApp:
         self._start_job("Đang tạo/cập nhật lời đọc Nhật…", self.renderer.generate_narration)
 
     def _render_preview(self) -> None:
+        if self.queue.is_active():
+            self._fail("Hàng đợi Render đang chạy; hãy chờ hoặc tạm dừng trước khi render thủ công.")
+            return
         self._start_job("Đang chuẩn bị bản xem nhanh…",
             lambda state, progress: self.renderer.render_video(state, preview=True, progress=progress))
 
     def _render_full(self) -> None:
+        if self.queue.is_active():
+            self._fail("Hàng đợi Render đang chạy; hãy chờ hoặc tạm dừng trước khi render thủ công.")
+            return
         self._start_job("Đang chuẩn bị bản Full HD…",
             lambda state, progress: self.renderer.render_video(state, preview=False, progress=progress))
 
@@ -1523,13 +1699,30 @@ class StudioApp:
         self._open_path(folder)
 
     def _close(self) -> None:
+        if self._queue_pending:
+            self._save_status.set("Đang tạo snapshot hàng đợi; hãy đợi lưu xong trước khi đóng.")
+            return
         if self._job_running:
             self._append_render_log("Hãy đợi thao tác hiện tại hoàn tất trước khi đóng TE Studio.")
             return
         if self.state and not self._save():
             if not messagebox.askyesno("Thoát TE Studio", "Có thay đổi chưa lưu. Vẫn thoát?", parent=self.root):
                 return
+        if self.queue.is_active():
+            if not messagebox.askyesno("Hàng đợi Render đang chạy",
+                    "Hủy tác vụ hiện tại và đóng TE Studio? Các tác vụ chưa chạy vẫn được giữ.", parent=self.root):
+                return
+            self.queue.pause_after_current()
+            self.queue.cancel_current()
+            self._close_after_queue()
+            return
         self.root.destroy()
+
+    def _close_after_queue(self) -> None:
+        if self.queue.is_active():
+            self.root.after(200, self._close_after_queue)
+        else:
+            self.root.destroy()
 
 
 def main() -> None:

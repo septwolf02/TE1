@@ -312,7 +312,7 @@ class StudioRenderService:
         return destination
 
     def render_video(self, state: StudioProject, *, preview: bool,
-                     progress: Progress | None = None) -> Path:
+                     progress: Progress | None = None, _machine_locked: bool = False) -> Path:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         path = state.directory / "generated" / "output" / "diagnostics" / (
             f"performance-{stamp}-{'preview' if preview else 'full'}.json")
@@ -321,9 +321,12 @@ class StudioRenderService:
         report.resolution = [960, 540] if preview else [1920, 1080]
         error = None
         try:
-            with project_job_lock(state.directory):
-                result = self._render_video_locked(state, preview=preview, progress=progress,
-                                                   performance=report)
+            machine_lock = (nullcontext() if _machine_locked else
+                            project_job_lock(self.studio.config_path.parent / "render-execution"))
+            with machine_lock:
+                with project_job_lock(state.directory):
+                    result = self._render_video_locked(state, preview=preview, progress=progress,
+                                                       performance=report)
         except Exception as exc:
             error = exc
             raise
