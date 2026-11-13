@@ -18,7 +18,7 @@ Hoặc chọn **OpenAI API**, dán key, bấm **Save securely** rồi **Test con
 
 Chọn một model trong danh sách của provider. **Nhanh** và **Vừa** tương ứng `low` và `medium` nếu catalog công bố mức reasoning đó; nếu không, ứng dụng bỏ tham số reasoning. Model preference được lưu riêng theo provider.
 
-Sau Full Script Import, mở **AI phân vai**. Điền tên nhân vật A (MC), B (nhân vật chính), C và D. Chọn provider/model rồi bấm **AI phân vai** trong cửa sổ review. Kết quả hiển thị span Việt, span Nhật, vai và cảnh báo. Chọn dòng, chọn lại text Việt/Nhật trong hai ô và bấm **Thêm / sửa thủ công** nếu cần. Có thể thêm assignment thủ công khi offline. **Xác nhận và lưu** yêu cầu mọi assignment có vai và span Nhật.
+Sau Full Script Import, mở **AI phân vai**. Điền tên nhân vật A (MC), B (nhân vật chính), C và D. Chọn provider/model rồi bấm **AI phân vai** trong cửa sổ review. Một request phân tích toàn bộ P1–P4 đang có nội dung, bất kể bộ lọc kết quả đang ở **Toàn bài** hay P1–P4. Python tạo ID cho từng đoạn Việt/Nhật; AI chọn ID và Python xác định vị trí trong script. Kết quả hiển thị đoạn Việt, đoạn Nhật, vai và cảnh báo. **Chỉ cần xem lại** giúp tìm đoạn chưa rõ. Chọn dòng, chọn lại text Việt/Nhật trong hai ô và bấm **Thêm / sửa thủ công** nếu cần. Có thể thêm assignment thủ công khi offline. **Xác nhận và lưu** yêu cầu mọi assignment có vai và span Nhật.
 
 Nếu script đổi, assignment cũ được giữ và đánh dấu `stale`. Phân tích lại, hoặc dùng **Tạo mới thủ công** để xóa assignment cũ sau khi xác nhận. **Tải giọng VOICEVOX** đọc speaker/style từ engine; **Lưu giọng cho vai** lưu style ID theo vai. B1 chỉ lưu dữ liệu chuẩn bị cho B2; render hiện tại vẫn dùng một giọng.
 

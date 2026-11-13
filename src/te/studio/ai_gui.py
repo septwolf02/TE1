@@ -8,8 +8,8 @@ from tkinter import messagebox, ttk
 from te.project.models import SectionName
 from te.studio.ai_auth import ChatGPTAuth, CredentialStore
 from te.studio.ai_clients import OpenAIConnection
-from te.studio.ai_speakers import (ROLES, passage, script_fingerprint,
-                                   validate_speaker_data)
+from te.studio.ai_speakers import (ROLES, filter_assignments, passage, script_fingerprint,
+                                   section_counts, validate_speaker_data)
 from te.tts import VoicevoxProvider
 
 
@@ -196,11 +196,17 @@ class SpeakerAIController:
             ttk.Label(top, text=f"{role} — {ROLES[role]}").pack(side="left")
             ttk.Entry(top, textvariable=identities[role], width=16).pack(side="left", padx=4)
         section = tk.StringVar(value="P1")
+        result_filter = tk.StringVar(value="Toàn bài")
+        review_only = tk.BooleanVar(value=False)
         row = ttk.Frame(dialog, padding=8)
         row.pack(fill="x")
-        ttk.Label(row, text="Phần").pack(side="left")
+        ttk.Label(row, text="Phần để chọn text thủ công").pack(side="left")
         ttk.Combobox(row, textvariable=section, values=[s.value for s in SectionName],
                      state="readonly", width=6).pack(side="left", padx=5)
+        ttk.Label(row, text="Lọc kết quả").pack(side="left", padx=(20, 4))
+        ttk.Combobox(row, textvariable=result_filter, values=("Toàn bài", "P1", "P2", "P3", "P4"),
+                     state="readonly", width=10).pack(side="left")
+        ttk.Checkbutton(row, text="Chỉ cần xem lại", variable=review_only).pack(side="left", padx=8)
         text_frame = ttk.Frame(dialog, padding=8)
         text_frame.pack(fill="both", expand=True)
         vi_box = tk.Text(text_frame, wrap="word", height=12)
@@ -229,11 +235,23 @@ class SpeakerAIController:
         ttk.Combobox(row, textvariable=role, values=("A", "B", "C", "D", ""),
                      state="readonly", width=5).pack(side="left")
         note = tk.StringVar(value="Chọn dòng để sửa; chọn text trong hai ô để gắn span.")
+        ttk.Label(dialog, text="AI sẽ phân vai toàn bộ các phần có nội dung.").pack(anchor="w", padx=10)
+        counts_label = tk.StringVar()
+        ttk.Label(dialog, textvariable=counts_label).pack(anchor="w", padx=10)
         ttk.Label(dialog, textvariable=note).pack(anchor="w", padx=10)
 
         def refresh():
             table.delete(*table.get_children())
-            for index, item in enumerate(state.speaker_data["assignments"]):
+            all_rows = state.speaker_data["assignments"]
+            counts = section_counts(all_rows)
+            counts_label.set(f"Tổng {len(all_rows)} đoạn • " + " • ".join(
+                f"{key}: {value}" for key, value in counts.items()))
+            visible = filter_assignments(all_rows, result_filter.get())
+            for item in visible:
+                index = next(index for index, original in enumerate(all_rows) if original is item)
+                if (review_only.get() and item["confidence"] == "high"
+                                       and item["role"] in ROLES and item["japanese"] is not None):
+                    continue
                 stale = state.speaker_data["status"] == "stale"
                 try:
                     vi = passage(state.sections, item, "vi") if not stale else "[script đã đổi]"
@@ -244,6 +262,8 @@ class SpeakerAIController:
                              vi[:100], ja[:100], "stale" if stale else item["warning"] or
                              ("Đã xác nhận" if item["confirmed"] else "Cần xem lại")))
         refresh()
+        result_filter.trace_add("write", lambda *_: refresh())
+        review_only.trace_add("write", lambda *_: refresh())
         def select_row(_event):
             selected = table.selection()
             if selected:
@@ -300,7 +320,11 @@ class SpeakerAIController:
             state.speaker_data["status"] = "draft"
             refresh()
 
+        analyzing = False
         def analyze():
+            nonlocal analyzing
+            if analyzing:
+                return
             if not self.model.get() or not self.available[self.provider.get()]:
                 note.set("Hãy kết nối và tải models trong AI Settings trước.")
                 return
@@ -309,21 +333,37 @@ class SpeakerAIController:
                                            "Các sửa thủ công được giữ.", parent=dialog):
                     return
             source = deepcopy(state.sections)
+            available_sections = [s.value for s in SectionName if
+                                  source[s.value]["vi"].strip() or source[s.value]["ja"].strip()]
+            if not available_sections:
+                note.set("Chưa có script Việt hoặc Nhật để phân vai.")
+                return
             names = {key: value.get() for key, value in identities.items()}
             provider = self.provider.get()
             settings = {"model": self.model.get(), "reasoning": self.reasoning.get(),
                         "available_models": deepcopy(self.available[provider])}
-            note.set("AI đang phân vai; bạn vẫn có thể xem script…")
+            analyzing = True
+            analyze_button.configure(state="disabled")
+            note.set("Đang phân vai toàn bộ các phần có nội dung…")
             def work():
-                connection = self._connection(provider)
-                items = connection.attribute_speakers(
-                    {s.value: source[s.value]["vi"] for s in SectionName},
-                    {s.value: source[s.value]["ja"] for s in SectionName}, names, settings)
-                return items, connection.last_usage
+                try:
+                    connection = self._connection(provider)
+                    items = connection.attribute_speakers(
+                        {key: source[key]["vi"] for key in available_sections},
+                        {key: source[key]["ja"] for key in available_sections}, names, settings)
+                    return items, connection.last_usage, connection.last_diagnostics, None
+                except Exception as exc:
+                    return None, None, (), str(exc)
             def done(result):
+                nonlocal analyzing
                 if not dialog.winfo_exists():
                     return
-                items, usage = result
+                analyzing = False
+                analyze_button.configure(state="normal")
+                items, usage, diagnostics, error = result
+                if error:
+                    note.set("Phân vai thất bại: " + error)
+                    return
                 if state.sections != source:
                     note.set("Script đã đổi trong lúc AI chạy; kết quả không được áp dụng.")
                     return
@@ -337,7 +377,8 @@ class SpeakerAIController:
                 refresh()
                 tokens = (f" Tokens: {usage.get('total_tokens')}." if usage and
                           usage.get("total_tokens") is not None else "")
-                note.set(f"Đã nhận {len(items)} gợi ý.{tokens} Kiểm tra và xác nhận thủ công.")
+                warning = " Cần xem lại: " + "; ".join(diagnostics[:3]) if diagnostics else ""
+                note.set(f"Đã nhận {len(items)} đoạn.{tokens}{warning} Kiểm tra và xác nhận thủ công.")
             app._background(work, done)
 
         def load_voices():
@@ -400,7 +441,8 @@ class SpeakerAIController:
 
         buttons = ttk.Frame(dialog, padding=8)
         buttons.pack(fill="x")
-        ttk.Button(buttons, text="AI phân vai", command=analyze).pack(side="left", padx=4)
+        analyze_button = ttk.Button(buttons, text="AI phân vai", command=analyze)
+        analyze_button.pack(side="left", padx=4)
         ttk.Button(buttons, text="Thêm / sửa thủ công", command=edit_row).pack(side="left", padx=4)
         ttk.Button(buttons, text="Tạo mới thủ công", command=reset_manual).pack(side="left", padx=4)
         ttk.Button(buttons, text="Xác nhận và lưu", command=confirm).pack(side="left", padx=4)
