@@ -20,3 +20,23 @@ git pull --ff-only origin te-v1-render-test
 ```
 
 No Playwright browser installation is needed for this Publisher path. To upload now, open the Publisher, save the intended MP4 and metadata, then use **Mở YouTube Studio**. Sign in and select the intended Editor-accessible channel in the browser. Verify the account and channel there, upload the MP4 manually, and set visibility and other settings in Studio. TE Studio does not claim this manual action completed or update a job to `published` automatically. Any prior uncertain job remains available for review, and the duplicate-prevention records are preserved.
+
+## Phase 4A.2 channel discovery feasibility
+
+Chrome 138+ [exposes native Windows UI Automation](https://developer.chrome.com/blog/windows-uia-support-update). This may expose visible Studio controls without controlling Google sign-in. However, the accessibility contract does not guarantee that YouTube Studio's channel switcher exposes each channel's URL or ID. A visible name alone is insufficient, especially when multiple channels have the same name. TE Studio therefore **does not yet provide automatic channel discovery or a verified channel list**. The current manual ID field remains available, and automatic upload remains disabled.
+
+A read-only UIA probe is included to test this specific gap on the user's Windows installation. It operates only on a window chosen by HWND, requires a Studio title and a unique Studio channel URL, reads no Chrome profile files, and never clicks or changes tabs. It reports URL-anchored candidates as `unverified`; it does not save them to the channel registry. It cannot establish upload permission or completeness of the account's channel list. Older saved channel IDs, project metadata, and jobs remain untouched.
+
+In PowerShell, after opening YouTube Studio in normal Chrome, optionally open its channel switcher, then run:
+
+```powershell
+cd D:\TE-Git
+git fetch origin
+git switch te-v1-render-test
+git pull --ff-only origin te-v1-render-test
+.\.venv\Scripts\python.exe -m pip install -e '.[gui,publisher-probe]'
+.\.venv\Scripts\python.exe -m te.studio.channel_probe --list
+.\.venv\Scripts\python.exe -m te.studio.channel_probe --hwnd 123456
+```
+
+Replace `123456` with the HWND returned by `--list`. The output should be checked against the actual channel names and IDs in Studio for each signed-in account. If only the active channel ID appears, the UIA approach cannot meet the one-click discovery requirement. Chrome [does not permit remote debugging of the default profile](https://developer.chrome.com/blog/remote-debugging-port) in recent versions, and copying its cookies is not an option. A possible supported alternative is an explicitly installed Chrome extension limited to Studio pages, with [Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) to TE Studio. That requires separate implementation and Windows validation; no extension or automatic browser access is enabled here.
