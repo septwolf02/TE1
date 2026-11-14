@@ -89,6 +89,7 @@ class StudioApp:
         self.renderer = StudioRenderService(self.service)
         self._queue_events: Queue[tuple[str, object]] = Queue()
         self._queue_pending = 0
+        self._full_render_pending: set[str] = set()
         self.queue = RenderQueue(self.service, on_change=lambda: self._queue_events.put(("changed", None)))
         self.ai = SpeakerAIController(self)
         self.intro_paths = {section: tk.StringVar() for section in SECTIONS}
@@ -591,8 +592,22 @@ class StudioApp:
             if kind == "select":
                 selected = str(value)
                 self._queue_pending = max(0, self._queue_pending - 1)
+            elif kind == "full_select":
+                selected, project_id, start_error = value
+                self._full_render_pending.discard(project_id)
+                self._queue_pending = max(0, self._queue_pending - 1)
+                message = ("Đã thêm Full HD vào hàng đợi; đang render hoặc chờ đến lượt."
+                    if not start_error else "Đã thêm Full HD vào hàng đợi; chưa thể bắt đầu: " + start_error)
+                self.render_status.set(message)
+                if start_error:
+                    error = start_error
             elif kind == "updated":
                 self._queue_pending = max(0, self._queue_pending - 1)
+            elif kind == "full_error":
+                project_id, error = value
+                self._full_render_pending.discard(project_id)
+                self._queue_pending = max(0, self._queue_pending - 1)
+                self.render_status.set("Không thể thêm Full HD vào hàng đợi: " + error)
             elif kind == "error":
                 error = str(value)
                 self._queue_pending = max(0, self._queue_pending - 1)
@@ -606,26 +621,51 @@ class StudioApp:
         if self.root.winfo_exists():
             self.root.after(500, self._poll_queue)
 
-    def _enqueue_render(self) -> None:
+    def _enqueue_render(self, *, auto_start: bool = False) -> None:
+        if auto_start and self.state:
+            project_id = self.state.project.id
+            if project_id in self._full_render_pending:
+                self.render_status.set("Full HD của project này đang được thêm vào hàng đợi.")
+                return
+            if any(job["project_id"] == project_id and job["status"] in ("queued", "running")
+                   for job in self.queue.jobs()):
+                if self._queue_start():
+                    self.render_status.set("Full HD của project này đã có trong hàng đợi; đang chạy hoặc chờ đến lượt.")
+                return
         if not self.state or not self._save():
             return
         snapshot = deepcopy(self.state)
         self.queue_details.set("Đang tạo snapshot và kiểm tra media…")
+        if auto_start:
+            self._full_render_pending.add(snapshot.project.id)
+            self.render_status.set("Đang tạo snapshot Full HD để thêm vào hàng đợi…")
         self._queue_pending += 1
         def worker():
             try:
                 job = self.queue.enqueue(snapshot)
             except Exception as exc:
-                self._queue_events.put(("error", str(exc)))
+                self._queue_events.put(("full_error", (snapshot.project.id, str(exc))) if auto_start
+                                       else ("error", str(exc)))
             else:
-                self._queue_events.put(("select", job["id"]))
+                if auto_start:
+                    try:
+                        self.queue.start()
+                    except Exception as exc:
+                        start_error = str(exc)
+                    else:
+                        start_error = None
+                    self._queue_events.put(("full_select", (job["id"], snapshot.project.id, start_error)))
+                else:
+                    self._queue_events.put(("select", job["id"]))
         Thread(target=worker, daemon=True).start()
 
-    def _queue_start(self) -> None:
+    def _queue_start(self) -> bool:
         try:
             self.queue.start()
         except Exception as exc:
             self._fail(str(exc))
+            return False
+        return True
 
     def _queue_pause(self) -> None:
         self.queue.pause_after_current()
@@ -1664,11 +1704,7 @@ class StudioApp:
             lambda state, progress: self.renderer.render_video(state, preview=True, progress=progress))
 
     def _render_full(self) -> None:
-        if self.queue.is_active():
-            self._fail("Hàng đợi Render đang chạy; hãy chờ hoặc tạm dừng trước khi render thủ công.")
-            return
-        self._start_job("Đang chuẩn bị bản Full HD…",
-            lambda state, progress: self.renderer.render_video(state, preview=False, progress=progress))
+        self._enqueue_render(auto_start=True)
 
     def _open_path(self, path: Path) -> None:
         if not path.exists():

@@ -346,7 +346,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     assert main_labels.count("Chi tiết / Cài đặt") == 6
     assert root.minsize() == (920, 690)
     assert set(app._details) == {"ai", "management", "keys", "media", "intros",
-                                 "voice", "subtitles", "output"}
+                                 "voice", "subtitles", "output", "queue"}
     for key in app._details:
         app._show_detail(key)
         root.update_idletasks()

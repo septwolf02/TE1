@@ -478,11 +478,18 @@ def test_tk_buttons_generate_and_render_real_preview(tmp_path, monkeypatch):
             time.sleep(0.01)
         assert not app._job_running and not errors
     button("Xuất Full HD 1920×1080").invoke()
-    wait_done()
-    assert state.project.sentence_audio_records
-    assert state.last_final and Path(state.last_final).is_file()
+    deadline = time.monotonic() + 30
+    while (not app.queue.jobs() or app.queue.jobs()[0]["status"] in ("queued", "running")
+           or app.queue.is_active()) \
+            and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert not errors and app.queue.jobs()[0]["status"] == "completed"
+    assert Path(app.queue.jobs()[0]["output_path"]).is_file()
+    assert not app._job_running
     button("Xem nhanh 960×540").invoke()
     wait_done()
+    assert state.project.sentence_audio_records
     assert (state.directory / "generated/output/preview.mp4").is_file()
     button("Tạo / cập nhật lời đọc Nhật").invoke()
     wait_done()

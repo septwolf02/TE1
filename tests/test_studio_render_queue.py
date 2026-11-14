@@ -3,6 +3,7 @@ from copy import deepcopy
 from array import array
 import json
 from pathlib import Path, PureWindowsPath
+from queue import Queue
 from threading import Event, Lock
 import time
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from te.studio.ai_speakers import resolve_japanese_references, segment_passages
 from te.studio.multi_voice import confirmed_speaker_data
 from te.studio.multi_voice import MultiVoiceService
 from te.studio.render_queue import RenderQueue
+from te.studio.gui import StudioApp
 from te.studio.rendering import StudioRenderService, project_job_lock
 from te.studio.service import StudioService
 from te.tts import SentenceSpeechService, TTSService
@@ -126,6 +128,56 @@ def test_fifo_single_worker_editor_remains_usable_and_outputs_are_unique(tmp_pat
     assert service.open_project(kl5.directory).sections["P1"]["ja"] == kl5.sections["P1"]["ja"]
     assert [job["status"] for job in RenderQueue(StudioService(service.config_path)).jobs()] == [
         "completed"] * 4
+
+
+def test_full_hd_button_queues_once_and_keeps_other_project_editable(tmp_path):
+    service, create, _image = fixture(tmp_path)
+    first, second = create("KL5"), create("KL6")
+    started, allow_render, allow_snapshot = Event(), Event(), Event()
+    factory, _ = fake_factory([], entered=started, release=allow_render)
+    queue = RenderQueue(service, renderer_factory=factory)
+    actual_enqueue = queue.enqueue
+    snapshot_started = Event()
+    calls = []
+    def delayed_enqueue(state):
+        calls.append(state.project.id)
+        snapshot_started.set()
+        assert allow_snapshot.wait(10)
+        return actual_enqueue(state)
+    queue.enqueue = delayed_enqueue
+
+    app = StudioApp.__new__(StudioApp)
+    app.state = first
+    app.queue = queue
+    app._queue_events = Queue()
+    app._queue_pending = 0
+    app._full_render_pending = set()
+    app._job_running = False
+    app.queue_details = SimpleNamespace(set=lambda _value: None)
+    app.render_status = SimpleNamespace(set=lambda _value: None)
+    app.queue_tree = SimpleNamespace(exists=lambda _value: False)
+    app.root = SimpleNamespace(winfo_exists=lambda: False)
+    app._save = lambda: True
+    app._refresh_queue = lambda: None
+    app._fail = lambda message: pytest.fail(message)
+    app._set_job_busy = lambda _busy: pytest.fail("Full HD disabled the editor")
+    queue.on_change = lambda: app._queue_events.put(("changed", None))
+
+    app._render_full()
+    assert snapshot_started.wait(10)
+    app._render_full()  # Repeated click while the snapshot is still being made.
+    assert calls == [first.project.id] and not app._job_running
+    app.state = second
+    app._render_full()  # Another project can be prepared while KL5 is queued.
+    allow_snapshot.set()
+    wait_for(lambda: len(queue.jobs()) == 2 and started.is_set())
+    wait_for(lambda: (app._poll_queue() or not app._full_render_pending))
+    assert not app._full_render_pending and not app._job_running
+    app.state = first
+    app._render_full()  # Existing queued/running job is resumed, not duplicated.
+    assert len(queue.jobs()) == 2 and calls.count(first.project.id) == 1
+    allow_render.set()
+    wait_for(lambda: all(job["status"] == "completed" for job in queue.jobs()))
 
 
 def test_remove_queued_job_keeps_other_jobs_and_source_project(tmp_path):
