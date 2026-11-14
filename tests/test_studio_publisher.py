@@ -2,8 +2,6 @@
 import json
 from pathlib import Path
 from queue import Queue
-import sys
-from types import ModuleType
 from types import SimpleNamespace
 from threading import Event
 
@@ -12,7 +10,7 @@ import pytest
 from te.studio.publisher import PublisherStore, file_identity, normalize_metadata, validate_schedule
 from te.studio.publisher_gui import PublisherController
 from te.studio.service import StudioService
-from te.studio.youtube_studio import YouTubeStudioBrowser, StudioSessionExpired, StudioVerificationError
+from te.studio.youtube_studio import YouTubeStudioBrowser, StudioVerificationError
 
 CID = "UC" + "a" * 22
 OTHER = "UC" + "b" * 22
@@ -98,135 +96,69 @@ def test_video_identity_and_failure_record(tmp_path):
         store.update(job["id"], video_id="invented")
 
 
-class FakeLocator:
-    def __init__(self, *, visible=True, click_error=None):
-        self.first = self
-        self.click_error = click_error
-    def wait_for(self, **kwargs):
-        if self.click_error:
-            raise self.click_error
-    def click(self):
-        if self.click_error:
-            raise self.click_error
+def test_system_browser_handoff_does_not_claim_auth_or_channel_permission(monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr("te.studio.youtube_studio.webbrowser.open", lambda url: opened.append(url) or True)
+    browser = YouTubeStudioBrowser(tmp_path / "retired-profile")
+    result = browser.connect()
+    channel = browser.verify_channel(CID)
+    assert opened == ["https://studio.youtube.com/", f"https://studio.youtube.com/channel/{CID}"]
+    assert "chưa xác minh" in result
+    assert channel["id"] == CID
+    assert channel["upload_control_verified"] is False
+    assert channel["authorization_verified"] is False
+    assert not browser.profile_dir.exists()
+    with pytest.raises(ValueError, match="định dạng"):
+        browser.verify_channel("invalid")
+    assert len(opened) == 2
 
 
-class FakePage:
-    def __init__(self, url, create_error=None):
-        self.url = url
-        self.create_error = create_error
-    def goto(self, url, **kwargs):
-        pass
-    def wait_for_url(self, pattern, **kwargs):
-        if self.url == "login":
-            raise TimeoutError()
-    def locator(self, selector):
-        return FakeLocator(click_error=self.create_error)
-    def get_by_text(self, selector):
-        return FakeLocator()
+def test_authentication_open_errors_fail_without_creating_upload(monkeypatch, tmp_path):
+    browser = YouTubeStudioBrowser(tmp_path / "retired-profile")
+    monkeypatch.setattr("te.studio.youtube_studio.webbrowser.open", lambda url: False)
+    with pytest.raises(StudioVerificationError, match="trình duyệt hệ thống"):
+        browser.connect()
+    def blocked(url):
+        raise OSError("browser unavailable")
+    monkeypatch.setattr("te.studio.youtube_studio.webbrowser.open", blocked)
+    with pytest.raises(StudioVerificationError, match="trình duyệt hệ thống"):
+        browser.verify_channel(CID)
+    assert not browser.profile_dir.exists()
 
 
-def test_studio_channel_verification_does_not_infer_permission():
-    browser = YouTubeStudioBrowser(Path("unused"))
-    with pytest.raises(StudioSessionExpired):
-        browser._verify_page(FakePage("login"), CID)
-    with pytest.raises(StudioVerificationError, match="kênh khác"):
-        browser._verify_page(FakePage("https://studio.youtube.com/channel/" + OTHER), CID)
-    with pytest.raises(StudioVerificationError, match="Upload"):
-        browser._verify_page(FakePage("https://studio.youtube.com/channel/" + CID, RuntimeError("denied")), CID)
-    assert browser._verify_page(FakePage("https://studio.youtube.com/channel/" + CID), CID)["id"] == CID
-
-
-def test_gui_browser_work_is_backgrounded_without_editor_lock():
-    called = Event()
-    class Root:
-        def after(self, delay, callback):
-            pass
-    app = SimpleNamespace(root=Root())
+def test_automated_upload_is_blocked_before_browser_or_job_mutation(monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr("te.studio.youtube_studio.webbrowser.open", lambda url: opened.append(url) or True)
+    browser = YouTubeStudioBrowser(tmp_path / "retired-profile")
+    with pytest.raises(StudioVerificationError, match="tạm khóa"):
+        browser.upload_private({"channel_id": CID, "source": {"path": "movie.mp4"}})
+    assert opened == []
+    assert not browser.profile_dir.exists()
     controller = object.__new__(PublisherController)
-    controller.app = app
-    controller.events = Queue()
-    controller.busy = False
-    controller.status = SimpleNamespace(set=lambda value: None)
-    controller._start("verify", lambda: called.set() or {"id": CID})
-    assert called.wait(2)
-    assert controller.busy
-    action, result, error = controller.events.get(timeout=2)
-    assert (action, result["id"], error) == ("verify", CID, None)
-    assert not hasattr(app, "_set_job_busy")
-
-class UploadLocator:
-    def __init__(self, name, calls, checked=True):
-        self.first = self
-        self.name = name
-        self.calls = calls
-        self.checked = checked
-    def wait_for(self, **kwargs):
-        self.calls.append((self.name, "wait", kwargs.get("state")))
-    def click(self, **kwargs):
-        self.calls.append((self.name, "click"))
-    def fill(self, value):
-        self.calls.append((self.name, "fill", value))
-    def set_input_files(self, value):
-        self.calls.append((self.name, "file", value))
-    def get_attribute(self, key):
-        if key == "aria-checked":
-            return "true" if self.checked else "false"
-        if key == "href":
-            return "https://www.youtube.com/watch?v=abcdefghijk"
-        return None
-    def locator(self, selector):
-        return UploadLocator(selector, self.calls, checked=self.checked)
+    messages = []
+    controller.status = SimpleNamespace(set=messages.append)
+    controller.app = SimpleNamespace(root=object())
+    monkeypatch.setattr("te.studio.publisher_gui.messagebox.showwarning",
+                        lambda title, message, **kwargs: messages.append(message))
+    controller.upload()
+    assert len(messages) == 2 and all("tạm khóa" in message for message in messages)
+    assert opened == []
 
 
-class UploadPage:
-    def __init__(self, calls, checked=True):
-        self.calls = calls
-        self.checked = checked
-    def locator(self, selector):
-        return UploadLocator(selector, self.calls, checked=self.checked)
-    def get_by_text(self, selector):
-        return UploadLocator("upload videos", self.calls, checked=self.checked)
-
-
-class UploadContext:
-    def __init__(self, page, calls):
-        self.pages = [page]
-        self.calls = calls
-    def close(self):
-        self.calls.append(("context", "close"))
-
-
-def test_mock_private_upload_fills_metadata_and_never_selects_public(monkeypatch):
-    calls = []
-    browser = YouTubeStudioBrowser(Path("unused"))
-    context = UploadContext(UploadPage(calls), calls)
-    monkeypatch.setattr(browser, "_context", lambda: (SimpleNamespace(stop=lambda: None), context))
-    monkeypatch.setattr(browser, "_verify_page", lambda page, cid: {"id": cid})
-    job = {"channel_id": CID, "source": {"path": "movie.mp4"},
-           "metadata": {"title": "日本語題名", "description": "日本語説明", "audience": "not_made_for_kids"}}
-    result = browser.upload_private(job)
-    assert result == {"video_id": "abcdefghijk", "video_url": "https://www.youtube.com/watch?v=abcdefghijk",
-                      "state": "private_test"}
-    assert ("#title-textarea #textbox, #title-textarea [contenteditable=true]", "fill", "日本語題名") in calls
-    assert ("#description-textarea #textbox, #description-textarea [contenteditable=true]", "fill", "日本語説明") in calls
-    assert ("input[type=file]", "file", "movie.mp4") in calls
-    assert ("tp-yt-paper-radio-button[name='PRIVATE']", "click") in calls
-    assert not any("PUBLIC" in str(call) for call in calls)
-    assert calls.index(("#done-button", "click")) < calls.index(("ytcp-uploads-dialog", "wait", "hidden"))
-
-
-def test_mock_upload_rejects_unconfirmed_privacy_before_save(monkeypatch):
-    calls = []
-    browser = YouTubeStudioBrowser(Path("unused"))
-    context = UploadContext(UploadPage(calls, checked=False), calls)
-    monkeypatch.setattr(browser, "_context", lambda: (SimpleNamespace(stop=lambda: None), context))
-    monkeypatch.setattr(browser, "_verify_page", lambda page, cid: {"id": cid})
-    job = {"channel_id": CID, "source": {"path": "movie.mp4"},
-           "metadata": {"title": "日本語題名", "description": "", "audience": "made_for_kids"}}
-    with pytest.raises(StudioVerificationError, match="Riêng tư"):
+def test_legacy_channels_and_jobs_survive_manual_browser_handoff(monkeypatch, tmp_path):
+    store = PublisherStore(tmp_path / "settings.json")
+    store.add_verified_channel(CID, "既存のチャンネル")
+    job = store.prepare("project", {"channel_id": CID, "title": "既存の動画"},
+                        {"path": "movie.mp4", "sha256": "old-hash", "bytes": 10})
+    before = store.path.read_bytes()
+    monkeypatch.setattr("te.studio.youtube_studio.webbrowser.open", lambda url: True)
+    browser = YouTubeStudioBrowser(store.root / "browser")
+    browser.connect()
+    assert browser.verify_channel(CID)["authorization_verified"] is False
+    with pytest.raises(StudioVerificationError, match="tạm khóa"):
         browser.upload_private(job)
-    assert ("#done-button", "click") not in calls
-    assert ("tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS']", "click") in calls
+    assert store.path.read_bytes() == before
+    assert PublisherStore(tmp_path / "settings.json").latest("project")["id"] == job["id"]
 
 
 def test_cross_process_upload_attempt_reservation(tmp_path):
@@ -255,54 +187,3 @@ def test_completed_full_hd_is_suggested_without_overwriting_selection():
     value.text = "manual.mp4"
     controller.suggest_video()
     assert value.text == "manual.mp4"
-
-
-def _fake_playwright(monkeypatch, launch):
-    api = ModuleType("playwright.sync_api")
-    package = ModuleType("playwright")
-    stopped = []
-    playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch),
-                                 stop=lambda: stopped.append(True))
-    api.sync_playwright = lambda: SimpleNamespace(start=lambda: playwright)
-    package.sync_api = api
-    monkeypatch.setitem(sys.modules, "playwright", package)
-    monkeypatch.setitem(sys.modules, "playwright.sync_api", api)
-    return playwright, stopped
-
-
-def test_installed_chrome_channel_keeps_dedicated_profile_without_download(monkeypatch, tmp_path):
-    profile = tmp_path / "youtube-publisher" / "browser"
-    profile.mkdir(parents=True)
-    marker = profile / "Existing session"
-    marker.write_text("keep", encoding="utf-8")
-    calls = []
-    context = object()
-    def launch(**kwargs):
-        calls.append(kwargs)
-        return context
-    expected, stopped = _fake_playwright(monkeypatch, launch)
-    browser = YouTubeStudioBrowser(profile)
-    for _ in range(2):
-        playwright, opened = browser._context()
-        assert playwright is expected and opened is context
-    assert calls == [dict(user_data_dir=str(profile), channel="chrome", headless=False,
-                          viewport={"width": 1280, "height": 850})] * 2
-    assert profile != Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
-    assert marker.read_text(encoding="utf-8") == "keep"
-    assert not stopped
-
-
-@pytest.mark.parametrize("detail,expected", [
-    ("Chromium distribution 'chrome' is not found", "Không tìm thấy Google Chrome"),
-    ("Browser profile is already in use", "Không mở được Google Chrome"),
-])
-def test_chrome_launch_error_is_actionable_and_never_falls_back(monkeypatch, tmp_path, detail, expected):
-    calls = []
-    def launch(**kwargs):
-        calls.append(kwargs)
-        raise RuntimeError(detail)
-    _, stopped = _fake_playwright(monkeypatch, launch)
-    with pytest.raises(RuntimeError, match=expected):
-        YouTubeStudioBrowser(tmp_path / "publisher-profile")._context()
-    assert len(calls) == 1 and calls[0]["channel"] == "chrome"
-    assert stopped == [True]

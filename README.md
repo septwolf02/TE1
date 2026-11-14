@@ -30,7 +30,7 @@ Services keep speech providers, subtitle alignment and media selection replaceab
 
 ## Status
 
-Modules 0–6 and TTS-1–3 cover project persistence, script editing, media indexing, VOICEVOX, sentence-level timing, KEY reveal and local FFmpeg rendering. TE Studio provides a Vietnamese-language desktop editor and one-click Full HD rendering. Render Queue and a private-test YouTube Studio publisher foundation are available. The Publisher uses installed Google Chrome with a separate profile; no Playwright Chromium download is required. See [Publisher setup](docs/youtube-publisher.md).
+Modules 0–6 and TTS-1–3 cover project persistence, script editing, media indexing, VOICEVOX, sentence-level timing, KEY reveal and local FFmpeg rendering. TE Studio provides a Vietnamese-language desktop editor and one-click Full HD rendering. Render Queue and project-level YouTube publishing metadata are available. Automated YouTube upload is temporarily disabled because Google rejected sign-in inside the Playwright-controlled browser; Studio opens in the system browser for manual upload. See [Publisher status](docs/youtube-publisher.md).
 
 ## Module 1: script input and editing
 

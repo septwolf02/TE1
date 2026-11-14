@@ -1,31 +1,22 @@
 # TE Studio Phase 4A — YouTube Studio Publisher
 
-Phase 4A supports an explicitly confirmed **private test upload** through installed Google Chrome and a dedicated, headed TE Publisher profile. It does not publish publicly or schedule a video. The Publisher saves planned settings for later phases but currently applies only Japanese title, description, audience, and Private visibility. Thumbnail, tags, playlist, monetization, advertisements, and end screen are **not applied** in Phase 4A.
+## Current capability
 
-## Windows installation
+The Publisher saves project metadata in `studio.json` and keeps existing publishing jobs and channel IDs in the machine-local job journal. **Automated upload is temporarily disabled.** The previous Playwright-controlled Chrome sign-in was rejected by Google with “This browser or app may not be secure.” [Playwright's browser API](https://playwright.dev/python/docs/api/class-browsertype) documents that `chromium_sandbox` defaults to `false`, which explains the `--no-sandbox` warning observed in Chrome. TE Studio no longer launches a Playwright browser, so it no longer adds that flag. TE Studio now opens YouTube Studio in the ordinary system browser for manual sign-in and upload. Opening a Studio page does **not** prove the Google identity, channel authorization, or publishing capability to TE Studio. Previously saved channel entries are displayed as unverified.
 
-From the TE repository in PowerShell:
+Google [requires secure browsers for OAuth](https://developers.google.com/identity/protocols/oauth2/policies) and its [desktop OAuth flow](https://developers.google.com/identity/protocols/oauth2/native-app) uses the system browser with a loopback redirect. That OAuth flow would verify an account's identity, but does not grant an Editor's Studio channel permission to YouTube APIs. [YouTube's channel permissions guidance](https://support.google.com/youtubecreatorstudio/answer/9481328) explicitly lists YouTube APIs among features unavailable to invited users, while Editors can upload in YouTube Studio itself. Identity, channel permission, and publishing capability must therefore be treated as separate checks.
+
+No OAuth client is configured in TE Studio. The **Mở YouTube Studio** button opens the regular browser for manual use; it is not an OAuth connection and does not share the browser session with TE Studio. TE Studio does not collect Google passwords, copy cookies or tokens, control a personal Chrome profile, or use stealth or security-disable flags. The former dedicated Playwright profile remains outside the repository under `%LOCALAPPDATA%\TEStudio\youtube-publisher\browser` until the user explicitly chooses **Xóa hồ sơ Playwright cũ**. Existing project metadata and job records are retained.
+
+## Windows update
 
 ```powershell
 cd D:\TE-Git
 git fetch origin
 git switch te-v1-render-test
 git pull --ff-only origin te-v1-render-test
-.\.venv\Scripts\python.exe -m pip install -e '.[gui,publisher]'
+.\.venv\Scripts\python.exe -m pip install -e '.[gui]'
 .\.venv\Scripts\python.exe -m te.studio
 ```
 
-Google Chrome must already be installed on Windows. Playwright launches that installed Chrome through its `chrome` channel; no Playwright browser download is needed. TE Studio keeps a separate Chrome profile under `%LOCALAPPDATA%\TEStudio\youtube-publisher\browser`, outside the repository and separate from your personal Chrome profile. Even if you are signed in to personal Chrome, sign in again manually in TE Studio's Chrome window. TE Studio never requests or saves a Google password. Google may block an automated browser sign-in; in that case Phase 4A cannot proceed and no bypass is attempted. The current account email is not automatically extracted, so check the account in Studio before confirming an upload.
-
-## Safe local test with an Editor account
-
-1. Create or open a project with a completed Full HD MP4. Open **7. Xuất bản YouTube**.
-2. Choose **Kết nối Google**, sign in manually in the separate Chrome window, select your test channel in YouTube Studio, and close that window. Do not use a production channel for the first test.
-3. Copy the real `UC…` channel ID from the `studio.youtube.com/channel/UC…` URL and enter its name for display. Choose **Làm mới danh sách kênh**. The app reopens that exact Studio channel and verifies that the Upload dialog and file input can be opened. This explicit channel flow is used because Studio Editor channels are not reliably listed by the public Data API. The display name is entered by the user; the ID and upload control are checked in Studio.
-4. Set the MP4, Japanese title and description, audience, and `immediate` mode. Choose **Lưu thông tin xuất bản**. Check the selected Google account and channel ID in Studio.
-5. Choose **Tải thử Riêng tư** and confirm. TE Studio checks the selected channel again, sets Private visibility, saves the upload, and records the returned video ID and URL only after the upload dialog closes. Confirm the video is Private in YouTube Studio before doing anything else.
-6. Close and reopen the project to verify the saved metadata and job status. If the browser or app fails after upload begins, inspect Studio for an existing video. TE Studio marks the attempt `needs_attention` and will not blindly upload the same file again.
-
-The profile and persistent job journal are machine-local under `%LOCALAPPDATA%\TEStudio\youtube-publisher`; project publishing metadata is in `studio.json`. **Ngắt kết nối** removes the dedicated profile and the local verified-channel list while keeping old jobs. No authentication data, MP4, or thumbnail is added to the Git repository.
-
-This browser workflow has automated mocked tests. Live Google authentication, Editor channel verification and actual upload must be checked on Windows with a test channel. YouTube Studio's UI can change; an unrecognized control stops the job and leaves it for manual review.
+No Playwright browser installation is needed for this Publisher path. To upload now, open the Publisher, save the intended MP4 and metadata, then use **Mở YouTube Studio**. Sign in and select the intended Editor-accessible channel in the browser. Verify the account and channel there, upload the MP4 manually, and set visibility and other settings in Studio. TE Studio does not claim this manual action completed or update a job to `published` automatically. Any prior uncertain job remains available for review, and the duplicate-prevention records are preserved.

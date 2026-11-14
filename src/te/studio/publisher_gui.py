@@ -8,8 +8,8 @@ from threading import Thread
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .publisher import PublisherStore, file_identity, normalize_metadata
-from .youtube_studio import YouTubeStudioBrowser, StudioSessionExpired
+from .publisher import PublisherStore, normalize_metadata
+from .youtube_studio import YouTubeStudioBrowser
 
 
 class PublisherController:
@@ -20,7 +20,7 @@ class PublisherController:
         self.events = Queue()
         self.busy = False
         self.values = {key: tk.StringVar() for key in normalize_metadata({})}
-        self.status = tk.StringVar(value="Chưa kết nối hoặc xác minh phiên Studio.")
+        self.status = tk.StringVar(value="Upload tự động tạm khóa: TE chưa xác minh tài khoản và quyền kênh.")
         self.channel_name = tk.StringVar()
         app.root.after(300, self.poll)
 
@@ -38,19 +38,19 @@ class PublisherController:
         self.app.body = content
         box = self.app._group("7. Xuất bản YouTube")
         box.columnconfigure(1, weight=1)
-        ttk.Label(box, text="Hồ sơ trình duyệt riêng trong cấu hình TE Studio; đăng nhập Google trực tiếp trong trình duyệt.",
+        ttk.Label(box, text="Mở YouTube Studio trong trình duyệt hệ thống. Đăng nhập và upload thủ công; TE chưa thể xác minh quyền Editor để tự động xuất bản.",
                   wraplength=850).grid(row=0, column=0, columnspan=3, sticky="w")
-        for column, (label, command) in enumerate((("Kết nối Google", self.connect),
-            ("Quản lý tài khoản", self.connect), ("Làm mới danh sách kênh", self.verify))):
+        for column, (label, command) in enumerate((("Mở YouTube Studio", self.connect),
+            ("Quản lý tài khoản trong Studio", self.connect), ("Mở kênh trong Studio", self.verify))):
             ttk.Button(box, text=label, command=command).grid(row=1, column=column, sticky="w", padx=4, pady=4)
-        ttk.Button(box, text="Ngắt kết nối", command=self.disconnect).grid(row=1, column=3, sticky="w", padx=4)
+        ttk.Button(box, text="Xóa hồ sơ Playwright cũ", command=self.disconnect).grid(row=1, column=3, sticky="w", padx=4)
         ttk.Label(box, textvariable=self.status, wraplength=850).grid(row=2, column=0, columnspan=4, sticky="w")
         ttk.Label(box, text="Email Google: chưa xác minh tự động. Hãy kiểm tra tài khoản đang đăng nhập trong Studio.").grid(row=3, column=0, columnspan=4, sticky="w")
         ttk.Label(box, text="ID kênh từ URL studio.youtube.com/channel/UC…").grid(row=4, column=0, sticky="w")
         ttk.Entry(box, textvariable=self.values["channel_id"], width=35).grid(row=4, column=1, sticky="ew")
         ttk.Label(box, text="Tên kênh (do bạn nhập)").grid(row=5, column=0, sticky="w")
         ttk.Entry(box, textvariable=self.channel_name).grid(row=5, column=1, sticky="ew")
-        ttk.Label(box, text="Kênh đã xác minh trên máy").grid(row=6, column=0, sticky="w")
+        ttk.Label(box, text="ID kênh đã lưu (chưa xác minh quyền)").grid(row=6, column=0, sticky="w")
         self.channel_combo = ttk.Combobox(box, state="readonly")
         self.channel_combo.grid(row=6, column=1, sticky="ew")
         self.channel_combo.bind("<<ComboboxSelected>>", self._select_channel)
@@ -81,11 +81,11 @@ class PublisherController:
         ttk.Entry(box, textvariable=self.values["scheduled_local"]).grid(row=row, column=1, sticky="ew")
         ttk.Label(box, text="Asia/Tokyo").grid(row=row, column=2)
         row += 1
-        ttk.Label(box, text="Phase 4A: chỉ tải thử Riêng tư. Đăng ngay, hẹn giờ, thumbnail, tags, playlist, kiếm tiền và end screen chưa được tự động áp dụng.",
+        ttk.Label(box, text="Upload tự động tạm khóa. Các trường này chỉ lưu để chuẩn bị; đăng ngay, hẹn giờ, thumbnail, tags, playlist, kiếm tiền và end screen chưa được tự động áp dụng.",
                   wraplength=850).grid(row=row, column=0, columnspan=3, sticky="w", pady=5)
         row += 1
         ttk.Button(box, text="Lưu thông tin xuất bản", command=self.save).grid(row=row, column=0, sticky="w")
-        ttk.Button(box, text="Tải thử Riêng tư", command=self.upload).grid(row=row, column=1, sticky="w")
+        ttk.Button(box, text="Tải thử Riêng tư (tạm khóa)", command=self.upload, state="disabled").grid(row=row, column=1, sticky="w")
         row += 1
         ttk.Label(box, textvariable=self.values["status"]).grid(row=row, column=0, sticky="w")
         ttk.Entry(box, textvariable=self.values["video_id"], state="readonly", width=16).grid(row=row, column=1, sticky="w")
@@ -152,7 +152,7 @@ class PublisherController:
             self.status.set("Đang xử lý yêu cầu YouTube; vui lòng chờ.")
             return
         self.busy = True
-        self.status.set("Đang xử lý trong trình duyệt riêng…")
+        self.status.set("Đang mở YouTube Studio trong trình duyệt hệ thống…")
         def run():
             try:
                 result = worker()
@@ -168,7 +168,7 @@ class PublisherController:
         if self.busy:
             self.status.set("Đợi thao tác YouTube hiện tại hoàn tất trước khi ngắt kết nối.")
             return
-        if not messagebox.askyesno("Ngắt kết nối Google", "Xóa phiên trình duyệt YouTube riêng của TE Studio trên máy này?",
+        if not messagebox.askyesno("Xóa hồ sơ cũ", "Xóa hồ sơ Playwright cũ của TE Studio? Thao tác này không đăng xuất khỏi trình duyệt hệ thống.",
                                    parent=self.app._details["publisher"]):
             return
         try:
@@ -177,59 +177,21 @@ class PublisherController:
         except OSError as exc:
             messagebox.showerror("YouTube", f"Không xóa được phiên trình duyệt: {exc}", parent=self.app.root)
             return
-        self.store.data["channels"] = []
-        self.store._save()
-        self.refresh_channels()
-        self.status.set("Đã ngắt kết nối và xóa phiên trình duyệt riêng. Tác vụ cũ vẫn được giữ.")
+        self.status.set("Đã xóa hồ sơ Playwright cũ của TE. Phiên đăng nhập trình duyệt hệ thống và dữ liệu kênh/tác vụ đã lưu không bị thay đổi.")
 
     def verify(self):
         channel_id = self.values["channel_id"].get().strip()
-        name = self.channel_name.get().strip()
-        if not name:
-            messagebox.showerror("YouTube", "Nhập tên kênh hiển thị để nhận diện; ID và quyền upload sẽ được xác minh trong Studio.")
-            return
         def work():
-            result = self.browser.verify_channel(channel_id)
-            if not result["upload_control_verified"]:
-                raise ValueError("Không xác minh được quyền Upload.")
-            self.store.add_verified_channel(channel_id, name)
-            return result
+            return self.browser.verify_channel(channel_id)
         self._start("verify", work)
 
     def upload(self):
-        state = self.app.state
-        if state is None:
-            return
-        self.capture()
-        if not self.app._save():
-            return
-        meta = normalize_metadata(state.publisher)
-        if meta["mode"] != "immediate":
-            messagebox.showerror("YouTube", "Phase 4A chưa tải thử tác vụ hẹn giờ. Chọn immediate để tải thử Riêng tư.")
-            return
-        if not messagebox.askyesno("Tải thử Riêng tư", f"Tải video lên kênh {meta['channel_id']} ở chế độ Riêng tư?\n\n"
-                "TE Studio sẽ không đăng công khai. Nếu thao tác bị ngắt, hãy kiểm tra Studio trước khi thử lại.",
-                parent=self.app._details["publisher"]):
-            return
-        project_id = state.project.id
-        def work():
-            identity = file_identity(Path(meta["video_path"]))
-            job = self.store.prepare(project_id, meta, identity)
-            if job["status"] != "ready":
-                raise ValueError(f"Tác vụ này đã tồn tại ({job['status']}); kiểm tra Studio trước khi tạo tải lên khác.")
-            # Check the session before reserving an upload attempt, so an expired
-            # login can be reconnected without locking an unstarted job.
-            self.browser.verify_channel(job["channel_id"])
-            # Reserve before any file selection or upload in the browser.
-            self.store.begin_attempt(job["id"])
-            try:
-                result = self.browser.upload_private(job)
-            except Exception as exc:
-                self.store.update(job["id"], status="needs_attention", error=str(exc))
-                raise
-            return self.store.update(job["id"], status="private_test", video_id=result["video_id"],
-                video_url=result["video_url"], last_confirmed_operation="private_upload_confirmed")
-        self._start("upload", work)
+        # Keep this guard even though the button is disabled: callers must never
+        # create or resume a job from an unverified browser session.
+        message = ("Upload tự động tạm khóa: tài khoản Google, quyền kênh và khả năng xuất bản "
+                   "chưa được xác minh. Hãy upload thủ công trong YouTube Studio.")
+        self.status.set(message)
+        messagebox.showwarning("YouTube", message, parent=self.app.root)
 
     def poll(self):
         while True:
@@ -240,20 +202,10 @@ class PublisherController:
             self.busy = False
             if error:
                 self.status.set(f"{action}: {error}")
-                if isinstance(error, StudioSessionExpired):
-                    self.status.set("Phiên Studio hết hạn. Bấm Kết nối Google để đăng nhập lại.")
                 messagebox.showerror("YouTube", str(error), parent=self.app.root)
             elif action == "connect":
                 self.status.set(result)
             elif action == "verify":
-                self.status.set(f"Đã xác minh quyền mở Upload cho {result['id']}; tên kênh do bạn nhập.")
-                self.refresh_channels()
-            elif action == "upload":
-                self.status.set("YouTube Studio đã trả video ID; video tải thử ở chế độ Riêng tư.")
-                if self.app.state and self.app.state.project.id == result["project_id"]:
-                    for key in ("status", "video_id", "video_url"):
-                        self.values[key].set(result[key])
-                    self.capture()
-                    self.app._save()
+                self.status.set(f"Đã mở kênh {result['id']} trong trình duyệt hệ thống. TE chưa xác minh quyền upload.")
         if self.app.root.winfo_exists():
             self.app.root.after(300, self.poll)
