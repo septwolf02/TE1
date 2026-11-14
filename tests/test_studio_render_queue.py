@@ -322,6 +322,28 @@ def test_machine_encoder_and_output_location_are_frozen_at_enqueue(tmp_path):
     assert Path(queue.jobs()[0]["output_path"]).parent == original_root
 
 
+def test_subtitle_opacity_is_frozen_until_queue_job_is_explicitly_updated(tmp_path):
+    service, create, _image = fixture(tmp_path)
+    state = create("KL5")
+    state.project.subtitle_style.update(background_enabled=True, background_opacity=25,
+                                        headline_background_opacity=60)
+    service.save_project(state)
+    queue = RenderQueue(service, renderer_factory=fake_factory([])[0])
+    job = queue.enqueue(state)
+    state.project.subtitle_style.update(background_enabled=False, background_opacity=100,
+                                        headline_background_opacity=0)
+    service.save_project(state)
+    frozen = service.open_project(Path(job["snapshot_path"]))
+    assert frozen.project.subtitle_style["background_opacity"] == 25
+    assert frozen.project.subtitle_style["headline_background_opacity"] == 60
+    assert frozen.project.subtitle_style["background_enabled"] is True
+    queue.update_from_project(job["id"], state)
+    refreshed = service.open_project(Path(queue.jobs()[0]["snapshot_path"]))
+    assert refreshed.project.subtitle_style["background_opacity"] == 100
+    assert refreshed.project.subtitle_style["headline_background_opacity"] == 0
+    assert refreshed.project.subtitle_style["background_enabled"] is False
+
+
 def test_cancel_current_continues_next_job_and_pause_keeps_queued(tmp_path):
     service, create, _image = fixture(tmp_path)
     first, second = create("KL5"), create("KL6")

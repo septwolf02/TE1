@@ -412,7 +412,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     app.intro_enabled[SectionName.P2].set(False)
     app._set_intro_preference(SectionName.P2, False)
     assert app._save()
-    assert "1.2×" in app.voice_summary.get()
+    assert "Đa giọng: Cần xác nhận phân vai" in app.voice_summary.get()
     assert "#FFEEDD" in app.subtitle_summary.get()
     assert "Chỉ pan" in app.output_summary.get()
     app._load_state(app.service.open_project(path))
@@ -444,6 +444,8 @@ def test_tk_render_worker_keeps_editor_responsive_and_reports_errors(tmp_path, m
     monkeypatch.setattr(simpledialog, "askstring", lambda *args, **kwargs: "GUI render worker")
     root = tk.Tk()
     app = StudioApp(root, make_service(tmp_path))
+    app.narration_mode.set("Một giọng")  # This test exercises the legacy manual worker.
+    assert app._save()
     errors = []
     monkeypatch.setattr(app, "_fail", errors.append)
     ticked = []

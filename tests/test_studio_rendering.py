@@ -93,7 +93,7 @@ def test_studio_fake_tts_timeline_intro_key_and_real_preview(tmp_path):
             "-f", "rawvideo", "-"], capture_output=True, check=True).stdout[:3]
     before = center_rgb((key_visual.start_ms - 150) / 1000)
     after = center_rgb((key_visual.start_ms + 150) / 1000)
-    assert after[1] < before[1] - 30 and after[2] < before[2] - 60
+    assert after[1] < before[1] - 30 and after[2] < before[2] - 40
     ffprobe = RenderService.check_ffmpeg()["ffprobe"]
     probe = json.loads(subprocess.run([ffprobe, "-v", "error", "-show_streams", "-of", "json", str(output)],
         capture_output=True, text=True, encoding="utf-8", check=True).stdout)
@@ -424,6 +424,32 @@ def test_one_click_preview_reflows_200_character_sentence(tmp_path):
     assert len(captions) > 4
     assert "".join(item.text for item in captions) == long_text
     assert all(len(item.text) <= 48 for item in captions)
+
+
+def test_subtitle_opacity_refreshes_video_cache_without_regenerating_wav(tmp_path):
+    studio, state = studio_project(tmp_path, intro=False, key=False)
+    state.motion_preset = "none"
+    studio.settings["render_encoder"] = "libx264"
+    studio.save_project(state)
+    workflow = StudioRenderService(studio)
+    workflow.render_video(state, preview=True)
+    cache = state.directory / "generated/cache/render"
+    before_video = {path.name for path in cache.glob("video-*.mp4")}
+    before_wav = {path: path.stat().st_mtime_ns for path in
+                  (state.directory / "generated/audio/sentences").glob("*.wav")}
+    assert before_video and before_wav
+    state.project.subtitle_style.update(background_opacity=25, headline_background_opacity=60)
+    studio.save_project(state)
+    workflow.render_video(state, preview=True)
+    after_video = {path.name for path in cache.glob("video-*.mp4")}
+    assert after_video > before_video
+    assert {path: path.stat().st_mtime_ns for path in before_wav} == before_wav
+    preview_ass = (cache / "captions.ass").read_text(encoding="utf-8")
+    assert "&HBF000000" in preview_ass and "\\1a&H66&\\p1" in preview_ass
+    workflow.render_video(state, preview=False)
+    full_ass = (cache / "captions.ass").read_text(encoding="utf-8")
+    assert "&HBF000000" in full_ass and "\\1a&H66&\\p1" in full_ass
+    assert {path: path.stat().st_mtime_ns for path in before_wav} == before_wav
 
 
 def test_retry_after_subtitle_burn_failure_reuses_wav_and_clips(tmp_path, monkeypatch):

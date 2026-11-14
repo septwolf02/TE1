@@ -240,6 +240,7 @@ class Project:
         "canvas_width": 1920, "canvas_height": 1080, "position": "bottom_center",
         "font": "bold_japanese", "text_color": "#FFFFFF", "outline_color": "#000000",
         "background": "semi_transparent_dark", "max_lines": 2, "max_chars_per_line": 24,
+        "background_enabled": True, "background_opacity": 40, "headline_background_opacity": 40,
         "headline_position": "center", "headline_background": "darkened",
     })
     schema_version: int = PROJECT_VERSION
@@ -464,6 +465,11 @@ class Project:
             order_by_segment[caption.segment_id] = caption.order
         if self.subtitle_style.get("max_lines") != 2 or self.subtitle_style.get("max_chars_per_line", 0) < 1:
             raise ValueError("Invalid subtitle style")
+        style = self.subtitle_style
+        if ("background_enabled" in style and type(style["background_enabled"]) is not bool or
+                any(key in style and (type(style[key]) is not int or not 0 <= style[key] <= 100)
+                    for key in ("background_opacity", "headline_background_opacity"))):
+            raise ValueError("Invalid subtitle background opacity")
 
     def to_dict(self) -> dict:
         self.validate()
@@ -483,6 +489,9 @@ class Project:
             version = data["schema_version"]
             if version not in (1, 2, 3, 4, 5, 6, 7, PROJECT_VERSION):
                 raise ValueError("Unsupported project version")
+            legacy_style = cls.__dataclass_fields__["subtitle_style"].default_factory()
+            for key in ("background_enabled", "background_opacity", "headline_background_opacity"):
+                legacy_style.pop(key)
             project = cls(
                 id=data["id"], name=data["name"], schema_version=PROJECT_VERSION,
                 timeline_file=data["timeline_file"],
@@ -518,7 +527,7 @@ class Project:
                 subtitle_captions=[SubtitleCaption(**{
                     **c, "section": SectionName(c["section"])
                 }) for c in data.get("subtitle_captions", [])],
-                subtitle_style=data.get("subtitle_style", cls.__dataclass_fields__["subtitle_style"].default_factory()),
+                subtitle_style=data.get("subtitle_style", legacy_style),
             )
             for asset in project.media:
                 asset.available = Path(asset.path).is_file()

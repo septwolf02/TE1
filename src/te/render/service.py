@@ -505,6 +505,11 @@ class RenderService:
         # A full-width Japanese glyph can exceed one em in some installed fonts.
         return max(1, min(requested, int((settings.width - 2 * margin) / (size * 1.10))))
 
+    @staticmethod
+    def _opacity_alpha(opacity: int) -> int:
+        """Convert percent opacity to ASS transparency (00 opaque, FF clear)."""
+        return round((100 - opacity) * 255 / 100)
+
     @classmethod
     def _write_ass(cls, project: Project, timeline: Timeline, path: Path, settings: RenderSettings, font: str) -> None:
         style = project.subtitle_style
@@ -523,11 +528,16 @@ class RenderService:
             return f"&H00{value[5:7]}{value[3:5]}{value[1:3]}".upper()
         text_color = ass_color(style.get("text_color", ""), "&H00FFFFFF")
         outline_color = ass_color(style.get("outline_color", ""), "&H00000000")
+        box_enabled = style.get("background_enabled", True)
+        box_alpha = (cls._opacity_alpha(style["background_opacity"])
+                     if "background_opacity" in style else 0x88)
+        back_color = f"&H{box_alpha:02X}000000" if box_enabled else "&HFF000000"
+        border_style = 3 if box_enabled else 1
         header = (
             "[Script Info]\nScriptType: v4.00+\nWrapStyle: 2\n"
             f"PlayResX: {settings.width}\nPlayResY: {settings.height}\n"
             "[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
-            f"Style: Normal,{font},{size},{text_color},{text_color},{outline_color},&H88000000,-1,0,0,0,100,100,0,0,3,{outline},0,2,{margin},{margin},{bottom},1\n"
+            f"Style: Normal,{font},{size},{text_color},{text_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,{border_style},{outline},0,2,{margin},{margin},{bottom},1\n"
             f"Style: Headline,{font},{size},{text_color},{text_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline},0,5,{margin},{margin},{bottom},1\n"
             "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
         )
@@ -563,7 +573,9 @@ class RenderService:
                     if not darkened:
                         lines.append(f"Dialogue: 0,{start_time},{end_time},Normal,,0,0,0,,{text}\n")
                         continue
-                    dark = round((1 - timeline.headline.get("darkening", 0.7)) * 255)
+                    dark = (cls._opacity_alpha(style["headline_background_opacity"])
+                            if "headline_background_opacity" in style else
+                            round((1 - timeline.headline.get("darkening", 0.7)) * 255))
                     lines.append(f"Dialogue: -1,{start_time},{end_time},Headline,,0,0,0,,{{\\an7\\bord0\\shad0\\1c&H000000&\\1a&H{dark:02X}&\\p1}}m 0 0 l {settings.width} 0 {settings.width} {settings.height} 0 {settings.height}{{\\p0}}\n")
                     lines.append(f"Dialogue: 0,{start_time},{end_time},Headline,,0,0,0,,{{\\alpha&H00&}}{{\\an5\\bord3\\shad0}}{text}\n")
         path.write_text("".join(lines), encoding="utf-8")

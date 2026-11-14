@@ -65,6 +65,11 @@ class StudioApp:
         self.subtitle_color = tk.StringVar(value="#FFFFFF")
         self.subtitle_chars = tk.StringVar(value="24")
         self.subtitle_size = tk.StringVar(value="156")
+        self.subtitle_background_enabled = tk.BooleanVar(value=True)
+        self.subtitle_background_opacity = tk.IntVar(value=40)
+        self.headline_background_opacity = tk.IntVar(value=40)
+        self.subtitle_background_percent = tk.StringVar(value="40%")
+        self.headline_background_percent = tk.StringVar(value="40%")
         self.subtitle_lines = tk.StringVar(value="2 (cố định)")
         self.subtitle_position = tk.StringVar(value="bottom_center")
         self.font_path = tk.StringVar(value="")
@@ -110,8 +115,8 @@ class StudioApp:
         self._group_expand = False
         self._build_header()
         script_host = ttk.Frame(outer)
-        script_host.pack(fill="both", expand=True)
-        self.body, self._group_expand = script_host, True
+        script_host.pack(fill="x")
+        self.body, self._group_expand = script_host, False
         self._build_script()
         self.body, self._group_expand = outer, False
         self.ai.build()
@@ -237,9 +242,8 @@ class StudioApp:
         size_button.pack(side="left", padx=4)
         ttk.Label(tabs, textvariable=self.section_status).pack(side="right")
         panel = ttk.Frame(box)
-        panel.pack(fill="both", expand=True, pady=3)
+        panel.pack(fill="x", pady=3)
         panel.columnconfigure((0, 1), weight=1)
-        panel.rowconfigure(1, weight=1)
         ttk.Label(panel, text="Tiếng Việt").grid(row=0, column=0, sticky="w")
         ttk.Label(panel, text="Tiếng Nhật").grid(row=0, column=1, sticky="w")
         self.vn_text = tk.Text(panel, height=6, wrap="word", undo=True, font=("Segoe UI", 11))
@@ -462,6 +466,31 @@ class StudioApp:
         ttk.Label(box, textvariable=self.subtitle_lines).pack(anchor="w")
         ttk.Label(box, text="Vị trí:").pack(anchor="w")
         ttk.Label(box, textvariable=self.subtitle_position).pack(anchor="w")
+        regular = ttk.Frame(box)
+        regular.pack(fill="x", pady=3)
+        ttk.Checkbutton(regular, text="Bật nền phụ đề", variable=self.subtitle_background_enabled).pack(
+            side="left")
+        ttk.Label(regular, text="Độ đậm nền phụ đề").pack(side="left", padx=(15, 4))
+        tk.Scale(regular, from_=0, to=100, resolution=1, orient="horizontal", showvalue=False,
+                 variable=self.subtitle_background_opacity, length=180).pack(side="left")
+        ttk.Label(regular, textvariable=self.subtitle_background_percent, width=5).pack(side="left")
+        for label, value in (("Nhẹ", 25), ("Vừa", 40), ("Đậm", 60)):
+            ttk.Button(regular, text=label,
+                       command=lambda selected=value: self.subtitle_background_opacity.set(selected)).pack(
+                           side="left", padx=2)
+        headline = ttk.Frame(box)
+        headline.pack(fill="x", pady=3)
+        ttk.Label(headline, text="Độ đậm nền chữ mở đầu").pack(side="left")
+        tk.Scale(headline, from_=0, to=100, resolution=1, orient="horizontal", showvalue=False,
+                 variable=self.headline_background_opacity, length=180).pack(side="left", padx=(8, 0))
+        ttk.Label(headline, textvariable=self.headline_background_percent, width=5).pack(side="left")
+        def background_changed(*_):
+            self.subtitle_background_percent.set(f"{self.subtitle_background_opacity.get()}%")
+            self.headline_background_percent.set(f"{self.headline_background_opacity.get()}%")
+            self._dirty()
+        for variable in (self.subtitle_background_enabled, self.subtitle_background_opacity,
+                         self.headline_background_opacity):
+            variable.trace_add("write", background_changed)
         for variable in (self.subtitle_font, self.subtitle_color, self.subtitle_chars,
                          self.subtitle_size, self.font_path):
             variable.trace_add("write", lambda *_: self._dirty())
@@ -803,6 +832,10 @@ class StudioApp:
         self.subtitle_color.set(state.project.subtitle_style.get("text_color", "#FFFFFF"))
         self.subtitle_chars.set(str(state.project.subtitle_style.get("max_chars_per_line", 24)))
         self.subtitle_size.set(str(state.subtitle_size))
+        style = state.project.subtitle_style
+        self.subtitle_background_enabled.set(style.get("background_enabled", True))
+        self.subtitle_background_opacity.set(style.get("background_opacity", 47))
+        self.headline_background_opacity.set(style.get("headline_background_opacity", 70))
         self.subtitle_lines.set(str(state.project.subtitle_style.get("max_lines", 2)) + " (cố định)")
         self.subtitle_position.set(state.project.subtitle_style.get("position", "bottom_center"))
         self.font_path.set(state.font_path or "")
@@ -859,6 +892,13 @@ class StudioApp:
         state.project.subtitle_style["font"] = self.subtitle_font.get().strip()
         state.project.subtitle_style["text_color"] = self.subtitle_color.get().strip()
         state.project.subtitle_style["max_chars_per_line"] = int(self.subtitle_chars.get())
+        style = state.project.subtitle_style
+        if "background_enabled" in style or not self.subtitle_background_enabled.get():
+            style["background_enabled"] = self.subtitle_background_enabled.get()
+        if "background_opacity" in style or self.subtitle_background_opacity.get() != 47:
+            style["background_opacity"] = self.subtitle_background_opacity.get()
+        if "headline_background_opacity" in style or self.headline_background_opacity.get() != 70:
+            style["headline_background_opacity"] = self.headline_background_opacity.get()
         state.subtitle_size = int(self.subtitle_size.get())
         state.font_path = self.font_path.get().strip() or None
 

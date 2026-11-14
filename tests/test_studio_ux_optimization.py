@@ -158,19 +158,60 @@ def test_script_editors_start_compact_and_expand_without_losing_text(tmp_path, m
     service = StudioService(tmp_path / "settings.json")
     service.set_directories(tmp_path / "projects", tmp_path / "output")
     app = StudioApp(root, service)
+    root.update()
     assert app.narration_mode.get() == "Nhiều giọng A/B/C/D"
     assert app.vn_text.cget("height") == app.jp_text.cget("height") == 6
     app.vn_text.insert("1.0", "Một đoạn Việt.\nĐoạn tiếp theo.")
     pending = [app.body]
     toggle = None
+    below = None
     while pending:
         widget = pending.pop()
         if isinstance(widget, ttk.Button) and widget.cget("text") == "Mở rộng ô kịch bản":
             toggle = widget
+        if isinstance(widget, ttk.Button) and widget.cget("text") == "AI phân vai":
+            below = widget
+        pending.extend(widget.winfo_children())
+    assert toggle is not None and below is not None
+    compact_height = app.vn_text.winfo_height()
+    compact_below = below.winfo_rooty()
+    script_host = app.vn_text.master.master.master
+    assert int(script_host.pack_info()["expand"]) == 0
+    assert script_host.winfo_height() < 280
+    toggle.invoke()
+    root.update()
+    assert app.vn_text.cget("height") == app.jp_text.cget("height") == 12
+    assert app.vn_text.winfo_height() > compact_height + 50
+    assert below.winfo_rooty() > compact_below + 50
+    toggle.invoke()
+    root.update()
+    assert app.vn_text.cget("height") == app.jp_text.cget("height") == 6
+    assert abs(below.winfo_rooty() - compact_below) < 5
+    root.geometry("1100x750")
+    root.update()
+    assert app.vn_text.winfo_height() >= compact_height - 5
+    root.geometry("920x690")
+    root.update()
+    assert app.vn_text.winfo_width() > 200 and app.jp_text.winfo_width() > 200
+    assert "Đoạn tiếp theo." in app.vn_text.get("1.0", "end")
+    app.subtitle_background_enabled.set(False)
+    app.subtitle_background_opacity.set(25)
+    app.headline_background_opacity.set(60)
+    assert app.subtitle_background_percent.get() == "25%"
+    assert app.headline_background_percent.get() == "60%"
+    assert app._save()
+    reopened = service.open_project(app.state.directory)
+    assert reopened.project.subtitle_style["background_enabled"] is False
+    assert reopened.project.subtitle_style["background_opacity"] == 25
+    assert reopened.project.subtitle_style["headline_background_opacity"] == 60
+    pending = [app._details["subtitles"]]
+    while pending:
+        widget = pending.pop()
+        if isinstance(widget, ttk.Button) and widget.cget("text") == "Vừa":
+            widget.invoke()
             break
         pending.extend(widget.winfo_children())
-    assert toggle is not None
-    toggle.invoke()
-    assert app.vn_text.cget("height") == app.jp_text.cget("height") == 12
-    assert "Đoạn tiếp theo." in app.vn_text.get("1.0", "end")
+    assert app.subtitle_background_opacity.get() == 40
+    assert app._save()
+    assert service.open_project(app.state.directory).project.subtitle_style["background_opacity"] == 40
     root.destroy()
