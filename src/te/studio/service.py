@@ -187,7 +187,7 @@ class StudioProject:
     last_final: str | None = None
     subtitle_size: int = 156
     speaker_data: dict = field(default_factory=default_speaker_data)
-    narration_mode: str = "single"
+    narration_mode: str = "multi"
     audio_mode: str = "single"
     multi_voice_manifest: dict[str, str] = field(default_factory=dict)
     audio_configuration_signature: str | None = None
@@ -365,7 +365,7 @@ class StudioService:
         project = ProjectManager().open(directory)
         sidecar = directory / "studio.json"
         if not sidecar.is_file():
-            return StudioProject(directory, project, _sections_from_project(project))
+            return StudioProject(directory, project, _sections_from_project(project), narration_mode="single")
         data = json.loads(sidecar.read_text(encoding="utf-8"))
         if data.get("version") != STUDIO_VERSION:
             raise ValueError("Dữ liệu trình biên tập không tương thích.")
@@ -505,6 +505,24 @@ class StudioService:
         data["audio_configuration_signature"] = state.audio_configuration_signature
         _write_json(state.directory / "studio.json", data)
         state.recovery_warning = None
+
+    def confirm_speaker_assignments(self, state: StudioProject, rows: list[dict],
+                                    identities: dict[str, str], source_sections: dict) -> dict:
+        """Replace saved B1 assignments only after the exact source and B2 plan validate."""
+        if state.sections != source_sections:
+            raise ValueError("Script đã đổi trong lúc phân vai; hãy phân tích lại.")
+        from .multi_voice import confirmed_speaker_data
+        candidate = confirmed_speaker_data(state, rows, identities)
+        sidecar = state.directory / "studio.json"
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        if (data.get("project_digest") != self._project_digest(state.directory) or
+                data.get("sections") != state.sections or
+                data.get("speaker_data") != state.speaker_data):
+            raise ValueError("Dự án đã đổi từ lần lưu trước; hãy lưu hoặc mở lại trước khi phân vai.")
+        data["speaker_data"] = deepcopy(candidate)
+        _write_json(sidecar, data)
+        state.speaker_data = candidate
+        return deepcopy(candidate)
 
     def save_role_configuration(self, state: StudioProject, role: str, name: str,
                                 voice: dict | None = None) -> None:

@@ -33,6 +33,7 @@ def fixture(tmp_path):
     Image.new("RGB", (320, 180), "blue").save(image)
     def create(name):
         state = service.create_project(name)
+        state.narration_mode = "single"  # Most queue fixtures use synthetic single-voice WAVs.
         state.project.tts_settings.provider = "fake"
         state.project.tts_settings.voice_id = "local-test"
         service.set_section(state, SectionName.P1, japanese=f"{name}の話。", vietnamese=f"{name} kể.")
@@ -465,11 +466,12 @@ def test_real_multi_voice_queue_uses_japanese_first_assignment(tmp_path):
     passages = [item for item in segment_passages(state.sections).values() if item["language"] == "ja"]
     rows, _ = resolve_japanese_references([{"japanese_id": item["id"], "role": role,
         "confidence": "high", "warning": ""} for item, role in zip(passages, ("A", "B", "A"))], state.sections)
-    state.speaker_data = confirmed_speaker_data(state, rows, state.speaker_data["identities"])
     state.speaker_data["voices"] = {role: {"speaker_uuid": role, "style_id": index,
         "speaker": role, "style": "ノーマル"} for index, role in enumerate(("A", "B"), 1)}
     state.narration_mode = "multi"
     service.save_project(state)
+    service.confirm_speaker_assignments(state, rows, state.speaker_data["identities"],
+                                        deepcopy(state.sections))
     service.settings["render_encoder"] = "libx264"
     service.save_settings()
 

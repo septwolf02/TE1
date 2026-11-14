@@ -55,7 +55,7 @@ class StudioApp:
         self.min_duration = tk.StringVar(value="7")
         self.max_duration = tk.StringVar(value="12")
         self.voice = tk.StringVar(value="青山龍星")
-        self.narration_mode = tk.StringVar(value="Một giọng")
+        self.narration_mode = tk.StringVar(value="Nhiều giọng A/B/C/D")
         self.style = tk.StringVar()
         self.speed = tk.StringVar(value="1.0")
         self.pitch = tk.StringVar(value="0.0")
@@ -226,6 +226,15 @@ class StudioApp:
             self.section_buttons[section] = button
         ttk.Button(tabs, text="Nhập toàn bài Việt–Nhật", command=self._open_full_script_import).pack(
             side="left", padx=12)
+        script_expanded = tk.BooleanVar(value=False)
+        def toggle_script_height():
+            expanded = not script_expanded.get()
+            script_expanded.set(expanded)
+            for widget in (self.vn_text, self.jp_text):
+                widget.configure(height=12 if expanded else 6)
+            size_button.configure(text="Thu gọn ô kịch bản" if expanded else "Mở rộng ô kịch bản")
+        size_button = ttk.Button(tabs, text="Mở rộng ô kịch bản", command=toggle_script_height)
+        size_button.pack(side="left", padx=4)
         ttk.Label(tabs, textvariable=self.section_status).pack(side="right")
         panel = ttk.Frame(box)
         panel.pack(fill="both", expand=True, pady=3)
@@ -233,8 +242,8 @@ class StudioApp:
         panel.rowconfigure(1, weight=1)
         ttk.Label(panel, text="Tiếng Việt").grid(row=0, column=0, sticky="w")
         ttk.Label(panel, text="Tiếng Nhật").grid(row=0, column=1, sticky="w")
-        self.vn_text = tk.Text(panel, height=12, wrap="word", undo=True, font=("Segoe UI", 11))
-        self.jp_text = tk.Text(panel, height=12, wrap="word", undo=True, font=("Yu Gothic", 11))
+        self.vn_text = tk.Text(panel, height=6, wrap="word", undo=True, font=("Segoe UI", 11))
+        self.jp_text = tk.Text(panel, height=6, wrap="word", undo=True, font=("Yu Gothic", 11))
         self.vn_text.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
         self.jp_text.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
         for widget in (self.vn_text, self.jp_text):

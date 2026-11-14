@@ -41,6 +41,7 @@ def fixture(tmp_path):
     studio = StudioService(tmp_path / "settings.json")
     studio.set_directories(tmp_path / "projects", tmp_path / "output")
     state = studio.create_project("Performance fixture")
+    state.narration_mode = "single"  # This fixture exercises the legacy single-voice renderer.
     state.project.tts_settings.provider = "fake"
     state.project.tts_settings.voice_id = "local-test"
     studio.set_section(state, SectionName.P1, japanese="試合開始。", vietnamese="Bắt đầu.")

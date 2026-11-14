@@ -12,8 +12,8 @@ from te.project.models import SectionName
 from te.studio.ai_auth import ChatGPTAuth, CredentialStore
 from te.studio.ai_clients import OpenAIConnection, normalize_model
 from te.studio.ai_speakers import (ROLES, filter_assignments, passage, script_fingerprint,
-                                   section_counts, validate_speaker_data, voice_key, voice_label)
-from te.studio.multi_voice import confirmed_speaker_data
+                                   section_counts, validate_assignments, validate_speaker_data,
+                                   voice_key, voice_label)
 from te.tts import VoicevoxProvider
 
 
@@ -219,6 +219,15 @@ class SpeakerAIController:
         except Exception:
             return False
 
+    def _save_confirmed_assignments(self, state, rows, identities, source_sections):
+        if self.app.state is not state:
+            raise ValueError("Dự án đang mở đã đổi; kết quả phân vai không được áp dụng.")
+        candidate = self.app.service.confirm_speaker_assignments(
+            state, rows, identities, source_sections)
+        self.refresh_assignment_status()
+        self.app._refresh_compact_summaries()
+        return candidate
+
     def open_review(self, *, auto_analyze=False):
         app = self.app
         if not app.state or not app._save():
@@ -374,7 +383,8 @@ class SpeakerAIController:
             return [offset(start), offset(end)]
 
         def edit_row():
-            if review_data["status"] == "stale":
+            if (review_data["status"] == "stale" or
+                    review_data["fingerprint"] not in (None, script_fingerprint(state.sections))):
                 note.set("Dữ liệu stale: hãy phân tích lại hoặc chọn Tạo mới thủ công.")
                 return
             vi = selected_span(vi_box)
@@ -397,19 +407,31 @@ class SpeakerAIController:
             item.update(section=section.get(), role=passage_role.get() or None, vietnamese=vi, japanese=ja,
                         source="manual", confirmed=False)
             try:
-                from te.studio.ai_speakers import validate_assignments
                 item = validate_assignments([item], state.sections)[0]
                 item["source"] = "manual"
             except ValueError as exc:
                 note.set(str(exc))
                 return
+            rows = deepcopy(review_data["assignments"])
             if index is None:
-                review_data["assignments"].append(item)
+                rows.append(item)
             else:
-                review_data["assignments"][index] = item
-            review_data["fingerprint"] = script_fingerprint(state.sections)
-            review_data["status"] = "draft"
+                rows[index] = item
+            try:
+                candidate = self._save_confirmed_assignments(state, rows,
+                    {key: widgets["name"].get() for key, widgets in voice_rows.items()},
+                    deepcopy(state.sections))
+            except Exception as exc:
+                review_data["assignments"] = rows
+                review_data["fingerprint"] = script_fingerprint(state.sections)
+                review_data["status"] = "draft"
+                refresh()
+                note.set("Chưa lưu sửa đổi: " + str(exc) + " Hãy sửa đủ các đoạn Nhật rồi thử lại.")
+                return
+            review_data.clear()
+            review_data.update(deepcopy(candidate))
             refresh()
+            note.set("Đã sửa và lưu phân vai.")
 
         analyzing = False
         def analyze():
@@ -421,7 +443,7 @@ class SpeakerAIController:
                 return
             if review_data["assignments"]:
                 if not messagebox.askyesno("Phân vai lại toàn bài", "Gọi AI để tạo bản phân vai Nhật mới? "
-                                           "Bản đã lưu chỉ thay đổi khi bạn bấm Xác nhận và lưu.", parent=dialog):
+                                           "Bản đã lưu chỉ thay đổi khi kết quả mới hợp lệ.", parent=dialog):
                     return
             source = deepcopy(state.sections)
             available_sections = [s.value for s in SectionName if
@@ -458,18 +480,33 @@ class SpeakerAIController:
                 if state.sections != source:
                     note.set("Script đã đổi trong lúc AI chạy; kết quả không được áp dụng.")
                     return
-                review_data["assignments"] = items
-                review_data["identities"] = names
-                review_data["fingerprint"] = script_fingerprint(source)
-                review_data["status"] = "draft"
+                try:
+                    candidate = self._save_confirmed_assignments(state, items, names, source)
+                except Exception as exc:
+                    try:
+                        draft = validate_assignments(items, source)
+                    except (ValueError, TypeError):
+                        pass
+                    else:
+                        review_data["assignments"] = draft
+                        review_data["fingerprint"] = script_fingerprint(source)
+                        review_data["status"] = "draft"
+                        refresh()
+                    note.set("Không lưu phân vai AI: " + str(exc) + " Hãy sửa trong bảng hoặc chạy lại GPT.")
+                    return
+                review_data.clear()
+                review_data.update(deepcopy(candidate))
                 for role_id in ROLES:
                     refresh_voice_status(role_id)
                 refresh()
                 tokens = (f" Tokens: {usage.get('total_tokens')}." if usage and
                           usage.get("total_tokens") is not None else "")
                 warning = " Cần xem lại: " + "; ".join(diagnostics[:3]) if diagnostics else ""
-                note.set(f"Đã nhận {len(items)} đoạn Nhật.{tokens}{warning} "
-                         "Bản đã lưu vẫn được giữ đến khi bạn xác nhận.")
+                missing = sorted({item["role"] for item in items if item["role"] != "A" and
+                                  item["role"] not in state.speaker_data["voices"]})
+                voice_warning = (" Thiếu giọng " + ", ".join(missing) + "; hãy chọn trong bảng trước khi render."
+                                 if missing else "")
+                note.set(f"Đã xác nhận và lưu {len(items)} đoạn Nhật.{tokens}{warning}{voice_warning}")
             app._background(work, done)
 
         def load_voices(*, restored=False):
@@ -629,18 +666,11 @@ class SpeakerAIController:
                 note.set("Còn vai hoặc đoạn Nhật chưa rõ; hãy sửa trước khi xác nhận.")
                 return
             try:
-                candidate = confirmed_speaker_data(state, rows,
-                    {key: widgets["name"].get() for key, widgets in voice_rows.items()})
-                previous = state.speaker_data
-                state.speaker_data = candidate
-                try:
-                    app.service.save_project(state)
-                except Exception:
-                    state.speaker_data = previous
-                    raise
+                candidate = self._save_confirmed_assignments(state, rows,
+                    {key: widgets["name"].get() for key, widgets in voice_rows.items()},
+                    deepcopy(state.sections))
                 review_data.clear()
                 review_data.update(deepcopy(candidate))
-                self.refresh_assignment_status()
                 for role_id in ROLES:
                     refresh_voice_status(role_id)
             except Exception as exc:

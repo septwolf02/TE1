@@ -150,6 +150,22 @@ def test_cache_reuses_unaffected_roles_and_inherits_parameters(tmp_path):
     assert service.open_project(state.directory).speaker_data["parameters"]["B"]["pitch"] == 0.03
 
 
+def test_manual_role_correction_regenerates_only_changed_voice_chunk(tmp_path):
+    FakeVoices.calls.clear()
+    service, state = project(tmp_path)
+    renderer = engine(service)
+    renderer.generate_narration(state)
+    assert [role for _, role, _ in FakeVoices.calls] == ["A", "B", "A"]
+    corrected = deepcopy(state.speaker_data["assignments"])
+    corrected[1]["role"] = "C"
+    corrected[1]["source"] = "manual"
+    service.confirm_speaker_assignments(state, corrected, state.speaker_data["identities"],
+                                        deepcopy(state.sections))
+    renderer.generate_narration(state)
+    assert [role for _, role, _ in FakeVoices.calls] == ["A", "B", "A", "C"]
+    assert state.speaker_data["status"] == "confirmed"
+
+
 def test_a_c_a_d_a_and_reused_voice_style(tmp_path):
     FakeVoices.calls.clear()
     source = "あ「し」い「で」う。"

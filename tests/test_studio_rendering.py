@@ -21,6 +21,7 @@ def studio_project(tmp_path, *, intro=True, key=True):
     studio = StudioService(tmp_path / "settings.json")
     studio.set_directories(tmp_path / "projects", tmp_path / "output")
     state = studio.create_project("日本の試合: Test")
+    state.narration_mode = "single"  # Render fixtures use deterministic single-voice WAVs.
     state.project.tts_settings.provider = "fake"
     state.project.tts_settings.voice_id = "local-test"
     studio.set_section(state, SectionName.P1,
