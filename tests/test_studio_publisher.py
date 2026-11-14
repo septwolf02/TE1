@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 from queue import Queue
+import sys
+from types import ModuleType
 from types import SimpleNamespace
 from threading import Event
 
@@ -253,3 +255,54 @@ def test_completed_full_hd_is_suggested_without_overwriting_selection():
     value.text = "manual.mp4"
     controller.suggest_video()
     assert value.text == "manual.mp4"
+
+
+def _fake_playwright(monkeypatch, launch):
+    api = ModuleType("playwright.sync_api")
+    package = ModuleType("playwright")
+    stopped = []
+    playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch),
+                                 stop=lambda: stopped.append(True))
+    api.sync_playwright = lambda: SimpleNamespace(start=lambda: playwright)
+    package.sync_api = api
+    monkeypatch.setitem(sys.modules, "playwright", package)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", api)
+    return playwright, stopped
+
+
+def test_installed_chrome_channel_keeps_dedicated_profile_without_download(monkeypatch, tmp_path):
+    profile = tmp_path / "youtube-publisher" / "browser"
+    profile.mkdir(parents=True)
+    marker = profile / "Existing session"
+    marker.write_text("keep", encoding="utf-8")
+    calls = []
+    context = object()
+    def launch(**kwargs):
+        calls.append(kwargs)
+        return context
+    expected, stopped = _fake_playwright(monkeypatch, launch)
+    browser = YouTubeStudioBrowser(profile)
+    for _ in range(2):
+        playwright, opened = browser._context()
+        assert playwright is expected and opened is context
+    assert calls == [dict(user_data_dir=str(profile), channel="chrome", headless=False,
+                          viewport={"width": 1280, "height": 850})] * 2
+    assert profile != Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert not stopped
+
+
+@pytest.mark.parametrize("detail,expected", [
+    ("Chromium distribution 'chrome' is not found", "Không tìm thấy Google Chrome"),
+    ("Browser profile is already in use", "Không mở được Google Chrome"),
+])
+def test_chrome_launch_error_is_actionable_and_never_falls_back(monkeypatch, tmp_path, detail, expected):
+    calls = []
+    def launch(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError(detail)
+    _, stopped = _fake_playwright(monkeypatch, launch)
+    with pytest.raises(RuntimeError, match=expected):
+        YouTubeStudioBrowser(tmp_path / "publisher-profile")._context()
+    assert len(calls) == 1 and calls[0]["channel"] == "chrome"
+    assert stopped == [True]

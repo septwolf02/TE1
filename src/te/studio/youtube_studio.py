@@ -23,14 +23,18 @@ class YouTubeStudioBrowser:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
-            raise RuntimeError("Cần cài Playwright: pip install -e '.[gui,publisher]' và python -m playwright install chromium.") from exc
+            raise RuntimeError("Cần cài Playwright: pip install -e '.[gui,publisher]'.") from exc
         playwright = sync_playwright().start()
         try:
             context = playwright.chromium.launch_persistent_context(
-                str(self.profile_dir), headless=False, viewport={"width": 1280, "height": 850})
-        except Exception:
+                user_data_dir=str(self.profile_dir), channel="chrome", headless=False,
+                viewport={"width": 1280, "height": 850})
+        except Exception as exc:
             playwright.stop()
-            raise
+            message = str(exc).lower()
+            if "executable doesn't exist" in message or ("chrome" in message and "not found" in message):
+                raise RuntimeError("Không tìm thấy Google Chrome. Hãy cài Google Chrome trên máy rồi mở lại TE Studio; không cần tải Playwright Chromium.") from exc
+            raise RuntimeError("Không mở được Google Chrome. Hãy kiểm tra Chrome đã cài và đóng cửa sổ TE Publisher đang dùng hồ sơ trình duyệt riêng.") from exc
         return playwright, context
 
     def connect(self) -> str:
