@@ -532,12 +532,16 @@ class RenderService:
         box_alpha = (cls._opacity_alpha(style["background_opacity"])
                      if "background_opacity" in style else 0x88)
         back_color = f"&H{box_alpha:02X}000000" if box_enabled else "&HFF000000"
+        # libass paints BorderStyle=3 boxes with OutlineColour, not BackColour.
+        # Legacy projects without this setting keep their original opaque box.
+        normal_outline = (back_color if box_enabled and "background_opacity" in style
+                          else outline_color)
         border_style = 3 if box_enabled else 1
         header = (
             "[Script Info]\nScriptType: v4.00+\nWrapStyle: 2\n"
             f"PlayResX: {settings.width}\nPlayResY: {settings.height}\n"
             "[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
-            f"Style: Normal,{font},{size},{text_color},{text_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,{border_style},{outline},0,2,{margin},{margin},{bottom},1\n"
+            f"Style: Normal,{font},{size},{text_color},{text_color},{normal_outline},{back_color},-1,0,0,0,100,100,0,0,{border_style},{outline},0,2,{margin},{margin},{bottom},1\n"
             f"Style: Headline,{font},{size},{text_color},{text_color},{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline},0,5,{margin},{margin},{bottom},1\n"
             "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
         )
