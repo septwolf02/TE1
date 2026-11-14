@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+from tempfile import mkdtemp
 from threading import Event, Lock, Thread
 from typing import Callable
 from uuid import uuid4
@@ -316,7 +317,7 @@ class RenderQueue:
 
     @staticmethod
     def _working_copy(local: StudioService, source: StudioProject, destination: Path) -> StudioProject:
-        shutil.copytree(source.directory, destination)
+        shutil.copytree(source.directory, destination, dirs_exist_ok=True)
         old_audio = source.directory / "generated" / "audio"
         new_audio = destination / "generated" / "audio"
         project_data = _rebase_audio(source.project.to_dict(), old_audio, new_audio)
@@ -347,7 +348,11 @@ class RenderQueue:
             self._validate_snapshot(job, state)
             if self._cancel.is_set():
                 raise QueueCancelled("Đã hủy trước khi render.")
-            working_path = self.root / "runs" / identifier / uuid4().hex
+            # FFmpeg cache names and WAV paths are already long. Keep new run
+            # directories shallow; persisted snapshots and older runs stay put.
+            work_root = self.root.parent / "w"
+            work_root.mkdir(parents=True, exist_ok=True)
+            working_path = Path(mkdtemp(prefix="r-", dir=work_root))
             state = self._working_copy(local, state, working_path)
             local.settings["output_root"] = str(working_path / "queued-output")
             def progress(stage: str) -> None:

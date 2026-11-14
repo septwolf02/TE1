@@ -2,7 +2,7 @@
 from copy import deepcopy
 from array import array
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from threading import Event, Lock
 import time
 from types import SimpleNamespace
@@ -138,6 +138,35 @@ def test_remove_queued_job_keeps_other_jobs_and_source_project(tmp_path):
     assert [job["id"] for job in queue.jobs()] == [kept["id"]]
     assert not Path(removed["snapshot_path"]).exists()
     assert service.open_project(first.directory).project.id == first.project.id
+
+
+def test_windows_run_path_budget_keeps_existing_snapshot_location(tmp_path):
+    service, create, _image = fixture(tmp_path)
+    queue = RenderQueue(service, renderer_factory=fake_factory([])[0])
+    job = queue.enqueue(create("KL5"))
+    assert Path(job["snapshot_path"]).parent == queue.root / "snapshots"
+    queue.start()
+    wait_for(lambda: queue.jobs()[0]["status"] == "completed")
+    report = Path(queue.jobs()[0]["performance_path"])
+    run = report.parents[3]
+    assert run.parent == service.config_path.parent / "w"
+    assert run.name.startswith("r-") and len(run.name) <= 12
+
+    # Check the longest FFmpeg cache rename under a representative long
+    # Windows profile. PureWindowsPath makes this deterministic on Linux too.
+    profile = PureWindowsPath("C:/Users/" + "u" * 99 + "/AppData/Local/TEStudio")
+    cache_name = "video-" + "a" * 64 + ".partial.mp4"
+    current = profile / "w" / run.name / "generated/cache/render" / cache_name
+    previous = profile / "render-queue/runs" / job["id"] / ("b" * 32) / \
+        "generated/cache/render" / cache_name
+    assert len(str(previous)) > 259
+    assert len(str(current)) < 260
+    wav_temp = profile / "w" / run.name / "generated/audio/multi_voice" / ("a" * 64 + ".wav")
+    mp4_temp = profile / "w" / run.name / "queued-output" / (".te-" + "a" * 32 + ".partial.mp4")
+    assert len(str(wav_temp)) < 260
+    assert len(str(mp4_temp)) < 260
+    assert RenderQueue(StudioService(service.config_path)).jobs()[0]["snapshot_path"] == \
+        job["snapshot_path"]
 
 
 def test_retry_rejoins_fifo_after_jobs_already_waiting(tmp_path):
