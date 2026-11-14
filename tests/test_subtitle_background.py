@@ -63,7 +63,11 @@ def test_new_defaults_legacy_visuals_persistence_and_duplication(tmp_path):
     state = service.create_project("Background")
     style = state.project.subtitle_style
     assert (style["background_enabled"], style["background_opacity"],
-            style["headline_background_opacity"]) == (True, 40, 40)
+            style["headline_background_opacity"]) == (True, 30, 40)
+    style["background_opacity"] = 40
+    service.save_project(state)
+    assert service.open_project(state.directory).project.subtitle_style["background_opacity"] == 40
+    style = state.project.subtitle_style
     style.update(background_enabled=False, background_opacity=25, headline_background_opacity=60)
     service.save_project(state)
     reopened = service.open_project(state.directory)

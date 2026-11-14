@@ -66,9 +66,9 @@ class StudioApp:
         self.subtitle_chars = tk.StringVar(value="24")
         self.subtitle_size = tk.StringVar(value="156")
         self.subtitle_background_enabled = tk.BooleanVar(value=True)
-        self.subtitle_background_opacity = tk.IntVar(value=40)
+        self.subtitle_background_opacity = tk.IntVar(value=30)
         self.headline_background_opacity = tk.IntVar(value=40)
-        self.subtitle_background_percent = tk.StringVar(value="40%")
+        self.subtitle_background_percent = tk.StringVar(value="30%")
         self.headline_background_percent = tk.StringVar(value="40%")
         self.subtitle_lines = tk.StringVar(value="2 (cố định)")
         self.subtitle_position = tk.StringVar(value="bottom_center")
@@ -519,7 +519,6 @@ class StudioApp:
         row = ttk.Frame(box)
         row.pack(fill="x", pady=3)
         for label, action in (("Tạo / cập nhật lời đọc Nhật", self._generate_narration),
-                              ("Xem nhanh 960×540", self._render_preview),
                               ("Xuất Full HD 1920×1080", self._render_full)):
             ttk.Button(row, text=label, command=action).pack(side="left", padx=4)
         ttk.Button(row, text="Mở thư mục xuất", command=self._open_output_folder).pack(side="left", padx=4)

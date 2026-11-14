@@ -514,7 +514,9 @@ def test_tk_buttons_generate_and_render_real_preview(tmp_path, monkeypatch):
     assert not errors and app.queue.jobs()[0]["status"] == "completed"
     assert Path(app.queue.jobs()[0]["output_path"]).is_file()
     assert not app._job_running
-    button("Xem nhanh 960×540").invoke()
+    with pytest.raises(AssertionError, match="Xem nhanh"):
+        button("Xem nhanh 960×540")
+    app._render_preview()  # Dormant implementation remains usable without a main button.
     wait_done()
     assert state.project.sentence_audio_records
     assert (state.directory / "generated/output/preview.mp4").is_file()

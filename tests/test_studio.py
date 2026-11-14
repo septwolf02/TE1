@@ -341,7 +341,7 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
         pending.extend(widget.winfo_children())
     assert "AI phân vai" in main_labels
     assert "Cài đặt AI" in main_labels
-    assert "Xem nhanh 960×540" in main_labels
+    assert "Xem nhanh 960×540" not in main_labels
     assert "Xuất Full HD 1920×1080" in main_labels
     assert main_labels.count("Chi tiết / Cài đặt") == 6
     assert root.minsize() == (920, 690)

@@ -160,6 +160,8 @@ def test_script_editors_start_compact_and_expand_without_losing_text(tmp_path, m
     app = StudioApp(root, service)
     root.update()
     assert app.narration_mode.get() == "Nhiều giọng A/B/C/D"
+    assert app.subtitle_background_opacity.get() == 30
+    assert app.headline_background_opacity.get() == 40
     assert app.vn_text.cget("height") == app.jp_text.cget("height") == 6
     app.vn_text.insert("1.0", "Một đoạn Việt.\nĐoạn tiếp theo.")
     pending = [app.body]
