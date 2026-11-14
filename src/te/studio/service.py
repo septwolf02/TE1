@@ -23,6 +23,7 @@ from te.subtitles import split_japanese_sentences
 from te.studio.full_script_import import (FullScriptImportPlan, alignment_warnings,
                                           parse_full_script)
 from te.studio.ai_speakers import ROLES, default_speaker_data, validate_speaker_data
+from te.studio.publisher import normalize_metadata
 
 
 STUDIO_VERSION = 1
@@ -192,6 +193,7 @@ class StudioProject:
     multi_voice_manifest: dict[str, str] = field(default_factory=dict)
     audio_configuration_signature: str | None = None
     headline_duration_seconds: float = 7.0
+    publisher: dict = field(default_factory=lambda: normalize_metadata({}))
 
 
 class StudioService:
@@ -389,7 +391,8 @@ class StudioService:
             validate_speaker_data(data.get("speaker_data", default_speaker_data()), sections),
             data.get("narration_mode", "single"), data.get("audio_mode", "single"),
             data.get("multi_voice_manifest", {}), data.get("audio_configuration_signature"),
-            data.get("headline_duration_seconds", 7.0))
+            data.get("headline_duration_seconds", 7.0),
+            normalize_metadata(data.get("publisher")))
 
     @staticmethod
     def _apply_sections(project: Project, sections: dict[str, dict[str, str]]) -> None:
@@ -501,7 +504,8 @@ class StudioService:
                 "key_drafts": deepcopy(state.key_drafts),
                 "speaker_data": deepcopy(speaker_data),
                 "narration_mode": state.narration_mode, "audio_mode": state.audio_mode,
-                "multi_voice_manifest": deepcopy(state.multi_voice_manifest)}
+                "multi_voice_manifest": deepcopy(state.multi_voice_manifest),
+                "publisher": normalize_metadata(state.publisher)}
         data["audio_configuration_signature"] = state.audio_configuration_signature
         _write_json(state.directory / "studio.json", data)
         state.recovery_warning = None

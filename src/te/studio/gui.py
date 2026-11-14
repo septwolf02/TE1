@@ -23,6 +23,7 @@ from te.render.service import RenderError
 from te.studio.ai_gui import SpeakerAIController
 from te.studio.multi_voice import speech_plan
 from te.studio.render_queue import RenderQueue
+from te.studio.publisher_gui import PublisherController
 
 
 SECTIONS = tuple(SectionName)
@@ -97,6 +98,7 @@ class StudioApp:
         self._full_render_pending: set[str] = set()
         self.queue = RenderQueue(self.service, on_change=lambda: self._queue_events.put(("changed", None)))
         self.ai = SpeakerAIController(self)
+        self.publisher = PublisherController(self)
         self.intro_paths = {section: tk.StringVar() for section in SECTIONS}
         self.root.title("TE Studio — Trình biên tập")
         self.root.geometry("1400x900")
@@ -128,7 +130,8 @@ class StudioApp:
                  ("5. Intro P1–P4", self.intro_summary, "intros"),
                  ("6. VOICEVOX", self.voice_summary, "voice"),
                  ("Phụ đề Nhật", self.subtitle_summary, "subtitles"),
-                 ("Render/output settings", self.output_summary, "output"))
+                 ("Render/output settings", self.output_summary, "output"),
+                 ("7. Xuất bản YouTube", self.publisher.status, "publisher"))
         for index, (title, status, key) in enumerate(cards):
             card = ttk.LabelFrame(modules, text=title, padding=5)
             card.grid(row=index // 2, column=index % 2, sticky="ew", padx=4, pady=2)
@@ -145,6 +148,7 @@ class StudioApp:
         self._create_detail("subtitles", "Phụ đề Nhật", self._build_subtitles)
         self._create_detail("output", "Render/output settings", self._build_render_details)
         self._create_detail("queue", "Hàng đợi Render", self._build_queue)
+        self._create_detail("publisher", "7. Xuất bản YouTube", self.publisher.build)
         self.body = outer
 
     def _group(self, title: str) -> ttk.LabelFrame:
@@ -174,6 +178,8 @@ class StudioApp:
     def _show_detail(self, key: str) -> None:
         if key == "output":
             self._refresh_performance_summary()
+        if key == "publisher":
+            self.publisher.suggest_video()
         dialog = self._details[key]
         dialog.deiconify()
         dialog.lift()
@@ -811,6 +817,7 @@ class StudioApp:
     def _load_state(self, state: StudioProject) -> None:
         self._loading = True
         self.state = state
+        self.publisher.load(state)
         self.active_section = SectionName.P1
         self.video_name.set(state.project.name)
         self.channel.set(state.channel or "")
@@ -910,6 +917,7 @@ class StudioApp:
         try:
             self._save_status.set("Đang lưu…")
             self._apply_fields()
+            self.publisher.capture()
             self.service.save_project(self.state)
             current = self.state.project.tts_settings
             self._loaded_voice_fields = (current.voice_id, current.style or "", current.speaking_rate,

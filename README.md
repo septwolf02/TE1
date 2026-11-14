@@ -30,7 +30,7 @@ Services keep speech providers, subtitle alignment and media selection replaceab
 
 ## Status
 
-Modules 0–6 and TTS-1–3 cover project persistence, script editing, media indexing, VOICEVOX, sentence-level timing, KEY reveal and local FFmpeg rendering. TE Studio provides a Vietnamese-language desktop editor and one-click local Preview/Full HD rendering. Render Queue, real forced alignment, AI recognition/selection and YouTube integration remain future work.
+Modules 0–6 and TTS-1–3 cover project persistence, script editing, media indexing, VOICEVOX, sentence-level timing, KEY reveal and local FFmpeg rendering. TE Studio provides a Vietnamese-language desktop editor and one-click Full HD rendering. Render Queue and a private-test YouTube Studio publisher foundation are available; see [Publisher setup](docs/youtube-publisher.md).
 
 ## Module 1: script input and editing
 
@@ -94,4 +94,4 @@ Run `python -m te.demo` to create a new self-contained project under `demo/test/
 
 ## TE Studio GUI
 
-Run `python -m te.studio` after installing the optional `gui` dependency. Tkinter manages video names, channel profiles, P1–P4 Vietnamese/Japanese scripts, confirmed and draft KEY images, each project's ordinary-image folder, optional intros, VOICEVOX voice/style, motion presets and save status. **Xuất Full HD 1920×1080** now validates inputs, reuses or updates sentence WAVs, splits long Japanese subtitles into timed two-line captions, rebuilds the audio-driven timeline and renders the MP4 in one click. Preview follows the same pipeline at 960×540. Project v8 remains unchanged; editor-only choices live in `studio.json`. See [Windows setup](docs/windows-setup.md#te-studio-gui-phase-2--real-narration-and-mp4-export).
+Run `python -m te.studio` after installing the optional `gui` dependency. Tkinter manages video names, channel profiles, P1–P4 Vietnamese/Japanese scripts, confirmed and draft KEY images, each project's ordinary-image folder, optional intros, VOICEVOX voice/style, motion presets and save status. **Xuất Full HD 1920×1080** now validates inputs, reuses or updates sentence WAVs, splits long Japanese subtitles into timed two-line captions, rebuilds the audio-driven timeline and renders the MP4 in one click. The 960×540 Preview pipeline remains available internally; its main GUI button is hidden. Project v8 remains unchanged; editor-only choices live in `studio.json`. See [Windows setup](docs/windows-setup.md#te-studio-gui-phase-2--real-narration-and-mp4-export).

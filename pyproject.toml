@@ -12,6 +12,7 @@ dependencies = []
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "jsonschema>=4,<5"]
 gui = ["Pillow>=10,<12", "keyring>=25,<27", "PyJWT[crypto]>=2.9,<3"]
+publisher = ["playwright>=1.48,<2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
