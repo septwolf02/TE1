@@ -285,7 +285,7 @@ def test_project_destination_is_separate_from_api_authorization(tmp_path):
         publisher.prepare("p", loaded.publisher, {"sha256": "x"})
 
 
-def test_content_script_parses_mocked_visible_studio_dom():
+def test_content_script_does_not_scan_unselected_studio_menu():
     if not shutil.which("node"):
         pytest.skip("Node.js is unavailable for the mocked extension DOM fixture")
     extension = Path(__file__).resolve().parents[1] / "studio_connector_extension" / "content.js"
@@ -298,13 +298,13 @@ const menu = {getClientRects:()=>[1], getAttribute:()=>null,
   querySelectorAll:()=>[entry("同じ名前", A),entry("同じ名前", B)]};
 const doc = {querySelector:()=>({textContent:"同じ名前"}), querySelectorAll:()=>[menu]};
 const result = scanStudioDocument(doc, `https://studio.youtube.com/channel/${A}/videos`);
-if (result.channels.length !== 3 || result.channels[2].id !== B ||
+if (result.channels.length !== 1 || result.channels[0].id !== A || result.diagnostics.switcher_entries !== 0 ||
     studioId(`https://evil.test/channel/${A}`) !== "") process.exit(1);
 console.log(JSON.stringify(result));
 '''
     completed = subprocess.run(["node", "-e", fixture, str(extension)], capture_output=True, text=True, check=True)
     scan = validate_scan(json.loads(completed.stdout))
-    assert {item["id"] for item in scan["channels"]} == {A, B}
+    assert {item["id"] for item in scan["channels"]} == {A}
 
 
 def test_content_script_sidebar_shadow_root_and_missing_name():

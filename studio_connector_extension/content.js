@@ -1,6 +1,7 @@
 "use strict";
 
 const CHANNEL_PATH = /^\/channel\/(UC[A-Za-z0-9_-]{22})(?:\/|$)/;
+const EMAIL_PATTERN = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/gu;
 
 function studioId(value) {
   try {
@@ -98,20 +99,6 @@ function switcherRoots(doc) {
   return roots;
 }
 
-function switcherContainers(doc) {
-  const selector = "ytcp-account-switcher, ytcp-account-switcher-dialog, [id*='account-switch'], [class*='account-switch'], [role='dialog'][aria-label*='account' i], [role='menu'][aria-label*='account' i], tp-yt-iron-dropdown";
-  const seen = new Set(), containers = [];
-  for (const root of switcherRoots(doc)) for (const item of root.querySelectorAll(selector)) {
-    const genericDropdown = item.matches?.("tp-yt-iron-dropdown");
-    const hasChannelEvidence = !!(item.shadowRoot || item).querySelector?.(
-      "ytcp-account-item, ytcp-account-picker-item, ytcp-channel-list-item, a[href*='/channel/']");
-    if (!seen.has(item) && visible(item) && (!genericDropdown || hasChannelEvidence)) {
-      seen.add(item); containers.push(item);
-    }
-  }
-  return containers;
-}
-
 // Structural report only: no text, labels, hrefs, or attribute values that may contain identities.
 function diagnoseChannelMenu(doc) {
   const structure = node => ({
@@ -141,7 +128,7 @@ function diagnoseChannelMenu(doc) {
   const candidates = [], candidateSet = new Set();
   for (const root of roots) for (const node of root.querySelectorAll("*")) {
     if (candidates.length >= 16) break;
-    if (!visible(node) || candidateSet.has(node)) continue;
+    if (!visible(node) || candidateSet.has(node) || inNavigationDrawer(node)) continue;
     const tag = String(node.tagName || "").toLowerCase();
     const role = node.getAttribute?.("role") || "";
     const structuralName = `${tag} ${node.id || ""} ${typeof node.className === "string" ? node.className : ""}`;
@@ -181,17 +168,172 @@ function structuralToken(value) {
   return typeof value === "string" && /^[a-z][a-z0-9_-]{0,63}$/i.test(value) ? value : "";
 }
 
+function inNavigationDrawer(node) {
+  for (let current = node; current; current = current.parentNode || current.host) {
+    if (current.matches?.("ytcp-navigation-drawer, ul#main-menu")) return true;
+  }
+  return false;
+}
+
+function rowSignature(node) {
+  return `${String(node.tagName || "").toLowerCase()}|${node.getAttribute?.("role") || ""}|` +
+    (typeof node.className === "string" ? node.className.split(/\s+/)
+      .filter(value => value && !/^(active|selected|hover|focused|checked|highlight)(-|$)/i.test(value))
+      .sort().join(".") : "");
+}
+
+function regionCandidates(path) {
+  const candidates = [], seen = new Set();
+  for (const row of path) {
+    if (!row?.tagName || inNavigationDrawer(row)) continue;
+    const parent = row.parentElement || (row.parentNode?.host ? row.parentNode : null);
+    if (!parent || seen.has(parent) || inNavigationDrawer(parent)) continue;
+    seen.add(parent);
+    const siblings = [...parent.children || []].filter(node => visible(node) &&
+      rowSignature(node) === rowSignature(row));
+    if (siblings.length < 2) continue;
+    const display = parent.host || parent;
+    if (!display.getBoundingClientRect?.()) continue;
+    candidates.push({container:parent, row_signature:rowSignature(row), example_row:row,
+      summary:{container:elementStructure(display), repeated_row_tag:String(row.tagName).toLowerCase(),
+        visible_matching_rows:siblings.length, shadow_root:!!parent.host}});
+  }
+  return candidates.slice(0, 8);
+}
+
+function elementStructure(node) {
+  return {tag:String(node.tagName || "").toLowerCase(), id:structuralToken(node.id),
+    classes:typeof node.className === "string" ? node.className.split(/\s+/)
+      .map(structuralToken).filter(Boolean).slice(0, 6) : [],
+    role:structuralToken(node.getAttribute?.("role"))};
+}
+
+let selectionMode = null, selectedRegion = null;
+function cancelRegionTargeting() {
+  if (!selectionMode) return;
+  selectionMode.cleanup();
+  selectionMode = null;
+}
+
+function beginRegionTargeting(doc, emit, timeoutMs = 30000) {
+  cancelRegionTargeting();
+  const shield = event => {
+    event.preventDefault(); event.stopImmediatePropagation();
+  };
+  const rowLike = path => path.some(node =>
+    /(?:account|channel).*(?:item|row)|(?:item|row).*(?:account|channel)/i
+      .test(String(node.tagName || "")) || node.getAttribute?.("role") === "menuitem");
+  const blockEarly = event => {
+    const path = event.composedPath?.() || [event.target];
+    if (path.some(inNavigationDrawer) || regionCandidates(path).length || rowLike(path))
+      event.stopImmediatePropagation();
+  };
+  const overlay = doc.createElement("div");
+  overlay.setAttribute("data-te-region-highlight", "");
+  overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;" +
+    "border:3px solid #00a67d;background:rgba(0,166,125,.10);display:none";
+  (doc.documentElement || doc.body).append(overlay);
+  const highlight = candidate => {
+    const rect = (candidate.container.host || candidate.container).getBoundingClientRect();
+    Object.assign(overlay.style,{display:"block",left:`${rect.left}px`,top:`${rect.top}px`,
+      width:`${rect.width}px`,height:`${rect.height}px`});
+  };
+  const onClick = event => {
+    const path = event.composedPath?.() || [event.target];
+    if (path.some(inNavigationDrawer)) {
+      shield(event);
+      emit({type:"target_region_proposed", error:"Đã chọn thanh điều hướng trái. Hãy nhấp vào một hàng kênh trong menu chuyển kênh."});
+      return;
+    }
+    const candidates = regionCandidates(path);
+    if (!candidates.length) {
+      // Let the user open the switcher after Side Panel focus closes it.
+      if (rowLike(path)) {
+        shield(event);
+        emit({type:"target_region_proposed", error:"Đã chặn cú nhấp vào hàng, nhưng không thấy các hàng cùng cấu trúc. Menu có thể dùng closed shadow root hoặc chỉ tải một hàng."});
+      }
+      return;
+    }
+    shield(event);
+    selectionMode.candidates = candidates;
+    highlight(candidates[0]);
+    emit({type:"target_region_proposed", candidates:candidates.map(item => item.summary)});
+  };
+  const onKey = event => {
+    if (event.key !== "Escape") return;
+    shield(event); cancelRegionTargeting();
+    emit({type:"target_region_cancelled"});
+  };
+  for (const type of ["pointerdown", "mousedown", "mouseup"])
+    doc.addEventListener(type, blockEarly, true);
+  doc.addEventListener("click", onClick, true);
+  doc.addEventListener("keydown", onKey, true);
+  const timer = setTimeout(() => {
+    cancelRegionTargeting(); emit({type:"target_region_cancelled", reason:"Hết 30 giây chọn vùng."});
+  }, timeoutMs);
+  selectionMode = {candidates:[], highlight, cleanup:() => {
+    clearTimeout(timer); overlay.remove();
+    for (const type of ["pointerdown", "mousedown", "mouseup"])
+      doc.removeEventListener(type, blockEarly, true);
+    doc.removeEventListener("click", onClick, true);
+    doc.removeEventListener("keydown", onKey, true);
+  }};
+  return {ok:true};
+}
+
+function proposeRegion(index) {
+  const candidate = selectionMode?.candidates[index];
+  if (!candidate) throw new Error("Vùng đề xuất không còn; hãy chọn lại hàng kênh.");
+  selectionMode.highlight(candidate);
+  return {ok:true, proposal:candidate.summary};
+}
+
+function confirmRegion(index) {
+  const candidate = selectionMode?.candidates[index];
+  if (!candidate) throw new Error("Chưa chọn hàng kênh hợp lệ.");
+  if (inNavigationDrawer(candidate.container)) throw new Error("Không được chọn thanh điều hướng trái.");
+  selectedRegion = {container:candidate.container, row_signature:candidate.row_signature};
+  cancelRegionTargeting();
+  return {ok:true, region:candidate.summary, diagnostic:inspectSelectedRegion()};
+}
+
+function inspectSelectedRegion() {
+  if (!selectedRegion || selectedRegion.container.isConnected === false)
+    throw new Error("Vùng kênh đã đóng hoặc thay đổi; hãy chọn lại.");
+  const {container, row_signature} = selectedRegion;
+  const directChildren = [...container.children || []].filter(visible);
+  const rows = directChildren.filter(node => rowSignature(node) === row_signature);
+  const excluded = directChildren.filter(node => rowSignature(node) !== row_signature);
+  const observations = rows.map((row, index) => visibleSwitcherEntry(row, index + 1)).filter(Boolean);
+  const scroll = [container, ...container.querySelectorAll?.("*") || []].filter(node =>
+    node.scrollHeight > node.clientHeight + 20 && node.clientHeight > 20).slice(0, 4)
+    .map(node => ({element:elementStructure(node), scroll_top:Math.round(node.scrollTop),
+      client_height:Math.round(node.clientHeight), scroll_height:Math.round(node.scrollHeight)}));
+  return {region:elementStructure(container.host || container),
+    visible_matching_rows:rows.length, extracted_rows:observations.length,
+    excluded_nonmatching_children:excluded.length,
+    excluded_structures:excluded.slice(0, 6).map(elementStructure),
+    channel_ids_from_links:observations.filter(item => item.id).length,
+    unresolved_rows:observations.filter(item => !item.id).length,
+    row_structures:rows.slice(0, 8).map(elementStructure), scroll_containers:scroll,
+    observations};
+}
+
 function visibleSwitcherEntry(entry, index) {
-  if (!visible(entry)) return null;
+  if (!visible(entry) || inNavigationDrawer(entry)) return null;
   const link = entry.closest?.("a[href]") || entry.querySelector("a[href]");
   const href = typeof link?.href === "string" ? link.href : "";
   const id = studioId(href);
-  const rawText = cleanName(entry.textContent, 240);
+  const rawText = String(entry.innerText || entry.textContent || "")
+    .replace(EMAIL_PATTERN, "");
   const handle = rawText.match(/@[\p{L}\p{N}._-]{2,100}/u)?.[0] || "";
   const nameNode = entry.querySelector("#channel-name, .channel-name, [id*='channel-name'], [class*='channel-name'], [id*='account-name'], [class*='account-name']");
-  const name = cleanName(nameNode?.textContent || rawText.replace(handle, "").trim());
+  const nameText = String(nameNode?.innerText || "")
+    .replace(EMAIL_PATTERN, "").trim();
+  const name = cleanName(nameText || rawText.split(/\r?\n/)
+    .map(line => line.replace(handle, "").trim()).find(line => line && !line.includes("@")) || "");
   if (!name && !handle && !id) return null;
-  return {id, name, handle, source_url:id ? href : "https://studio.youtube.com/",
+  return {id, name, handle, source_url:id ? `https://studio.youtube.com/channel/${id}` : "https://studio.youtube.com/",
     id_source:id ? "studio_link" : "missing",
     name_source:name ? "studio_switcher_dom" : "missing",
     handle_source:handle ? "studio_switcher_dom" : "missing",
@@ -207,25 +349,18 @@ function scanStudioDocument(doc, pageUrl) {
   if (activeId) channels.push({id: activeId, name: activeName, handle:"", source_url: pageUrl,
     id_source:"studio_url", name_source:activeName ? "studio_identity_dom" : "missing",
     handle_source:"missing", evidence:"active_studio_url"});
-  const containers = switcherContainers(doc);
-  let switcherEntries = 0;
-  let switcherNames = 0;
-  for (const container of containers) {
-    const entries = (container.shadowRoot || container).querySelectorAll("ytcp-account-item, ytcp-account-picker-item, ytcp-channel-list-item, [role='menuitem'], tp-yt-paper-item, a[href*='/channel/']");
-    for (const entry of entries) {
-      if (!visible(entry)) continue;
-      switcherEntries++;
-      const candidate = visibleSwitcherEntry(entry, switcherEntries);
-      if (!candidate) continue;
-      if (candidate.name) switcherNames++;
-      channels.push(candidate);
-    }
-  }
+  // The navigation drawer also contains menu items and Studio links. Only a region
+  // explicitly confirmed by the user may contribute switcher observations.
+  const targeted = selectedRegion && selectedRegion.container.isConnected !== false ?
+    inspectSelectedRegion() : null;
+  if (targeted) channels.push(...targeted.observations);
+  const switcherEntries = targeted?.visible_matching_rows || 0;
+  const switcherNames = targeted?.observations.filter(item => item.name).length || 0;
   const verified = new Set(channels.filter(item => item.id && item.name).map(item => item.id)).size;
   return {type: "scan_results", schema: 1, page_url: pageUrl, page_url_after: pageUrl,
-    switcher_open: containers.length > 0, channels,
+    switcher_open: !!targeted, channels,
     diagnostics: {active_id_found: !!activeId, active_name_found: !!activeName,
-      switcher_detected: containers.length > 0, switcher_entries: switcherEntries,
+      switcher_detected: !!targeted, switcher_entries: switcherEntries,
       switcher_names: switcherNames, verified_identities: verified}};
 }
 
@@ -237,22 +372,33 @@ function stopBulkScan() {
 }
 
 function startBulkScan(doc, pageUrl, emit, durationMs = 20000, Observer = globalThis.MutationObserver) {
+  if (!selectedRegion || selectedRegion.container.isConnected === false)
+    throw new Error("Hãy bấm Chọn vùng danh sách kênh và xác nhận trước khi quét.");
   stopBulkScan();
   const session = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   const observers = [], observed = new Set(), scrollRoots = new Set();
   let timer, expiry, stopped = false;
   const send = complete => {
     if (stopped && !complete) return;
-    const result = scanStudioDocument(doc, pageUrl());
-    emit({type:"bulk_scan_update", session, channels:result.channels,
-      switcher_open:result.switcher_open, diagnostics:result.diagnostics, complete});
+    try {
+      const report = inspectSelectedRegion();
+      emit({type:"bulk_scan_update", session, channels:report.observations,
+        switcher_open:true, diagnostics:report, complete});
+    } catch (error) {
+      emit({type:"bulk_scan_update", session, channels:[], switcher_open:false,
+        error:error.message, complete:true});
+      stop();
+    }
   };
   const schedule = () => {
     clearTimeout(timer);
     timer = setTimeout(() => { observeRoots(); send(false); }, 180);
   };
   const observeRoots = () => {
-    for (const root of switcherRoots(doc)) {
+    const roots = [selectedRegion.container];
+    for (const node of selectedRegion.container.querySelectorAll?.("*") || [])
+      if (node.shadowRoot) roots.push(node.shadowRoot);
+    for (const root of roots) {
       if (observed.has(root)) continue;
       observed.add(root);
       if (Observer) {
@@ -273,14 +419,26 @@ function startBulkScan(doc, pageUrl, emit, durationMs = 20000, Observer = global
   };
   expiry = setTimeout(stop, Math.max(1000, Math.min(durationMs, 30000)));
   bulkSession = {session, stop};
-  return {session, channels:scanStudioDocument(doc, pageUrl()).channels};
+  return {session, channels:inspectSelectedRegion().observations};
 }
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message, _sender, respond) => {
     if (!["scan_visible_studio", "diagnose_channel_identity", "diagnose_channel_menu",
-          "start_bulk_scan", "stop_bulk_scan"].includes(message?.type)) return;
+          "start_bulk_scan", "stop_bulk_scan", "begin_region_targeting", "cancel_region_targeting",
+          "propose_region", "confirm_region"].includes(message?.type)) return;
     try {
+      if (message.type === "begin_region_targeting") {
+        respond(beginRegionTargeting(document, update => {
+          chrome.runtime.sendMessage(update).catch(() => {});
+        }));
+        return;
+      }
+      if (message.type === "cancel_region_targeting") {
+        cancelRegionTargeting(); respond({ok:true}); return;
+      }
+      if (message.type === "propose_region") { respond(proposeRegion(message.index)); return; }
+      if (message.type === "confirm_region") { respond(confirmRegion(message.index)); return; }
       if (message.type === "diagnose_channel_menu") {
         const first = diagnoseChannelMenu(document);
         let mutations = 0, scrolls = 0;
@@ -316,4 +474,6 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
 }
 
 if (typeof module !== "undefined") module.exports = {studioId, activeChannelName, identityCandidates,
-  visibleSwitcherEntry, scanStudioDocument, diagnoseChannelMenu, startBulkScan, stopBulkScan};
+  visibleSwitcherEntry, scanStudioDocument, diagnoseChannelMenu, inNavigationDrawer,
+  regionCandidates, beginRegionTargeting, cancelRegionTargeting, proposeRegion, confirmRegion,
+  inspectSelectedRegion, startBulkScan, stopBulkScan};

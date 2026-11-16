@@ -35,7 +35,8 @@ function nativeSync(chromeApi, records, timeoutMs = 15000) {
 async function createPanel(chromeApi, ui, defaults = {}) {
   let rows = [], scanSession = "", tabId = null, dirty = false, revision = 0,
       storageWrite = Promise.resolve(),
-      candidateKey = "", lastSnapshot = "", syncedCount = 0, diagnosticReport = "";
+      candidateKey = "", lastSnapshot = "", syncedCount = 0, diagnosticReport = "",
+      targetTabId = null, proposals = [];
   const observedThisScan = new Set();
   const saved = await chromeApi.storage.local.get(["studioCatalog", "studioDraft", "studioUnsynced",
     "studioLastSyncedCount"]);
@@ -98,9 +99,31 @@ async function createPanel(chromeApi, ui, defaults = {}) {
     revision++; dirty = true; scheduleDraft(); render();
   };
   const listener = (message, sender) => {
+    if (sender?.tab?.id === targetTabId && message?.type === "target_region_proposed") {
+      if (message.error) { status(message.error); return; }
+      proposals = message.candidates || [];
+      if (ui.regionChoices) {
+        ui.regionChoices.replaceChildren();
+        proposals.forEach((item, index) => {
+          const option = document.createElement("option"); option.value = String(index);
+          option.textContent = `${item.container.tag}#${item.container.id || ""} — ${item.visible_matching_rows} hàng cùng dạng`;
+          ui.regionChoices.append(option);
+        });
+      }
+      status(`Đã tô vùng đề xuất với ${proposals[0]?.visible_matching_rows || 0} hàng cùng dạng. Đối chiếu vùng tô sáng trong Studio, chọn vùng khác nếu cần, rồi Xác nhận hoặc Hủy.`);
+      return;
+    }
+    if (sender?.tab?.id === targetTabId && message?.type === "target_region_cancelled") {
+      proposals = []; status(message.reason || "Đã hủy chọn vùng."); return;
+    }
     if (message?.type !== "bulk_scan_update" || sender?.tab?.id !== tabId ||
         message.session !== scanSession) return;
+    if (message.error) { scanSession = ""; status(`Vùng quét không còn: ${message.error}`); return; }
     merge(message.channels);
+    if (message.diagnostics) {
+      diagnosticReport = JSON.stringify(message.diagnostics, null, 2);
+      if (ui.diagnostic) ui.diagnostic.textContent = diagnosticReport;
+    }
     status(message.complete ? "Đã dừng quét. Kiểm tra bảng rồi bấm Lưu và đồng bộ TE." :
       `Đang quét và chờ mục mới khi cuộn menu… thấy ${observedThisScan.size} mục menu lượt này. ${message.switcher_open ? "Menu đang hiện." : "Chưa thấy menu chuyển kênh."}`);
   };
@@ -122,6 +145,35 @@ async function createPanel(chromeApi, ui, defaults = {}) {
     scanSession = reply.session;
     merge(reply.channels);
     render();
+  }
+  async function target() {
+    const tab = await activeTab(); targetTabId = tab.id; proposals = [];
+    const reply = await withTimeout(chromeApi.tabs.sendMessage(tab.id,
+      {type:"begin_region_targeting"}), 8000, "Không bật được chế độ chọn vùng.");
+    if (!reply?.ok) throw new Error(reply?.error || "Không bật được chế độ chọn vùng.");
+    status("Chế độ chọn vùng đang bật trong 30 giây. Mở menu kênh rồi nhấp một hàng kênh; cú nhấp này sẽ không chuyển kênh. Esc hoặc Hủy để thoát.");
+  }
+  async function cancelTarget() {
+    if (targetTabId !== null) await withTimeout(chromeApi.tabs.sendMessage(targetTabId,
+      {type:"cancel_region_targeting"}), 3000, "Không liên lạc được tab; chế độ chọn sẽ tự hết hạn.");
+    proposals = []; status("Đã hủy chế độ chọn vùng.");
+  }
+  async function propose() {
+    if (!proposals.length) return;
+    const index = Number(ui.regionChoices?.value || 0);
+    const reply = await chromeApi.tabs.sendMessage(targetTabId,{type:"propose_region",index});
+    if (!reply?.ok) throw new Error(reply?.error || "Không tô được vùng đề xuất.");
+    status(`Đang tô vùng ${index + 1}. Chỉ xác nhận nếu đó là danh sách kênh trong menu chuyển kênh.`);
+  }
+  async function confirmTarget() {
+    if (!proposals.length) throw new Error("Hãy nhấp một hàng kênh trong Studio trước.");
+    const index = Number(ui.regionChoices?.value || 0);
+    const reply = await chromeApi.tabs.sendMessage(targetTabId,{type:"confirm_region",index});
+    if (!reply?.ok) throw new Error(reply?.error || "Không xác nhận được vùng kênh.");
+    diagnosticReport = JSON.stringify(reply.diagnostic, null, 2);
+    if (ui.diagnostic) ui.diagnostic.textContent = diagnosticReport;
+    proposals = [];
+    status(`Đã xác nhận vùng có ${reply.diagnostic.visible_matching_rows} hàng cùng dạng. Bấm Quét rồi cuộn menu để tích lũy thêm hàng.`);
   }
   async function stop() {
     if (tabId !== null) await withTimeout(chromeApi.tabs.sendMessage(tabId,
@@ -153,7 +205,8 @@ async function createPanel(chromeApi, ui, defaults = {}) {
     if (!candidate) throw new Error("Chọn một ứng viên chưa có ID trong bảng trước.");
     const tab = await activeTab();
     const reply = await chromeApi.tabs.sendMessage(tab.id, {type:"scan_visible_studio"});
-    const active = reply?.channels?.find(row => row.id && row.source_url === reply.page_url);
+    const active = reply?.channels?.find(row => row.id && row.id_source === "studio_url" &&
+      reply.page_url?.startsWith(`https://studio.youtube.com/channel/${row.id}`));
     if (!active) throw new Error("URL Studio của kênh đang mở chưa có Channel ID UC hợp lệ.");
     if (rows.some(row => row.id === active.id))
       throw new Error("ID này đã có trong catalog; không tự gộp ứng viên để tránh mất chỉnh sửa.");
@@ -161,7 +214,8 @@ async function createPanel(chromeApi, ui, defaults = {}) {
       `Bạn đã đối chiếu ứng viên “${candidate.display_name || candidate.handle}” với kênh đang mở có ID ${active.id}?\nViệc liên kết này do bạn xác nhận; quyền upload vẫn chưa được xác minh.`);
     if (!approved) return;
     rows = markDuplicates(rows.map(row => row.key === candidateKey ? {...row,
-      id:active.id, source_url:reply.page_url, id_source:"studio_url_user_confirmed",
+      id:active.id, source_url:`https://studio.youtube.com/channel/${active.id}`,
+      id_source:"studio_url_user_confirmed",
       status:"identity_user_confirmed", last_seen_at:new Date().toISOString()} : row));
     candidateKey = ""; revision++; dirty = true; scheduleDraft(); render();
     status("Đã liên kết ID từ URL theo xác nhận của bạn. Bấm Lưu để đồng bộ TE.");
@@ -185,19 +239,27 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   }
   render();
   return {start, stop, save, verify, diagnose, copyDiagnostic,
+    target, cancelTarget, propose, confirmTarget,
     getRows:()=>rows, merge, render};
 }
 
 if (typeof document !== "undefined") {
   const ui = {status:document.getElementById("status"), counts:document.getElementById("counts"),
-    rows:document.getElementById("rows"), diagnostic:document.getElementById("diagnostic")};
+    rows:document.getElementById("rows"), diagnostic:document.getElementById("diagnostic"),
+    regionChoices:document.getElementById("regionChoices")};
   createPanel(chrome,ui).then(panel => {
     for (const [id, action] of [["start",panel.start],["stop",panel.stop],["save",panel.save],
-      ["verify",panel.verify],["diagnose",panel.diagnose],["copyDiagnostic",panel.copyDiagnostic]]) {
+      ["verify",panel.verify],["diagnose",panel.diagnose],["copyDiagnostic",panel.copyDiagnostic],
+      ["target",panel.target],["cancelTarget",panel.cancelTarget],
+      ["confirmTarget",panel.confirmTarget]]) {
       document.getElementById(id).addEventListener("click", () => action().catch(error => {
         ui.status.textContent = `Lỗi: ${error.message || error}`;
       }));
     }
+    ui.regionChoices.addEventListener("change", () => panel.propose().catch(error => {
+      ui.status.textContent = `Lỗi: ${error.message || error}`;
+    }));
+    window.addEventListener("pagehide", () => panel.cancelTarget().catch(() => {}));
   }).catch(error => { ui.status.textContent = `Không mở được catalog: ${error.message}`; });
 }
 if (typeof module !== "undefined") module.exports = {withTimeout, nativeSync, createPanel};
