@@ -8,6 +8,12 @@ Chrome Native Messaging gửi một thông điệp đến host `com.testudio.stu
 
 Thiết kế bridge theo [Chrome Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) và [Content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts). Chrome kiểm tra `allowed_origins`; một tiến trình khác chạy cùng tài khoản Windows vẫn có thể sửa dữ liệu máy cục bộ, nên bản quét không phải bằng chứng mật mã về danh tính hay quyền kênh.
 
+### Chẩn đoán popup đứng ở bước đọc Studio
+
+Popup hiện lần lượt **Đang đọc giao diện Studio** → **Đang gửi dữ liệu đến Native Host** → **Đang lưu kết quả quét** → **Hoàn tất** hoặc **Thất bại**. Sau 3 giây lấy tab, 8 giây chờ content script, hoặc 15 giây chờ Native Host, popup phải báo lỗi cụ thể thay vì chờ vô hạn. Native Host dùng kết nối có thể ngắt, chuyển đúng một frame Native Messaging và đóng stdin Python sau khi flush; launcher giới hạn thời gian nhận frame và chờ Python. Nguyên nhân treo trên máy Windows chưa được tái hiện trực tiếp, nên thời điểm popup đổi trạng thái sẽ chỉ ra chặng gặp lỗi thực tế.
+
+Nếu báo **Content script chưa có**, trong `chrome://extensions` bấm **Reload** cho extension và tải lại tab `studio.youtube.com`. Nếu báo **Native Host không tìm thấy**, **Extension ID không được cho phép** hoặc **không khởi chạy được**, đóng Chrome, lấy ID extension hiện tại và chạy lại installer bên dưới. Log chỉ ghi thời gian, chặng và mã lỗi, không ghi DOM, cookie, OAuth token hay mật khẩu: `%LOCALAPPDATA%\TEStudio\studio-connector\connector.log`. Chrome cũng có thông báo lỗi Native Messaging trong trang **Errors** của extension tại `chrome://extensions`.
+
 **Chưa có test thực tế trên Windows/YouTube Studio.** DOM của Studio có thể thay đổi. Menu có thể chỉ lộ tên mà không lộ URL/ID, và có thể không liệt kê mọi kênh được ủy quyền. Trong trường hợp đó, người dùng cần chuyển từng kênh thủ công, mở trang Studio của kênh đó và quét lại. Nếu ID vẫn không xuất hiện trong URL hoặc DOM, extension sẽ không xác nhận danh tính. Editor/Manager/Owner và khả năng upload đều chưa được xác minh bởi prototype này.
 
 ## Cài đặt trên Windows
@@ -29,6 +35,8 @@ git pull --ff-only origin te-v1-render-test
 cd D:\TE-Git
 .\scripts\install-studio-connector.ps1 -ExtensionId '<ID-trên-chrome-extensions>'
 ```
+
+**Sau khi cập nhật từ commit `0981fb5`: đóng Chrome, chạy lại installer với Extension ID hiện tại, mở lại Chrome, bấm Reload cho extension tại `chrome://extensions`, rồi tải lại tab YouTube Studio.** Cần cài lại vì launcher `.exe` đã thay đổi; chỉ `git pull` không cập nhật bản launcher đã biên dịch trong `%LOCALAPPDATA%`.
 
 Nếu PowerShell chặn script theo chính sách máy, chạy phiên PowerShell dành riêng cho bước cài với chính sách do quản trị viên cho phép. Script ghi manifest/exe vào `%LOCALAPPDATA%\TEStudio\studio-connector` và đăng ký tại `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.testudio.studio_connector`; không sửa Chrome profile cá nhân. Native host dùng `.venv\Scripts\python.exe` của bản TE hiện tại.
 

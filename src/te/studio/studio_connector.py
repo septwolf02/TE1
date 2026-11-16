@@ -85,6 +85,7 @@ class StudioConnectorStore:
 
     def save_message(self, message: object) -> dict:
         result = validate_scan(message)
+        result["latest_verified_count"] = sum(item["status"] == "identity_verified" for item in result["channels"])
         if self.path.exists():
             old = self.load()
             seen = {item["id"] for item in result["channels"] if item["id"]}

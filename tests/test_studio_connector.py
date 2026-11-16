@@ -62,7 +62,10 @@ def test_native_host_rejects_extra_commands_and_oversized_payload(tmp_path):
         handle(b" " * (1024 * 1024 + 1), config)
     assert not StudioConnectorStore(config).path.exists()
     result = handle(json.dumps(message(), ensure_ascii=False).encode(), config)
-    assert result["ok"] and result["count"] == 1
+    assert result["ok"] and result["count"] == 1 and result["verified_count"] == 1
+    unresolved = message(entries=[{"id": "", "name": "Only a name", "source_url": "https://studio.youtube.com/"}])
+    result = handle(json.dumps(unresolved).encode(), config)
+    assert result["ok"] and result["count"] == 2 and result["verified_count"] == 0
 
 
 def test_extension_scope_and_native_launcher_origin_guard():
@@ -74,6 +77,15 @@ def test_extension_scope_and_native_launcher_origin_guard():
     installer = (root / "scripts" / "install-studio-connector.ps1").read_text(encoding="utf-8")
     assert 'args[0] != "chrome-extension://$ExtensionId/"' in installer
     assert "allowed_origins" in installer
+    assert "ReadExact(input, 4)" in installer
+    assert "child.StandardInput.Close()" in installer
+
+
+def test_popup_timeouts_progress_and_native_failures():
+    if not shutil.which("node"):
+        pytest.skip("Node.js is unavailable for the extension popup test")
+    script = Path(__file__).resolve().with_name("studio_connector_popup.test.cjs")
+    subprocess.run(["node", str(script)], check=True, capture_output=True, text=True)
 
 
 def test_native_messaging_frame_and_connection_loss(tmp_path):
@@ -83,13 +95,26 @@ def test_native_messaging_frame_and_connection_loss(tmp_path):
     command = [sys.executable, "-m", "te.studio.studio_connector_host"]
     completed = subprocess.run(command, input=struct.pack("<I", len(payload)) + payload,
                                capture_output=True, env=env, check=True)
-    size = struct.unpack("<I", completed.stdout[:4])[0]
-    assert json.loads(completed.stdout[4:4 + size])["ok"] is True
+    def frames(output):
+        result = []
+        while output:
+            size = struct.unpack("<I", output[:4])[0]
+            result.append(json.loads(output[4:4 + size]))
+            output = output[4 + size:]
+        return result
+    replies = frames(completed.stdout)
+    assert replies[0] == {"stage": "saving"}
+    assert replies[1]["ok"] is True and replies[1]["verified_count"] == 1
     assert (tmp_path / "TEStudio" / "studio-connector" / "scan.json").exists()
+    assert "python completed ok" in (tmp_path / "TEStudio" / "studio-connector" / "connector.log").read_text()
     broken = subprocess.run(command, input=struct.pack("<I", len(payload)) + payload[:3],
                             capture_output=True, env=env, check=True)
-    size = struct.unpack("<I", broken.stdout[:4])[0]
-    assert json.loads(broken.stdout[4:4 + size])["ok"] is False
+    assert frames(broken.stdout)[0]["ok"] is False
+    malformed = subprocess.run(command, input=struct.pack("<I", 3) + b"bad",
+                               capture_output=True, env=env, check=True)
+    assert frames(malformed.stdout)[0] == {"stage": "saving"}
+    assert frames(malformed.stdout)[1]["ok"] is False
+    assert "python saving JSONDecodeError" in (tmp_path / "TEStudio" / "studio-connector" / "connector.log").read_text()
 
 
 def test_persists_each_selected_channel_and_marks_old_observations_unavailable(tmp_path):
