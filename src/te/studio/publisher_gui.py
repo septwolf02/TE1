@@ -2,26 +2,28 @@
 from __future__ import annotations
 
 from pathlib import Path
-import shutil
+import json
 from queue import Empty, Queue
 from threading import Thread
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .publisher import PublisherStore, normalize_metadata
-from .youtube_studio import YouTubeStudioBrowser
+from .publisher import PublisherStore, file_identity, normalize_metadata
+from .youtube_api import (CredentialVault, OwnerOAuth, YouTubeAPIClient,
+                          YouTubeAPIError, validate_client_config)
+from te.project.manager import _write_json
 
 
 class PublisherController:
     def __init__(self, app):
         self.app = app
         self.store = PublisherStore(app.service.config_path)
-        self.browser = YouTubeStudioBrowser(self.store.root / "browser")
         self.events = Queue()
         self.busy = False
         self.values = {key: tk.StringVar() for key in normalize_metadata({})}
         self.status = tk.StringVar(value="Upload tự động tạm khóa: TE chưa xác minh tài khoản và quyền kênh.")
         self.channel_name = tk.StringVar()
+        self.oauth_status = tk.StringVar(value="Owner OAuth: chưa kết nối kênh API trên máy này.")
         app.root.after(300, self.poll)
 
     def build(self):
@@ -38,19 +40,21 @@ class PublisherController:
         self.app.body = content
         box = self.app._group("7. Xuất bản YouTube")
         box.columnconfigure(1, weight=1)
-        ttk.Label(box, text="Mở YouTube Studio trong trình duyệt hệ thống. Đăng nhập và upload thủ công; TE chưa thể xác minh quyền Editor để tự động xuất bản.",
+        ttk.Label(box, text="Owner OAuth qua trình duyệt hệ thống. Chỉ kênh được YouTube API xác nhận mới dùng được tải thử Riêng tư; quyền Editor qua Studio không đủ cho API.",
                   wraplength=850).grid(row=0, column=0, columnspan=3, sticky="w")
-        for column, (label, command) in enumerate((("Mở YouTube Studio", self.connect),
-            ("Quản lý tài khoản trong Studio", self.connect), ("Mở kênh trong Studio", self.verify))):
+        for column, (label, command) in enumerate((("Chọn OAuth JSON (Owner)", self.configure_oauth),
+            ("Ủy quyền thêm kênh", self.authorize_owner), ("Kiểm tra kết nối", self.check_connections))):
             ttk.Button(box, text=label, command=command).grid(row=1, column=column, sticky="w", padx=4, pady=4)
-        ttk.Button(box, text="Xóa hồ sơ Playwright cũ", command=self.disconnect).grid(row=1, column=3, sticky="w", padx=4)
+        ttk.Button(box, text="Thu hồi quyền kênh", command=self.revoke_owner).grid(row=1, column=3, sticky="w", padx=4)
+        ttk.Button(box, text="Xóa kết nối cục bộ", command=self.remove_local_connection).grid(
+            row=1, column=4, sticky="w", padx=4)
         ttk.Label(box, textvariable=self.status, wraplength=850).grid(row=2, column=0, columnspan=4, sticky="w")
-        ttk.Label(box, text="Email Google: chưa xác minh tự động. Hãy kiểm tra tài khoản đang đăng nhập trong Studio.").grid(row=3, column=0, columnspan=4, sticky="w")
-        ttk.Label(box, text="ID kênh từ URL studio.youtube.com/channel/UC…").grid(row=4, column=0, sticky="w")
-        ttk.Entry(box, textvariable=self.values["channel_id"], width=35).grid(row=4, column=1, sticky="ew")
-        ttk.Label(box, text="Tên kênh (do bạn nhập)").grid(row=5, column=0, sticky="w")
-        ttk.Entry(box, textvariable=self.channel_name).grid(row=5, column=1, sticky="ew")
-        ttk.Label(box, text="ID kênh đã lưu (chưa xác minh quyền)").grid(row=6, column=0, sticky="w")
+        ttk.Label(box, textvariable=self.oauth_status, wraplength=850).grid(row=3, column=0, columnspan=4, sticky="w")
+        ttk.Label(box, text="Channel ID (API)").grid(row=4, column=0, sticky="w")
+        ttk.Entry(box, textvariable=self.values["channel_id"], width=35, state="readonly").grid(row=4, column=1, sticky="ew")
+        ttk.Label(box, text="Tên kênh (API)").grid(row=5, column=0, sticky="w")
+        ttk.Label(box, textvariable=self.channel_name).grid(row=5, column=1, sticky="w")
+        ttk.Label(box, text="Chọn kênh").grid(row=6, column=0, sticky="w")
         self.channel_combo = ttk.Combobox(box, state="readonly")
         self.channel_combo.grid(row=6, column=1, sticky="ew")
         self.channel_combo.bind("<<ComboboxSelected>>", self._select_channel)
@@ -81,11 +85,12 @@ class PublisherController:
         ttk.Entry(box, textvariable=self.values["scheduled_local"]).grid(row=row, column=1, sticky="ew")
         ttk.Label(box, text="Asia/Tokyo").grid(row=row, column=2)
         row += 1
-        ttk.Label(box, text="Upload tự động tạm khóa. Các trường này chỉ lưu để chuẩn bị; đăng ngay, hẹn giờ, thumbnail, tags, playlist, kiếm tiền và end screen chưa được tự động áp dụng.",
+        ttk.Label(box, text="Tải thử Owner chỉ đăng Riêng tư: áp dụng title, description, tags, audience và thumbnail. Đăng công khai, hẹn giờ, playlist, kiếm tiền và end screen chưa tự động áp dụng.",
                   wraplength=850).grid(row=row, column=0, columnspan=3, sticky="w", pady=5)
         row += 1
         ttk.Button(box, text="Lưu thông tin xuất bản", command=self.save).grid(row=row, column=0, sticky="w")
-        ttk.Button(box, text="Tải thử Riêng tư (tạm khóa)", command=self.upload, state="disabled").grid(row=row, column=1, sticky="w")
+        self.upload_button = ttk.Button(box, text="Tải thử Riêng tư (Owner)", command=self.upload, state="disabled")
+        self.upload_button.grid(row=row, column=1, sticky="w")
         row += 1
         ttk.Label(box, textvariable=self.values["status"]).grid(row=row, column=0, sticky="w")
         ttk.Entry(box, textvariable=self.values["video_id"], state="readonly", width=16).grid(row=row, column=1, sticky="w")
@@ -97,18 +102,32 @@ class PublisherController:
 
     def refresh_channels(self):
         channels = self.store.channels()
-        self.channel_combo["values"] = [f"{c['name']} — {c['id']}" for c in channels]
+        self.channel_records = channels
+        self.channel_combo["values"] = [f"{c['name']} — {c['id']} — " +
+            ("OAuth OK" if c["authorization_status"] == "authorized" else "chưa hỗ trợ API")
+            for c in channels]
+        self._refresh_upload_button()
+
+    def _selected_connection(self):
+        return next((c for c in self.store.authorized_channels()
+                     if c["id"] == self.values["channel_id"].get()), None)
+
+    def _refresh_upload_button(self):
+        if hasattr(self, "upload_button"):
+            self.upload_button.configure(state="normal" if self._selected_connection() else "disabled")
 
     def _select_channel(self, _event=None):
         index = self.channel_combo.current()
-        channels = self.store.channels()
+        channels = self.channel_records
         if 0 <= index < len(channels):
             self.values["channel_id"].set(channels[index]["id"])
             self.channel_name.set(channels[index]["name"])
+            self.oauth_status.set("API authorization: " + channels[index]["authorization_status"])
+            self._refresh_upload_button()
 
     def choose(self, key):
         path = filedialog.askopenfilename(parent=self.app._details["publisher"],
-            filetypes=[("MP4", "*.mp4")] if key == "video_path" else [("Ảnh", "*.png *.jpg *.jpeg *.webp")])
+            filetypes=[("MP4", "*.mp4")] if key == "video_path" else [("JPEG/PNG", "*.png *.jpg *.jpeg")])
         if path:
             self.values[key].set(path)
 
@@ -121,6 +140,13 @@ class PublisherController:
         self.description.delete("1.0", "end")
         self.description.insert("1.0", meta["description"])
         self.refresh_channels()
+        selected = next((c for c in self.channel_records if c["id"] == meta["channel_id"]), None)
+        self.channel_combo.current(self.channel_records.index(selected) if selected else -1)
+        self.channel_name.set(selected["name"] if selected else "")
+        self.oauth_status.set("API authorization: " + (selected["authorization_status"] if selected else "chưa kết nối"))
+        self._refresh_upload_button()
+        self.status.set("Kênh có OAuth API authorization; có thể tải thử Riêng tư trên máy Owner."
+                        if self._selected_connection() else "Kênh chưa có OAuth API authorization; upload đã bị chặn.")
         job = self.store.latest(state.project.id)
         if job:
             self.values["status"].set(job["status"])
@@ -152,7 +178,7 @@ class PublisherController:
             self.status.set("Đang xử lý yêu cầu YouTube; vui lòng chờ.")
             return
         self.busy = True
-        self.status.set("Đang mở YouTube Studio trong trình duyệt hệ thống…")
+        self.status.set("Đang xử lý YouTube OAuth/API trong nền…")
         def run():
             try:
                 result = worker()
@@ -161,37 +187,124 @@ class PublisherController:
                 self.events.put((action, None, exc))
         Thread(target=run, daemon=True).start()
 
-    def connect(self):
-        self._start("connect", self.browser.connect)
-
-    def disconnect(self):
-        if self.busy:
-            self.status.set("Đợi thao tác YouTube hiện tại hoàn tất trước khi ngắt kết nối.")
-            return
-        if not messagebox.askyesno("Xóa hồ sơ cũ", "Xóa hồ sơ Playwright cũ của TE Studio? Thao tác này không đăng xuất khỏi trình duyệt hệ thống.",
-                                   parent=self.app._details["publisher"]):
+    def configure_oauth(self):
+        path = filedialog.askopenfilename(parent=self.app._details["publisher"],
+                                          filetypes=[("OAuth Desktop JSON", "*.json")])
+        if not path:
             return
         try:
-            if self.browser.profile_dir.exists():
-                shutil.rmtree(self.browser.profile_dir)
-        except OSError as exc:
-            messagebox.showerror("YouTube", f"Không xóa được phiên trình duyệt: {exc}", parent=self.app.root)
+            config = validate_client_config(json.loads(Path(path).read_text(encoding="utf-8")))
+            target = self.store.root / "oauth-desktop-client.json"
+            _write_json(target, config)
+            self.app.service.settings["youtube_oauth_client_path"] = str(target)
+            self.app.service.save_settings()
+        except Exception as exc:
+            messagebox.showerror("YouTube OAuth", f"Không lưu được cấu hình OAuth Desktop: {exc}", parent=self.app.root)
             return
-        self.status.set("Đã xóa hồ sơ Playwright cũ của TE. Phiên đăng nhập trình duyệt hệ thống và dữ liệu kênh/tác vụ đã lưu không bị thay đổi.")
+        self.oauth_status.set("Đã lưu OAuth Desktop client trong cấu hình máy; chưa có token/kênh được cấp quyền.")
 
-    def verify(self):
-        channel_id = self.values["channel_id"].get().strip()
+    def _owner(self):
+        path = self.app.service.settings.get("youtube_oauth_client_path")
+        if not path:
+            raise YouTubeAPIError("Chọn OAuth Desktop JSON trong phần Owner trước.")
+        vault = CredentialVault()
+        return OwnerOAuth(Path(path), vault, YouTubeAPIClient())
+
+    def authorize_owner(self):
+        if not messagebox.askyesno("Owner OAuth", "Chỉ thực hiện trên máy của chủ kênh. Google sẽ mở trình duyệt hệ thống để cấp youtube.upload và youtube.readonly. Tiếp tục?",
+                                   parent=self.app._details["publisher"]):
+            return
         def work():
-            return self.browser.verify_channel(channel_id)
-        self._start("verify", work)
+            record = self._owner().authorize()
+            try:
+                self.store.register_authorized_channel(record)
+            except Exception:
+                CredentialVault().delete(record["credential_ref"])
+                raise
+            return record
+        self._start("authorized", work)
+
+    def check_connections(self):
+        records = self.store.authorized_channels()
+        def work():
+            owner = self._owner()
+            results = []
+            for record in records:
+                credentials = owner.credentials_for(record["credential_ref"])
+                actual = owner.api.verify_exact_channel(credentials, record["id"])
+                self.store.mark_checked(actual["id"], actual["name"], actual["thumbnail_url"])
+                results.append(actual["id"])
+            return results
+        self._start("checked", work)
+
+    def revoke_owner(self):
+        record = self._selected_connection()
+        if not record:
+            self.status.set("Chọn kênh có OAuth authorization trước.")
+            return
+        if not messagebox.askyesno("Thu hồi OAuth", f"Thu hồi quyền API của kênh {record['name']} ({record['id']})? Tác vụ cũ vẫn được giữ.",
+                                   parent=self.app._details["publisher"]):
+            return
+        def work():
+            self._owner().revoke(record["credential_ref"])
+            self.store.revoke_channel(record["id"])
+            return record["id"]
+        self._start("revoked", work)
+
+    def remove_local_connection(self):
+        record = self._selected_connection()
+        if not record:
+            self.status.set("Chọn kênh có OAuth authorization trước.")
+            return
+        if not messagebox.askyesno("Xóa kết nối cục bộ", "Xóa credential khỏi máy này? Quyền Google OAuth có thể vẫn còn; thu hồi trong Google Account nếu cần.",
+                                   parent=self.app._details["publisher"]):
+            return
+        def work():
+            CredentialVault().delete(record["credential_ref"])
+            self.store.revoke_channel(record["id"])
+            return record["id"]
+        self._start("revoked_local", work)
 
     def upload(self):
-        # Keep this guard even though the button is disabled: callers must never
-        # create or resume a job from an unverified browser session.
-        message = ("Upload tự động tạm khóa: tài khoản Google, quyền kênh và khả năng xuất bản "
-                   "chưa được xác minh. Hãy upload thủ công trong YouTube Studio.")
-        self.status.set(message)
-        messagebox.showwarning("YouTube", message, parent=self.app.root)
+        record = self._selected_connection()
+        state = self.app.state
+        if not record or not state:
+            self.status.set("Kênh chưa có OAuth authorization hợp lệ; upload đã bị chặn.")
+            return
+        self.capture()
+        if not self.app._save():
+            return
+        meta = normalize_metadata(state.publisher)
+        if meta["mode"] != "immediate":
+            self.status.set("Phase 4A-API chỉ tải thử Riêng tư; lịch hẹn chưa được áp dụng.")
+            return
+        if not messagebox.askyesno("Tải thử Riêng tư — Owner", f"Chủ kênh xác nhận tải MP4 lên {record['name']} ({record['id']}) ở chế độ PRIVATE?\nĐối tượng: {meta['audience']}.\n\nKhông dùng trên máy nhân viên.",
+                                   parent=self.app._details["publisher"]):
+            return
+        project_id = state.project.id
+        def work():
+            owner = self._owner()
+            credentials = owner.credentials_for(record["credential_ref"])
+            owner.api.verify_exact_channel(credentials, record["id"])
+            identity = file_identity(Path(meta["video_path"]))
+            job = self.store.prepare(project_id, meta, identity)
+            if job["status"] != "ready" or job.get("credential_ref") != record["credential_ref"]:
+                raise YouTubeAPIError("Tác vụ đã tồn tại hoặc OAuth của kênh đã đổi; kiểm tra YouTube trước khi thử lại.")
+            self.store.begin_attempt(job["id"])
+            try:
+                result = owner.api.upload_private(credentials, record["id"], Path(identity["path"]), meta,
+                    on_created=lambda video_id: self.store.update(job["id"], status="processing", video_id=video_id,
+                        video_url=f"https://www.youtube.com/watch?v={video_id}",
+                        last_confirmed_operation="video_created"),
+                    thumbnail=Path(meta["thumbnail_path"]) if meta["thumbnail_path"] else None)
+            except Exception as exc:
+                self.store.update(job["id"], status="needs_attention", error=str(exc))
+                raise
+            status = "needs_attention" if result["thumbnail_error"] else "private_test"
+            return self.store.update(job["id"], status=status, video_id=result["video_id"],
+                video_url=result["video_url"], error=result["thumbnail_error"],
+                last_confirmed_operation="private_video_created")
+        self._start("upload", work)
 
     def poll(self):
         while True:
@@ -203,9 +316,32 @@ class PublisherController:
             if error:
                 self.status.set(f"{action}: {error}")
                 messagebox.showerror("YouTube", str(error), parent=self.app.root)
-            elif action == "connect":
-                self.status.set(result)
-            elif action == "verify":
-                self.status.set(f"Đã mở kênh {result['id']} trong trình duyệt hệ thống. TE chưa xác minh quyền upload.")
+            elif action == "authorized":
+                self.refresh_channels()
+                self.values["channel_id"].set(result["id"])
+                self.channel_combo.current(next(i for i, channel in enumerate(self.channel_records)
+                                                if channel["id"] == result["id"]))
+                self.channel_name.set(result["name"])
+                self._refresh_upload_button()
+                self.oauth_status.set(f"OAuth OK: {result['name']} — {result['id']}")
+                self.status.set("Kênh đã được YouTube API xác nhận; chưa upload video.")
+            elif action == "checked":
+                self.refresh_channels()
+                self.status.set(f"YouTube API xác nhận {len(result)} kênh đã đăng ký.")
+            elif action == "revoked":
+                self.refresh_channels()
+                self.oauth_status.set("API authorization: revoked")
+                self.status.set(f"Đã thu hồi OAuth của kênh {result}.")
+            elif action == "revoked_local":
+                self.refresh_channels()
+                self.oauth_status.set("API authorization: disconnected_local")
+                self.status.set(f"Đã xóa credential cục bộ của kênh {result}; Google grant có thể vẫn còn.")
+            elif action == "upload":
+                self.status.set(f"Tác vụ {result['status']}: {result['video_url']}; {result['error'] or 'không lỗi' }.")
+                if self.app.state and self.app.state.project.id == result["project_id"]:
+                    for key in ("status", "video_id", "video_url"):
+                        self.values[key].set(result[key])
+                    self.capture()
+                    self.app._save()
         if self.app.root.winfo_exists():
             self.app.root.after(300, self.poll)

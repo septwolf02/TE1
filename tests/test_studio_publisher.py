@@ -8,12 +8,20 @@ from threading import Event
 import pytest
 
 from te.studio.publisher import PublisherStore, file_identity, normalize_metadata, validate_schedule
+from te.studio.youtube_api import SCOPES
 from te.studio.publisher_gui import PublisherController
 from te.studio.service import StudioService
 from te.studio.youtube_studio import YouTubeStudioBrowser, StudioVerificationError
 
 CID = "UC" + "a" * 22
 OTHER = "UC" + "b" * 22
+
+
+def register_api(store, channel_id=CID, name="テスト"):
+    store.register_authorized_channel({"id": channel_id, "name": name,
+        "credential_ref": ("a" if channel_id == CID else "b") * 32,
+        "scopes": list(SCOPES), "authorization_status": "authorized",
+        "last_checked_at": "2026-11-16T00:00:00+00:00"})
 
 
 def service(tmp_path):
@@ -51,7 +59,7 @@ def test_schedule_timezone_and_mode(tmp_path):
     with pytest.raises(ValueError):
         validate_schedule("2020-01-01 12:00", "Asia/Tokyo")
     store = PublisherStore(tmp_path / "settings.json")
-    store.add_verified_channel(CID, "テスト")
+    register_api(store)
     meta = normalize_metadata({"channel_id": CID, "title": "題名", "mode": "scheduled",
                                "scheduled_local": "2030-01-01 12:00"})
     job = store.prepare("project", meta, {"path": "test.mp4", "sha256": "abc", "bytes": 4})
@@ -61,14 +69,14 @@ def test_schedule_timezone_and_mode(tmp_path):
 
 def test_channel_association_duplicate_and_crash_recovery(tmp_path):
     store = PublisherStore(tmp_path / "settings.json")
-    store.add_verified_channel(CID, "テスト")
+    register_api(store)
     meta = normalize_metadata({"channel_id": CID, "title": "動画"})
     identity = {"path": "test.mp4", "sha256": "abc", "bytes": 4}
     first = store.prepare("p1", meta, identity)
     assert store.prepare("p1", meta, identity)["id"] == first["id"]
-    with pytest.raises(ValueError, match="xác minh"):
+    with pytest.raises(ValueError, match="OAuth authorization"):
         store.prepare("p1", {**meta, "channel_id": OTHER}, identity)
-    store.add_verified_channel(OTHER, "別")
+    register_api(store, OTHER, "別")
     assert store.prepare("p1", {**meta, "channel_id": OTHER}, identity)["id"] != first["id"]
     store.update(first["id"], status="uploading", last_confirmed_operation="attempt_started")
     restarted = PublisherStore(tmp_path / "settings.json")
@@ -86,7 +94,7 @@ def test_video_identity_and_failure_record(tmp_path):
     identity = file_identity(source)
     assert identity["bytes"] == source.stat().st_size
     store = PublisherStore(tmp_path / "settings.json")
-    store.add_verified_channel(CID, "テスト")
+    register_api(store)
     job = store.prepare("p", {"channel_id": CID, "title": "日本語"}, identity)
     store.update(job["id"], status="uploading")
     store.update(job["id"], status="needs_attention", error="session expired")
@@ -137,17 +145,17 @@ def test_automated_upload_is_blocked_before_browser_or_job_mutation(monkeypatch,
     controller = object.__new__(PublisherController)
     messages = []
     controller.status = SimpleNamespace(set=messages.append)
-    controller.app = SimpleNamespace(root=object())
-    monkeypatch.setattr("te.studio.publisher_gui.messagebox.showwarning",
-                        lambda title, message, **kwargs: messages.append(message))
+    controller._selected_connection = lambda: None
+    controller.app = SimpleNamespace(root=object(), state=None)
     controller.upload()
-    assert len(messages) == 2 and all("tạm khóa" in message for message in messages)
+    assert len(messages) == 1 and "chưa có OAuth" in messages[0]
     assert opened == []
 
 
 def test_legacy_channels_and_jobs_survive_manual_browser_handoff(monkeypatch, tmp_path):
     store = PublisherStore(tmp_path / "settings.json")
-    store.add_verified_channel(CID, "既存のチャンネル")
+    register_api(store, CID, "既存のチャンネル")
+    store.add_verified_channel(OTHER, "Tên cũ")
     job = store.prepare("project", {"channel_id": CID, "title": "既存の動画"},
                         {"path": "movie.mp4", "sha256": "old-hash", "bytes": 10})
     before = store.path.read_bytes()
@@ -163,7 +171,7 @@ def test_legacy_channels_and_jobs_survive_manual_browser_handoff(monkeypatch, tm
 
 def test_cross_process_upload_attempt_reservation(tmp_path):
     store = PublisherStore(tmp_path / "settings.json")
-    store.add_verified_channel(CID, "テスト")
+    register_api(store)
     job = store.prepare("p", {"channel_id": CID, "title": "題名"},
                         {"path": "movie.mp4", "sha256": "hash", "bytes": 2})
     assert store.begin_attempt(job["id"])["status"] == "uploading"

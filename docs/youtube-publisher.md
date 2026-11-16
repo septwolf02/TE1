@@ -1,42 +1,44 @@
-# TE Studio Phase 4A — YouTube Studio Publisher
+# TE Studio Phase 4A-API — YouTube Publisher
 
-## Current capability
+## Trạng thái và ranh giới an toàn
 
-The Publisher saves project metadata in `studio.json` and keeps existing publishing jobs and channel IDs in the machine-local job journal. **Automated upload is temporarily disabled.** The previous Playwright-controlled Chrome sign-in was rejected by Google with “This browser or app may not be secure.” [Playwright's browser API](https://playwright.dev/python/docs/api/class-browsertype) documents that `chromium_sandbox` defaults to `false`, which explains the `--no-sandbox` warning observed in Chrome. TE Studio no longer launches a Playwright browser, so it no longer adds that flag. TE Studio now opens YouTube Studio in the ordinary system browser for manual sign-in and upload. Opening a Studio page does **not** prove the Google identity, channel authorization, or publishing capability to TE Studio. Previously saved channel entries are displayed as unverified.
+TE Studio có **owner-only local prototype** dùng OAuth 2.0 Desktop app trong trình duyệt hệ thống và YouTube Data API v3. Chủ kênh cấp quyền riêng cho từng kênh, TE gọi `channels.list(part=snippet,mine=true)` và chỉ đăng ký khi API trả về **đúng một** ID/tên kênh. Việc thấy kênh trong YouTube Studio hoặc danh sách Chrome không được coi là API authorization. Kênh chỉ có quyền Editor qua Studio có thể không xuất hiện qua `mine=true`: [YouTube nói người được mời qua Channel Permissions không dùng được YouTube APIs](https://support.google.com/youtubecreatorstudio/answer/9481328). Mỗi kênh cần một lần OAuth thành công và một `credential_ref` riêng; không giả định một Google login cấp quyền cho tất cả kênh.
 
-Google [requires secure browsers for OAuth](https://developers.google.com/identity/protocols/oauth2/policies) and its [desktop OAuth flow](https://developers.google.com/identity/protocols/oauth2/native-app) uses the system browser with a loopback redirect. That OAuth flow would verify an account's identity, but does not grant an Editor's Studio channel permission to YouTube APIs. [YouTube's channel permissions guidance](https://support.google.com/youtubecreatorstudio/answer/9481328) explicitly lists YouTube APIs among features unavailable to invited users, while Editors can upload in YouTube Studio itself. Identity, channel permission, and publishing capability must therefore be treated as separate checks.
+OAuth client JSON được sao chép vào cấu hình máy `%LOCALAPPDATA%\TEStudio\youtube-publisher\oauth-desktop-client.json`. Refresh/access token chỉ nằm trong Windows Credential Manager qua `keyring`, khóa bằng `credential_ref`; `studio.json`, `jobs.json`, log và Git không chứa token. Chỉ có scope `youtube.upload` và `youtube.readonly`; không yêu cầu Gmail, Drive, Analytics/revenue hay YouTube Partner. **Không sao chép cấu hình/token này sang máy nhân viên.** Desktop app là public client; bản owner-only này không giải quyết bảo mật cho nhân viên.
 
-No OAuth client is configured in TE Studio. The **Mở YouTube Studio** button opens the regular browser for manual use; it is not an OAuth connection and does not share the browser session with TE Studio. TE Studio does not collect Google passwords, copy cookies or tokens, control a personal Chrome profile, or use stealth or security-disable flags. The former dedicated Playwright profile remains outside the repository under `%LOCALAPPDATA%\TEStudio\youtube-publisher\browser` until the user explicitly chooses **Xóa hồ sơ Playwright cũ**. Existing project metadata and job records are retained.
+Upload tự động chỉ chạy khi **chủ kênh bấm `Tải thử Riêng tư (Owner)` và xác nhận**, trên máy có credential đã đăng ký. TE kiểm tra credential và channel ID lần nữa, tạo upload resumable bằng `videos.insert` với `privacyStatus=private`, tiêu đề/mô tả/tags tiếng Nhật và khai báo trẻ em do người dùng chọn. Nếu có thumbnail JPEG/PNG, TE gọi `thumbnails.set`. Video ID được ghi ngay khi API xác nhận; lỗi sau đó giữ job ở `needs_attention`, không upload lại mù. TE đọc lại `videos.list` để xác nhận đúng kênh và `private`. Chế độ công khai và hẹn giờ chưa hoạt động; `Asia/Tokyo` và kế hoạch `publishAt` chỉ được chuẩn bị, không áp dụng. Monetization và end screen được lưu như tùy chọn, **chưa được cấu hình** qua API.
 
-## Windows update
+## Thiết lập Google Cloud trên máy chủ kênh
+
+1. Vào [Google Cloud Console](https://console.cloud.google.com/), tạo hoặc chọn một project cho TE Publisher. Bật **YouTube Data API v3** trong API Library.
+2. Trong **Google Auth Platform**, cấu hình brand/consent screen, chọn audience phù hợp. Nếu ở trạng thái **Testing**, thêm tài khoản chủ kênh làm test user. Xem [giới hạn test user](https://support.google.com/cloud/answer/15549945) và [thời hạn refresh token](https://developers.google.com/identity/protocols/oauth2) trước khi vận hành lâu dài.
+3. Tạo OAuth client loại **Desktop app** và tải JSON. Không đặt JSON trong `D:\TE-Git` hay project TE. Lưu vào một thư mục riêng của chủ máy. Không gửi JSON hoặc token cho nhân viên.
+4. Cập nhật TE Studio bằng PowerShell:
 
 ```powershell
 cd D:\TE-Git
 git fetch origin
 git switch te-v1-render-test
 git pull --ff-only origin te-v1-render-test
-.\.venv\Scripts\python.exe -m pip install -e '.[gui]'
+.\.venv\Scripts\python.exe -m pip install -e '.[gui,publisher-api]'
 .\.venv\Scripts\python.exe -m te.studio
 ```
 
-No Playwright browser installation is needed for this Publisher path. To upload now, open the Publisher, save the intended MP4 and metadata, then use **Mở YouTube Studio**. Sign in and select the intended Editor-accessible channel in the browser. Verify the account and channel there, upload the MP4 manually, and set visibility and other settings in Studio. TE Studio does not claim this manual action completed or update a job to `published` automatically. Any prior uncertain job remains available for review, and the duplicate-prevention records are preserved.
+5. Mở **7. Xuất bản YouTube** → **Chọn OAuth JSON (Owner)** → chọn JSON Desktop app. Bấm **Ủy quyền thêm kênh**. Google mở trong trình duyệt hệ thống; chủ kênh tự đăng nhập, chọn tài khoản/kênh nếu Google hiển thị lựa chọn, và đồng ý hai scope. TE không xin mật khẩu. OAuth trả về localhost loopback; thư viện `google-auth-oauthlib` xử lý `state`/PKCE và đổi code lấy token.
+6. TE đăng ký kênh chỉ khi `channels.list(mine=true)` xác nhận đúng một ID/tên. So sánh ID/tên với YouTube Studio. Để thêm kênh thứ hai, lặp lại **Ủy quyền thêm kênh** và chọn kênh khác trong Google. Nếu API trả về cùng kênh, kênh không rõ, hoặc quyền Editor-only không có API access, TE chặn đăng ký; không tự gán ID khác.
+7. Chọn kênh đã có **OAuth OK**, chọn MP4 Full HD nhỏ của kênh thử, thumbnail nếu cần, nhập tiêu đề/mô tả/tags và khai báo audience. Chọn `immediate` trong metadata (Phase 4A-API vẫn chỉ upload **private**). Bấm **Tải thử Riêng tư (Owner)**, đọc hộp xác nhận đúng kênh, rồi xác nhận. Kiểm tra video ID/URL và trạng thái Private trong YouTube Studio. Không dùng video sản xuất cho lần thử đầu.
+8. **Kiểm tra kết nối** gọi API để xác nhận lại kênh; **Thu hồi quyền kênh** gọi endpoint revoke của Google rồi xóa credential cục bộ. Nếu không thể liên hệ Google, TE giữ credential và báo lỗi. **Xóa kết nối cục bộ** chỉ xóa credential trên máy, không tuyên bố Google đã thu hồi grant.
 
-## Phase 4A.2 channel discovery feasibility
+Google OAuth xác minh danh tính và API scopes; channel ownership/authorization là kết quả `channels.list(mine=true)`; khả năng publish còn phụ thuộc quota, giới hạn upload của kênh và chính sách Google. Xem [YouTube API quota và compliance](https://developers.google.com/youtube/v3/guides/quota_and_compliance_audits), [videos.insert](https://developers.google.com/youtube/data/reference/rest/v3/videos/insert), và [thumbnails.set](https://developers.google.com/youtube/data/reference/rest/v3/thumbnails/set). Xem quota thực tế và điều kiện public-upload của project trong Console/tài liệu hiện hành; TE không giả định hạn mức cố định. Tài khoản có thể thu hồi OAuth bất kỳ lúc nào; app Testing có thể cấp refresh token ngắn hạn.
 
-Chrome 138+ [exposes native Windows UI Automation](https://developer.chrome.com/blog/windows-uia-support-update). This may expose visible Studio controls without controlling Google sign-in. However, the accessibility contract does not guarantee that YouTube Studio's channel switcher exposes each channel's URL or ID. A visible name alone is insufficient, especially when multiple channels have the same name. TE Studio therefore **does not yet provide automatic channel discovery or a verified channel list**. The current manual ID field remains available, and automatic upload remains disabled.
+## Ranh giới cho nhân viên và dịch vụ trung tâm tương lai
 
-A read-only UIA probe is included to test this specific gap on the user's Windows installation. It operates only on a window chosen by HWND, requires a Studio title and a unique Studio channel URL, reads no Chrome profile files, and never clicks or changes tabs. It reports URL-anchored candidates as `unverified`; it does not save them to the channel registry. It cannot establish upload permission or completeness of the account's channel list. Older saved channel IDs, project metadata, and jobs remain untouched.
+Owner-only prototype không được triển khai trên máy nhân viên: người có quyền truy cập tài khoản hệ điều hành của chủ máy có thể gọi keyring. Bản production cần dịch vụ trung tâm tin cậy giữ OAuth token và thực thi quyền **ở server**, gồm:
 
-In PowerShell, after opening YouTube Studio in normal Chrome, optionally open its channel switcher, then run:
+- Owner/admin xác thực riêng, đăng ký/thu hồi channel connection, gán quyền nhân viên theo channel ID, xem log.
+- Employee xác thực với dịch vụ, nhận danh sách channel ID/tên được ACL cho phép, gửi video/metadata/job ID qua kết nối bảo mật; không nhận refresh/access token.
+- Dịch vụ kiểm tra employee ACL, channel ID, source fingerprint và idempotency key trước mọi upload; lưu job/video ID và audit log, xử lý retry/reconciliation an toàn.
 
-```powershell
-cd D:\TE-Git
-git fetch origin
-git switch te-v1-render-test
-git pull --ff-only origin te-v1-render-test
-.\.venv\Scripts\python.exe -m pip install -e '.[gui,publisher-probe]'
-.\.venv\Scripts\python.exe -m te.studio.channel_probe --list
-.\.venv\Scripts\python.exe -m te.studio.channel_probe --hwnd 123456
-```
+Có thể thiết kế API `GET /v1/channels`, `POST /v1/publish-jobs`, `GET /v1/publish-jobs/{id}`, `POST /v1/admin/channels/authorize`, `DELETE /v1/admin/channels/{id}` với xác thực và ACL server-side. **Chưa có dịch vụ, employee auth hay ACL production trong Phase 4A-API.** Không chuyển token keyring giữa các máy. Các job/channel browser-era và probe UIA cũ vẫn đọc được nhưng không được tự nâng thành OAuth-authorized.
 
-Replace `123456` with the HWND returned by `--list`. The output should be checked against the actual channel names and IDs in Studio for each signed-in account. If only the active channel ID appears, the UIA approach cannot meet the one-click discovery requirement. Chrome [does not permit remote debugging of the default profile](https://developer.chrome.com/blog/remote-debugging-port) in recent versions, and copying its cookies is not an option. A possible supported alternative is an explicitly installed Chrome extension limited to Studio pages, with [Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) to TE Studio. That requires separate implementation and Windows validation; no extension or automatic browser access is enabled here.
+Kiểm thử tự động dùng mock, không đăng nhập Google hay upload thật. Cloud không xác minh luồng OAuth, lựa chọn nhiều kênh hoặc upload trên Windows; các bước thử thực tế phải chạy trên máy chủ kênh.

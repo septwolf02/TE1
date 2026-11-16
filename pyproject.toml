@@ -14,6 +14,8 @@ test = ["pytest>=8,<10", "jsonschema>=4,<5"]
 gui = ["Pillow>=10,<12", "keyring>=25,<27", "PyJWT[crypto]>=2.9,<3"]
 publisher = []  # Retain the optional extra name for existing installs; browser automation is disabled.
 publisher-probe = ["pywinauto>=0.6.8,<1; sys_platform == 'win32'"]
+publisher-api = ["google-api-python-client>=2.160,<3", "google-auth-oauthlib>=1.2,<2",
+                 "google-auth>=2.38,<3", "keyring>=25,<27"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

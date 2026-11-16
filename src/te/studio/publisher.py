@@ -98,14 +98,62 @@ class PublisherStore:
         _write_json(self.path, self.data)
 
     def channels(self) -> list[dict]:
-        return deepcopy(self.data["channels"])
+        channels = deepcopy(self.data["channels"])
+        for channel in channels:
+            # Older browser-era entries were never API-authorized.
+            channel.setdefault("authorization_status", "legacy_unverified")
+            channel.setdefault("credential_ref", "")
+            channel.setdefault("scopes", [])
+        return channels
+
+    def authorized_channels(self) -> list[dict]:
+        return [channel for channel in self.channels()
+                if channel["authorization_status"] == "authorized" and channel["credential_ref"]]
+
+    def register_authorized_channel(self, record: dict) -> None:
+        from .youtube_api import SCOPES
+        if (not isinstance(record, dict) or not CHANNEL_ID.fullmatch(str(record.get("id", ""))) or
+                not isinstance(record.get("name"), str) or not record["name"].strip() or
+                not isinstance(record.get("credential_ref"), str) or
+                not re.fullmatch(r"[0-9a-f]{32}", record["credential_ref"]) or
+                record.get("authorization_status") != "authorized" or
+                not set(SCOPES).issubset(set(record.get("scopes") or []))):
+            raise ValueError("Kênh chưa có OAuth authorization hợp lệ.")
+        previous = next((channel for channel in self.data["channels"] if channel.get("id") == record["id"]), None)
+        if previous and previous.get("authorization_status") == "authorized":
+            raise ValueError("Kênh này đã được OAuth authorization; chọn kênh khác hoặc thu hồi kết nối cũ trước.")
+        channels = [channel for channel in self.data["channels"] if channel.get("id") != record["id"]]
+        channels.append(deepcopy(record))
+        self.data["channels"] = channels
+        self._save()
+
+    def revoke_channel(self, channel_id: str) -> dict:
+        channel = next((channel for channel in self.data["channels"] if channel.get("id") == channel_id), None)
+        if not channel:
+            raise ValueError("Không tìm thấy kênh đã đăng ký.")
+        old = deepcopy(channel)
+        channel["authorization_status"] = "revoked"
+        channel["credential_ref"] = ""
+        self._save()
+        return old
+
+    def mark_checked(self, channel_id: str, name: str, thumbnail_url: str) -> None:
+        channel = next((c for c in self.data["channels"] if c.get("id") == channel_id and
+                        c.get("authorization_status") == "authorized"), None)
+        if not channel:
+            raise ValueError("Kênh chưa được OAuth authorization.")
+        channel.update(name=name, thumbnail_url=thumbnail_url,
+                       last_checked_at=datetime.now().astimezone().isoformat())
+        self._save()
 
     def add_verified_channel(self, channel_id: str, name: str) -> None:
+        """Legacy compatibility: a browser-era selection is never API-authorized."""
         if not CHANNEL_ID.fullmatch(channel_id) or not name.strip():
             raise ValueError("ID hoặc tên kênh không hợp lệ.")
         channels = [c for c in self.data["channels"] if c["id"] != channel_id]
         channels.append({"id": channel_id, "name": name.strip(),
-                         "verified_at": datetime.now().astimezone().isoformat()})
+                         "verified_at": datetime.now().astimezone().isoformat(),
+                         "authorization_status": "legacy_unverified", "credential_ref": "", "scopes": []})
         self.data["channels"] = channels
         self._save()
 
@@ -114,8 +162,9 @@ class PublisherStore:
         channel = meta["channel_id"]
         if not CHANNEL_ID.fullmatch(channel):
             raise ValueError("Chọn một kênh Studio đã xác minh.")
-        if channel not in {c["id"] for c in self.data["channels"]}:
-            raise ValueError("Kênh chưa được xác minh trong phiên Studio này.")
+        registration = next((c for c in self.authorized_channels() if c["id"] == channel), None)
+        if not registration:
+            raise ValueError("Kênh chưa được chủ sở hữu cấp OAuth authorization qua YouTube API.")
         if not meta["title"].strip() or len(meta["title"]) > 100:
             raise ValueError("Tiêu đề YouTube phải có 1–100 ký tự.")
         if meta["mode"] == "scheduled":
@@ -126,7 +175,8 @@ class PublisherStore:
         if prior:
             return deepcopy(prior)
         job = {"id": uuid4().hex, "fingerprint": key, "project_id": project_id,
-               "channel_id": channel, "source": deepcopy(identity), "metadata": meta,
+               "channel_id": channel, "credential_ref": registration["credential_ref"],
+               "source": deepcopy(identity), "metadata": meta,
                "status": "ready", "video_id": "", "video_url": "", "error": "",
                "last_confirmed_operation": "source_validated",
                "created_at": datetime.now().astimezone().isoformat()}
@@ -143,6 +193,11 @@ class PublisherStore:
         job = next((j for j in self.data["jobs"] if j["id"] == job_id), None)
         if job is None or job["status"] != "ready":
             raise ValueError("Tác vụ không còn sẵn sàng để tải lên.")
+        if job["metadata"].get("mode") != "immediate":
+            raise ValueError("Phase 4A-API chưa cho phép hẹn giờ hoặc đăng công khai.")
+        channel = next((c for c in self.authorized_channels() if c["id"] == job["channel_id"]), None)
+        if not channel or channel["credential_ref"] != job.get("credential_ref"):
+            raise ValueError("OAuth authorization của tác vụ đã đổi hoặc bị thu hồi; upload bị chặn.")
         lock_dir = self.root / "attempts"
         lock_dir.mkdir(parents=True, exist_ok=True)
         reservation = lock_dir / (job["fingerprint"] + ".lock")
