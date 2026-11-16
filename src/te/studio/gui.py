@@ -877,8 +877,11 @@ class StudioApp:
 
     def _apply_fields(self) -> None:
         state = self._require_state()
+        name = self.video_name.get().strip()
+        if not name:
+            raise ValueError("Tên video không được để trống.")
         self._capture_section()
-        state.project.name = self.video_name.get().strip()
+        state.project.name = name
         state.channel = self.channel.get() or None
         state.narration_mode = ("multi" if self.narration_mode.get() == "Nhiều giọng A/B/C/D"
                                 else "single")
@@ -939,11 +942,24 @@ class StudioApp:
         if self.state:
             self._refresh_key_rows()
 
+    def _confirm_project_navigation(self) -> bool:
+        if not self.state or self._save(auto=True):
+            return True
+        choice = messagebox.askyesnocancel("Thay đổi chưa lưu",
+            "Không lưu được dự án hiện tại. Chọn Có để thử lưu lại, Không để bỏ các thay đổi chưa lưu và tiếp tục, hoặc Hủy để ở lại dự án.",
+            parent=self.root)
+        if choice is None:
+            return False
+        return self._save() if choice else True
+
     def _new_project(self) -> None:
         name = simpledialog.askstring("Dự án mới", "Tên video:", parent=self.root)
         if name is None:
             return
-        if self.state and not self._save():
+        if not name.strip():
+            self._fail("Tên video không được để trống.")
+            return
+        if not self._confirm_project_navigation():
             return
         try:
             self._load_state(self.service.create_project(name, channel=self.channel.get() or None))
@@ -951,7 +967,7 @@ class StudioApp:
             self._fail(str(exc))
 
     def _open_project(self) -> None:
-        if self.state and not self._save():
+        if not self._confirm_project_navigation():
             return
         directory = filedialog.askdirectory(title="Chọn thư mục dự án TE", parent=self.root)
         if not directory:
