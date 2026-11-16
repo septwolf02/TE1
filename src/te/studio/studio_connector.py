@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 from urllib.parse import urlsplit
 
 from te.project.manager import _write_json
@@ -15,6 +16,7 @@ from .channel_probe import channel_id_from_url
 MAX_MESSAGE_BYTES = 1024 * 1024
 MAX_CHANNELS = 100
 STALE_SECONDS = 24 * 60 * 60
+HANDLE = re.compile(r"^@[\w.\-]{2,100}$", re.UNICODE)
 
 
 def _studio_url(value: object) -> bool:
@@ -140,6 +142,92 @@ class StudioConnectorStore:
             result["channels"].extend(item for item in old["channels"]
                 if item.get("id") and item.get("id") not in seen and
                 item.get("evidence") == "visible_studio_link")
+        _write_json(self.path, result)
+        return result
+
+    def save_catalog(self, message: object) -> dict:
+        """Merge a user-reviewed extension catalog without deleting older observations."""
+        if (not isinstance(message, dict) or message.get("type") != "catalog_sync" or
+                message.get("schema") != 1 or not isinstance(message.get("records"), list) or
+                len(message["records"]) > MAX_CHANNELS):
+            raise ValueError("Catalog Studio Connector không hợp lệ.")
+        now = datetime.now(timezone.utc).isoformat()
+        incoming = []
+        ids = set()
+        keys = set()
+        for raw in message["records"]:
+            if not isinstance(raw, dict) or set(raw) - {"key", "id", "handle", "discovered_name", "display_name",
+                    "name_source", "handle_source", "id_source", "status", "permission_status", "upload_status",
+                    "source_url", "evidence", "last_seen_at", "user_edited", "duplicate_name",
+                    "duplicate_handle"}:
+                raise ValueError("Bản ghi catalog có trường không được phép.")
+            channel_id = raw.get("id", "")
+            key = raw.get("key")
+            handle = raw.get("handle", "")
+            discovered = raw.get("discovered_name", "")
+            display = raw.get("display_name", "")
+            url = raw.get("source_url")
+            name_source = raw.get("name_source", "missing")
+            id_source = raw.get("id_source", "missing")
+            handle_source = raw.get("handle_source", "missing")
+            evidence = raw.get("evidence", "visible_switcher_item")
+            if (not isinstance(channel_id, str) or not isinstance(key, str) or not 1 <= len(key) <= 160 or
+                    key in keys or channel_id and channel_id in ids or
+                    not isinstance(handle, str) or handle and not HANDLE.fullmatch(handle) or
+                    any(not isinstance(value, str) or len(value) > 160 or any(ord(ch) < 32 for ch in value)
+                        for value in (discovered, display)) or not _studio_url(url) or
+                    (channel_id_from_url(url) or "") != channel_id or
+                    not isinstance(raw.get("user_edited"), bool) or
+                    raw.get("user_edited") and raw.get("name_source") != "user_edited" or
+                    name_source not in {"missing", "studio_switcher_dom", "studio_identity_dom", "user_edited"} or
+                    id_source not in {"missing", "studio_url", "studio_link", "studio_url_user_confirmed"} or
+                    handle_source not in {"missing", "studio_switcher_dom"} or
+                    not isinstance(evidence, str) or len(evidence) > 80 or
+                    evidence not in {"visible_switcher_item", "active_studio_url"} or
+                    raw.get("permission_status") != "permission_unverified" or
+                    raw.get("upload_status") != "upload_unverified"):
+                raise ValueError("Tên, ID, handle hoặc chứng cứ catalog không hợp lệ.")
+            if channel_id and not channel_id.startswith("UC"):
+                raise ValueError("Channel ID không hợp lệ.")
+            if not channel_id and not handle and not discovered:
+                raise ValueError("Ứng viên thiếu tên, handle và ID.")
+            keys.add(key)
+            if channel_id:
+                ids.add(channel_id)
+            name_source = "user_edited" if raw["user_edited"] else name_source
+            status = ("identity_user_confirmed" if channel_id and raw.get("id_source") == "studio_url_user_confirmed" else
+                      "identity_verified" if channel_id and discovered else
+                      "identity_user_named" if channel_id and display and raw["user_edited"] else
+                      "identity_incomplete" if channel_id else "discovered")
+            incoming.append({"key":key, "id":channel_id, "name":display, "display_name":display,
+                "discovered_name":discovered, "handle":handle, "name_source":name_source,
+                "handle_source":handle_source,
+                "id_source":id_source, "status":status,
+                "permission_status":"permission_unverified", "upload_status":"upload_unverified",
+                "source_url":url, "evidence":evidence,
+                "last_seen_at":now,
+                "user_edited":raw["user_edited"],
+                "duplicate_name":raw.get("duplicate_name") is True,
+                "duplicate_handle":raw.get("duplicate_handle") is True,
+                "connection_type":"studio_connector"})
+        previous = self.load()["channels"]
+        previous_by_id = {item["id"]: item for item in previous if item.get("id")}
+        for item in incoming:
+            old = previous_by_id.get(item["id"])
+            if old and old.get("name_source") == "user_edited" and not item["user_edited"]:
+                item.update(name=old["name"], display_name=old["name"],
+                            name_source="user_edited", user_edited=True)
+            elif old and old.get("name") and not item["name"]:
+                item.update(name=old["name"], display_name=old["name"],
+                            name_source=old.get("name_source", "missing"))
+                if item["status"] == "identity_incomplete":
+                    item["status"] = old.get("status", "identity_incomplete")
+        by_key = {item.get("key") or ("id:" + item["id"] if item.get("id") else "") for item in incoming}
+        incoming.extend(item for item in previous if
+            (item.get("key") or ("id:" + item["id"] if item.get("id") else "")) not in by_key and
+            (not item.get("id") or item["id"] not in ids))
+        result = {"schema":1, "channels":incoming, "scanned_at":now, "complete_channel_list":False,
+                  "catalog_synced_at":now}
         _write_json(self.path, result)
         return result
 

@@ -15,6 +15,11 @@ def handle(payload: bytes, config_path: Path) -> dict:
     if len(payload) > MAX_MESSAGE_BYTES:
         raise ValueError("Thông điệp quá lớn.")
     message = json.loads(payload.decode("utf-8"))
+    if isinstance(message, dict) and message.get("type") == "catalog_sync":
+        if set(message) != {"type", "schema", "records"}:
+            raise ValueError("Thông điệp catalog có trường không được phép.")
+        catalog = StudioConnectorStore(config_path).save_catalog(message)
+        return {"ok":True, "count":len(catalog["channels"]), "scanned_at":catalog["scanned_at"]}
     if not isinstance(message, dict) or set(message) - {
             "type", "schema", "page_url", "page_url_after", "channels", "switcher_open", "diagnostics",
             "manual_name"}:

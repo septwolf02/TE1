@@ -98,12 +98,82 @@ def test_native_host_rejects_extra_commands_and_oversized_payload(tmp_path):
     assert result["active_status"] == ""
 
 
+def catalog_record(channel, name, *, handle="@sample", edited=False):
+    return {"key":f"id:{channel}", "id":channel, "handle":handle,
+        "discovered_name":name, "display_name":"Edited " + name if edited else name,
+        "name_source":"user_edited" if edited else "studio_switcher_dom",
+        "handle_source":"studio_switcher_dom", "id_source":"studio_link",
+        "status":"identity_verified", "permission_status":"permission_unverified",
+        "upload_status":"upload_unverified", "source_url":page(channel),
+        "evidence":"visible_switcher_item", "last_seen_at":datetime.now(timezone.utc).isoformat(),
+        "user_edited":edited, "duplicate_name":False, "duplicate_handle":False}
+
+
+def test_bulk_catalog_sync_preserves_edits_old_channels_and_restart(tmp_path):
+    config = tmp_path / "settings.json"
+    store = StudioConnectorStore(config)
+    store.save_message(message(A))
+    first = {"type":"catalog_sync", "schema":1, "records":[
+        catalog_record(A, "Same", edited=True), catalog_record(B, "Same")]}
+    reply = handle(json.dumps(first, ensure_ascii=False).encode(), config)
+    assert reply["ok"] and reply["count"] == 2
+    records = {item["id"]:item for item in StudioConnectorStore(config).load()["channels"]}
+    assert records[A]["name"] == "Edited Same" and records[A]["name_source"] == "user_edited"
+    assert records[B]["name"] == "Same" and records[B]["status"] == "identity_verified"
+    assert all(item["upload_status"] == "upload_unverified" for item in records.values())
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[catalog_record(A, "Fresh DOM name")]})
+    records = {item["id"]:item for item in StudioConnectorStore(config).load()["channels"]}
+    assert set(records) == {A, B}
+    assert records[A]["name"] == "Edited Same" and records[A]["discovered_name"] == "Fresh DOM name"
+
+
+def test_bulk_catalog_rejects_forged_id_without_data_loss(tmp_path):
+    config = tmp_path / "settings.json"
+    store = StudioConnectorStore(config)
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[catalog_record(A, "A")]})
+    original = store.path.read_bytes()
+    bad = {**catalog_record(B, "Wrong"), "source_url":page(A)}
+    with pytest.raises(ValueError, match="catalog không hợp lệ"):
+        store.save_catalog({"type":"catalog_sync", "schema":1, "records":[bad]})
+    assert store.path.read_bytes() == original
+
+
+def test_unresolved_duplicate_names_remain_distinct_candidates(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    base = {**catalog_record(A, "Same"), "id":"", "source_url":"https://studio.youtube.com/",
+            "id_source":"missing", "status":"discovered", "handle":""}
+    records = [{**base, "key":"candidate:one"}, {**base, "key":"candidate:two"}]
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":records})
+    assert len(store.load()["channels"]) == 2
+    assert {item["key"] for item in store.load()["channels"]} == {"candidate:one", "candidate:two"}
+
+
+def test_bulk_sync_missing_name_keeps_previous_name(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    store.save_catalog({"type":"catalog_sync", "schema":1,
+                        "records":[catalog_record(A, "Known name")]})
+    nameless = {**catalog_record(A, ""), "name_source":"missing"}
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[nameless]})
+    record = store.load()["channels"][0]
+    assert record["name"] == "Known name"
+    assert record["status"] == "identity_verified"
+
+
+def test_bulk_sync_rejects_forged_source_labels(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    forged = {**catalog_record(A, "A"), "id_source":"oauth_verified"}
+    with pytest.raises(ValueError, match="catalog không hợp lệ"):
+        store.save_catalog({"type":"catalog_sync", "schema":1, "records":[forged]})
+
+
 def test_extension_scope_and_native_launcher_origin_guard():
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "studio_connector_extension" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["permissions"] == ["activeTab", "nativeMessaging"]
+    assert manifest["permissions"] == ["activeTab", "nativeMessaging", "sidePanel", "storage"]
+    assert manifest["side_panel"]["default_path"] == "sidepanel.html"
+    assert "default_popup" not in manifest["action"]
     assert manifest["content_scripts"][0]["matches"] == ["https://studio.youtube.com/*"]
-    assert "host_permissions" not in manifest
+    assert manifest["host_permissions"] == ["https://studio.youtube.com/*"]
     installer = (root / "scripts" / "install-studio-connector.ps1").read_text(encoding="utf-8")
     assert 'args[0] != "chrome-extension://$ExtensionId/"' in installer
     assert "allowed_origins" in installer
@@ -118,6 +188,13 @@ def test_popup_timeouts_progress_and_native_failures():
     if not shutil.which("node"):
         pytest.skip("Node.js is unavailable for the extension popup test")
     script = Path(__file__).resolve().with_name("studio_connector_popup.test.cjs")
+    subprocess.run(["node", str(script)], check=True, capture_output=True, text=True)
+
+
+def test_sidepanel_catalog_bulk_scan_persistence_and_recovery():
+    if not shutil.which("node"):
+        pytest.skip("Node.js is unavailable for the Side Panel test")
+    script = Path(__file__).resolve().with_name("studio_connector_sidepanel.test.cjs")
     subprocess.run(["node", str(script)], check=True, capture_output=True, text=True)
 
 

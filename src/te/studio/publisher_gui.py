@@ -123,7 +123,8 @@ class PublisherController:
             f"{c['name'] or '(chưa có tên)'} — {c['id'] or '(chưa có ID)'} — " +
             ("YouTube API: OAuth OK" if c.get("authorization_status") == "authorized" else
              "YouTube API: chưa ủy quyền" if c["connection_type"] == "youtube_api" else
-             "Studio Connector: " + c["status"])
+             "Studio Connector: " + c["status"] +
+             (" • tên sửa tay" if c.get("name_source") == "user_edited" else ""))
             for c in channels]
         self._refresh_upload_button()
 
@@ -143,7 +144,8 @@ class PublisherController:
         if 0 <= index < len(channels):
             selected = channels[index]
             if selected["connection_type"] == "studio_connector" and selected["status"] not in \
-                    {"identity_verified", "identity_user_named"}:
+                    {"identity_verified", "identity_user_named", "identity_user_confirmed"} or \
+                    selected["connection_type"] == "studio_connector" and not selected["name"]:
                 self.status.set("Kênh Studio chưa có ID được xác minh hoặc bản quét đã cũ; không thể chọn làm đích.")
                 return
             self.values["channel_id"].set(selected["id"])

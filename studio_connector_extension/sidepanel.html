@@ -1,0 +1,13 @@
+<!doctype html><html lang="vi"><meta charset="utf-8"><title>TE Studio Connector</title>
+<style>
+body{font:13px system-ui;margin:12px;min-width:330px}button{padding:6px;margin:3px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ddd;padding:4px;text-align:left;vertical-align:top}input{width:150px}small{color:#555}#status{white-space:pre-wrap}td code{font-size:11px;overflow-wrap:anywhere}
+</style><body>
+<h3>TE Studio Connector</h3>
+<p>Giữ Side Panel mở, mở menu chuyển kênh trong Studio, rồi bấm quét. Cuộn menu để ghi nhận mục tải thêm. Danh sách DOM có thể chưa đầy đủ.</p>
+<button id="start">Quét danh sách đang hiển thị (20 giây)</button><button id="stop">Dừng quét</button>
+<button id="save">Lưu tên và đồng bộ TE</button>
+<button id="verify">Xác nhận ID cho ứng viên đã chọn</button>
+<div id="status" role="status">Chưa quét.</div><small id="counts"></small>
+<table><thead><tr><th>Tên hiển thị (sửa được)</th><th>Handle</th><th>Channel ID / chứng cứ</th><th>Trạng thái</th></tr></thead><tbody id="rows"></tbody></table>
+<p><small>Tên sửa tay không xác minh ID hoặc quyền đăng. Kênh thiếu ID giữ là ứng viên. Upload qua Connector vẫn khóa.</small></p>
+<script src="catalog.js"></script><script src="sidepanel.js"></script></body></html>
