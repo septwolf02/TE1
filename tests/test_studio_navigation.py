@@ -1,6 +1,7 @@
 """Project navigation recovery without requiring a desktop display."""
 from pathlib import Path
 from types import SimpleNamespace
+from types import MethodType
 
 import pytest
 
@@ -145,6 +146,9 @@ def test_open_project_restores_saved_name_for_gui_loading(tmp_path):
             self.publisher = SimpleNamespace(load=lambda state: None)
             self.ai = SimpleNamespace(project_loaded=lambda: None)
             self._save_status = Var()
+            self.state = None
+            self._save_after = None
+            self._hydrate_state = MethodType(StudioApp._hydrate_state, self)
 
         def __getattr__(self, key):
             if key.startswith("_"):

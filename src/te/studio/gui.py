@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 from queue import Empty, Queue
+import re
 import subprocess
 from threading import Thread
+import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -34,6 +37,19 @@ MOTION_LABELS = {
 TRANSITION_LABELS = {"Cắt thẳng": "cut", "Mờ dần": "fade", "Chuyển mờ": "crossfade"}
 RENDER_ENCODER_LABELS = {"Tự động – ưu tiên GPU": "auto", "CPU libx264": "libx264",
                          "NVIDIA NVENC": "h264_nvenc"}
+
+
+def _write_project_open_diagnostic(config_path: Path, phase: str, error: Exception) -> Path:
+    """Keep a local traceback without copying credential values into the log."""
+    path = Path(config_path).parent / "diagnostics" / "project-open.log"
+    detail = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    detail = re.sub(r"(?i)\b(access_token|refresh_token|id_token|api_key|client_secret|password|authorization)\s*[:=]\s*[^\s,;]+",
+                    r"\1=[REDACTED]", detail)
+    detail = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", detail)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(f"\n[{datetime.now(timezone.utc).isoformat()}] {phase}\n{detail}\n")
+    return path
 
 
 class StudioApp:
@@ -795,12 +811,15 @@ class StudioApp:
         self._load_section()
 
     def _load_section(self) -> None:
+        was_loading = self._loading
         self._loading = True
-        content = self.state.sections[self.active_section.value] if self.state else {"ja": "", "vi": ""}
-        for widget, text in ((self.vn_text, content["vi"]), (self.jp_text, content["ja"])):
-            widget.delete("1.0", "end")
-            widget.insert("1.0", text)
-        self._loading = False
+        try:
+            content = self.state.sections[self.active_section.value] if self.state else {"ja": "", "vi": ""}
+            for widget, text in ((self.vn_text, content["vi"]), (self.jp_text, content["ja"])):
+                widget.delete("1.0", "end")
+                widget.insert("1.0", text)
+        finally:
+            self._loading = was_loading
         self._update_section_status()
 
     def _update_section_status(self) -> None:
@@ -815,57 +834,95 @@ class StudioApp:
             self.section_buttons[section].configure(text=f"{section.value} {'✓' if value['ja'].strip() else '–'}")
 
     def _load_state(self, state: StudioProject) -> None:
+        previous = self.state
+        if self._save_after:
+            self.root.after_cancel(self._save_after)
+            self._save_after = None
+        try:
+            self._hydrate_state(state)
+        except Exception:
+            if previous is not None:
+                try:
+                    self._hydrate_state(previous)
+                except Exception:
+                    self._clear_failed_load()
+            else:
+                self._clear_failed_load()
+            raise
+
+    def _clear_failed_load(self) -> None:
         self._loading = True
-        self.state = state
-        self.publisher.load(state)
-        self.active_section = SectionName.P1
-        self.video_name.set(state.project.name)
-        self.channel.set(state.channel or "")
-        self.media_path.set(state.project.media_library_path or "Chưa chọn")
-        self.media_count.set(self.service.media_folder_status(state))
-        self.min_duration.set(str(state.image_min_seconds))
-        self.max_duration.set(str(state.image_max_seconds))
-        self.headline_duration.set(str(int(state.headline_duration_seconds)))
-        settings = state.project.tts_settings
-        self.voice.set(settings.voice_id)
-        self.narration_mode.set("Nhiều giọng A/B/C/D" if state.narration_mode == "multi" else "Một giọng")
-        self.style.set(settings.style or "")
-        self.speed.set(str(settings.speaking_rate))
-        self.pitch.set(str(settings.pitch))
-        self.intonation.set(str(settings.intonation))
-        self.volume.set(str(settings.volume))
-        self.subtitle_font.set(state.project.subtitle_style.get("font", "bold_japanese"))
-        self.subtitle_color.set(state.project.subtitle_style.get("text_color", "#FFFFFF"))
-        self.subtitle_chars.set(str(state.project.subtitle_style.get("max_chars_per_line", 24)))
-        self.subtitle_size.set(str(state.subtitle_size))
-        style = state.project.subtitle_style
-        self.subtitle_background_enabled.set(style.get("background_enabled", True))
-        self.subtitle_background_opacity.set(style.get("background_opacity", 47))
-        self.headline_background_opacity.set(style.get("headline_background_opacity", 70))
-        self.subtitle_lines.set(str(state.project.subtitle_style.get("max_lines", 2)) + " (cố định)")
-        self.subtitle_position.set(state.project.subtitle_style.get("position", "bottom_center"))
-        self.font_path.set(state.font_path or "")
-        self.motion.set(next((label for label, value in MOTION_LABELS.items()
-                              if value == state.motion_preset), next(iter(MOTION_LABELS))))
-        self.transition.set(next((label for label, value in TRANSITION_LABELS.items()
-                                  if value == state.transition), next(iter(TRANSITION_LABELS))))
-        for section in SECTIONS:
-            path = self.service.intro_path(state, section)
-            self.intro_paths[section].set(("Thiếu file: " if path and not Path(path).is_file() else "") +
-                                          (path or "Chưa chọn"))
-            self.intro_enabled[section].set(state.intro_preferences.get(section.value, True))
-        self._loading = False
-        self._load_section()
-        self._script_dirty = False
-        self._images.clear()
-        self._loaded_voice_fields = (settings.voice_id, settings.style or "", settings.speaking_rate,
-                                     settings.pitch, settings.intonation, settings.volume)
-        self._refresh_key_rows()
-        self._refresh_gallery()
-        self._refresh_summary()
-        self._refresh_performance_summary()
-        self.ai.project_loaded()
-        self._save_status.set(state.recovery_warning or f"Đã mở: {state.directory}")
+        try:
+            self.state = None
+            self.video_name.set("")
+            self.channel.set("")
+            self.media_path.set("")
+            for widget in (self.vn_text, self.jp_text):
+                widget.delete("1.0", "end")
+            self._refresh_key_rows()
+            self._refresh_gallery()
+            self.summary.set("Tạo hoặc mở dự án để bắt đầu.")
+            self.key_summary.set("0 ảnh KEY")
+            self.ordinary_summary.set("Chưa chọn ảnh thường")
+            self.intro_summary.set("P1 — | P2 — | P3 — | P4 —")
+        finally:
+            self._loading = False
+        self._save_status.set("Chưa mở dự án")
+
+    def _hydrate_state(self, state: StudioProject) -> None:
+        self._loading = True
+        try:
+            self.publisher.load(state)
+            self.state = state
+            self.active_section = SectionName.P1
+            self.video_name.set(state.project.name)
+            self.channel.set(state.channel or "")
+            self.media_path.set(state.project.media_library_path or "Chưa chọn")
+            self.media_count.set(self.service.media_folder_status(state))
+            self.min_duration.set(str(state.image_min_seconds))
+            self.max_duration.set(str(state.image_max_seconds))
+            self.headline_duration.set(str(int(state.headline_duration_seconds)))
+            settings = state.project.tts_settings
+            self.voice.set(settings.voice_id)
+            self.narration_mode.set("Nhiều giọng A/B/C/D" if state.narration_mode == "multi" else "Một giọng")
+            self.style.set(settings.style or "")
+            self.speed.set(str(settings.speaking_rate))
+            self.pitch.set(str(settings.pitch))
+            self.intonation.set(str(settings.intonation))
+            self.volume.set(str(settings.volume))
+            self.subtitle_font.set(state.project.subtitle_style.get("font", "bold_japanese"))
+            self.subtitle_color.set(state.project.subtitle_style.get("text_color", "#FFFFFF"))
+            self.subtitle_chars.set(str(state.project.subtitle_style.get("max_chars_per_line", 24)))
+            self.subtitle_size.set(str(state.subtitle_size))
+            style = state.project.subtitle_style
+            self.subtitle_background_enabled.set(style.get("background_enabled", True))
+            self.subtitle_background_opacity.set(style.get("background_opacity", 47))
+            self.headline_background_opacity.set(style.get("headline_background_opacity", 70))
+            self.subtitle_lines.set(str(state.project.subtitle_style.get("max_lines", 2)) + " (cố định)")
+            self.subtitle_position.set(state.project.subtitle_style.get("position", "bottom_center"))
+            self.font_path.set(state.font_path or "")
+            self.motion.set(next((label for label, value in MOTION_LABELS.items()
+                                  if value == state.motion_preset), next(iter(MOTION_LABELS))))
+            self.transition.set(next((label for label, value in TRANSITION_LABELS.items()
+                                      if value == state.transition), next(iter(TRANSITION_LABELS))))
+            for section in SECTIONS:
+                path = self.service.intro_path(state, section)
+                self.intro_paths[section].set(("Thiếu file: " if path and not Path(path).is_file() else "") +
+                                              (path or "Chưa chọn"))
+                self.intro_enabled[section].set(state.intro_preferences.get(section.value, True))
+            self._load_section()
+            self._script_dirty = False
+            self._images.clear()
+            self._loaded_voice_fields = (settings.voice_id, settings.style or "", settings.speaking_rate,
+                                         settings.pitch, settings.intonation, settings.volume)
+            self._refresh_key_rows()
+            self._refresh_gallery()
+            self._refresh_summary()
+            self._refresh_performance_summary()
+            self.ai.project_loaded()
+            self._save_status.set(state.recovery_warning or f"Đã mở: {state.directory}")
+        finally:
+            self._loading = False
 
     def _dirty(self) -> None:
         if self._loading or not self.state:
@@ -973,9 +1030,22 @@ class StudioApp:
         if not directory:
             return
         try:
-            self._load_state(self.service.open_project(Path(directory)))
+            state = self.service.open_project(Path(directory))
         except Exception as exc:
-            self._fail(str(exc))
+            self._project_open_failed("Đọc tệp dự án", exc)
+            return
+        try:
+            self._load_state(state)
+        except Exception as exc:
+            self._project_open_failed("Nạp giao diện dự án", exc)
+
+    def _project_open_failed(self, phase: str, error: Exception) -> None:
+        try:
+            path = _write_project_open_diagnostic(self.service.config_path, phase, error)
+            detail = f"\nNhật ký chẩn đoán: {path}"
+        except OSError:
+            detail = "\nKhông ghi được nhật ký chẩn đoán; kiểm tra quyền ghi cấu hình TE Studio."
+        self._fail(f"{phase} không thành công. Dự án gốc không bị ghi đè.{detail}")
 
     def _rename_project(self) -> None:
         if not self.state:

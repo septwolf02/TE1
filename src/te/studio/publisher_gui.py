@@ -141,7 +141,10 @@ class PublisherController:
         self.description.insert("1.0", meta["description"])
         self.refresh_channels()
         selected = next((c for c in self.channel_records if c["id"] == meta["channel_id"]), None)
-        self.channel_combo.current(self.channel_records.index(selected) if selected else -1)
+        if selected:
+            self.channel_combo.current(self.channel_records.index(selected))
+        else:
+            self.channel_combo.set("")
         self.channel_name.set(selected["name"] if selected else "")
         self.oauth_status.set("API authorization: " + (selected["authorization_status"] if selected else "chưa kết nối"))
         self._refresh_upload_button()
