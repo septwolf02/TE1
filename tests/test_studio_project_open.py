@@ -150,6 +150,23 @@ def test_studio_connector_selection_stays_separate_from_api_credentials(tmp_path
     assert controller.values["channel_id"].get() == CHANNEL
 
 
+def test_user_named_studio_channel_can_be_selected_without_api_upload(tmp_path):
+    repo = service(tmp_path)
+    state = repo.create_project("Manual name")
+    controller = publisher_harness(repo, state)
+    url = f"https://studio.youtube.com/channel/{CHANNEL}/videos"
+    controller.studio_store.save_message({"type": "scan_results", "schema": 1,
+        "page_url": url, "page_url_after": url, "switcher_open": False,
+        "channels": [{"id": CHANNEL, "name": "", "source_url": url}],
+        "manual_name": "大谷翔平速報"})
+    controller.refresh_channels()
+    controller.channel_combo.current(0)
+    controller._select_channel()
+    assert controller.values["channel_id"].get() == CHANNEL
+    assert controller.values["connection_type"].get() == "studio_connector"
+    assert controller._selected_connection() is None
+
+
 def test_gui_hydration_failure_rolls_back_without_saving(tmp_path):
     repo = service(tmp_path)
     previous = repo.create_project("Previous")

@@ -55,13 +55,13 @@ public static class TEStudioNativeHost {
         try {
             var frameTask = Task.Run(() => {
                 var input = Console.OpenStandardInput();
-                var header = ReadExact(input, 4);
-                uint length = BitConverter.ToUInt32(header, 0);
+                var frameHeader = ReadExact(input, 4);
+                uint length = BitConverter.ToUInt32(frameHeader, 0);
                 if (length > 1048576) throw new InvalidDataException("oversize");
-                return new byte[][] { header, ReadExact(input, (int)length) };
+                return new byte[][] { frameHeader, ReadExact(input, (int)length) };
             });
             if (!frameTask.Wait(10000)) throw new TimeoutException();
-            var header = frameTask.Result[0];
+            var requestHeader = frameTask.Result[0];
             var payload = frameTask.Result[1];
             var start = new ProcessStartInfo();
             start.FileName = @"$escapedPython";
@@ -72,7 +72,7 @@ public static class TEStudioNativeHost {
             start.CreateNoWindow = true;
             using (var child = Process.Start(start)) {
                 if (child == null) throw new InvalidOperationException("python_start_failed");
-                child.StandardInput.BaseStream.Write(header, 0, 4);
+                child.StandardInput.BaseStream.Write(requestHeader, 0, 4);
                 child.StandardInput.BaseStream.Write(payload, 0, payload.Length);
                 child.StandardInput.BaseStream.Flush();
                 child.StandardInput.Close();

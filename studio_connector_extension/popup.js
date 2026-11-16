@@ -64,7 +64,7 @@ function sendToHost(chromeApi, payload, setStatus, timeoutMs = 15000) {
   });
 }
 
-async function runScan(chromeApi, setStatus, limits = {}) {
+async function runScan(chromeApi, setStatus, limits = {}, manualName = "") {
   setStatus("Đang đọc giao diện Studio…");
   const [tab] = await timed(chromeApi.tabs.query({active: true, currentWindow: true}),
     limits.tab || 3000, "Chrome không trả về tab đang mở trong 3 giây.");
@@ -80,6 +80,13 @@ async function runScan(chromeApi, setStatus, limits = {}) {
   }
   if (!result || result.error) throw new Error(result?.error || "Content script trả về dữ liệu rỗng; tải lại tab Studio.");
   if (result.page_url !== result.page_url_after) throw new Error("Kênh đã đổi trong lúc quét; mở lại menu rồi thử lại.");
+  if (manualName) {
+    const name = manualName.trim();
+    if (!name || name.length > 160 || /[\x00-\x1f]/.test(name)) throw new Error("Tên kênh nhập tay không hợp lệ.");
+    const active = result.channels?.find(item => item.id && item.source_url === result.page_url);
+    if (!active) throw new Error("URL Studio chưa xác nhận Channel ID của kênh đang mở.");
+    if (!active.name) result.manual_name = name;
+  }
   setStatus("Đang gửi dữ liệu đến Native Host…");
   const reply = await sendToHost(chromeApi, result, setStatus, limits.host || 15000);
   const details = diagnosticText(reply.diagnostics);
@@ -87,6 +94,10 @@ async function runScan(chromeApi, setStatus, limits = {}) {
     throw new Error("Native Host không trả về số lượng kênh hợp lệ. " + details);
   if (reply.verified_count === 0 && reply.id_count === 0)
     throw new Error("Không tìm thấy Channel ID hợp lệ trong lần quét này. " + details);
+  if (reply.user_named_count > 0) {
+    setStatus(`Đã lưu ID từ URL cùng tên nhập tay. Tên chưa được DOM xác minh; quyền upload chưa xác minh. ${details}\nMở TE → 7. Xuất bản YouTube → Quét kênh Studio để xem.`);
+    return reply;
+  }
   if (reply.verified_count === 0) {
     setStatus(`Đã lưu ID kênh nhưng thiếu tên hiển thị; danh tính chưa hoàn chỉnh. ${details}\nMở TE → 7. Xuất bản YouTube → Quét kênh Studio để xem.`);
     return reply;
@@ -95,17 +106,57 @@ async function runScan(chromeApi, setStatus, limits = {}) {
   return reply;
 }
 
+async function runDiagnostic(chromeApi) {
+  const [tab] = await timed(chromeApi.tabs.query({active: true, currentWindow: true}), 3000,
+    "Chrome không trả về tab đang mở.");
+  if (!tab?.url?.startsWith(STUDIO)) throw new Error("Mở tab studio.youtube.com trước.");
+  const result = await timed(chromeApi.tabs.sendMessage(tab.id, {type: "diagnose_channel_identity"}),
+    8000, "Content script không phản hồi; tải lại tab Studio và extension.");
+  if (!result || result.error || !Array.isArray(result.candidates))
+    throw new Error(result?.error || "Không đọc được các phần tử nhận diện kênh.");
+  return result;
+}
+
 if (typeof document !== "undefined") {
   const status = document.getElementById("status");
   const button = document.getElementById("scan");
-  button.addEventListener("click", async () => {
+  const manual = document.getElementById("manual");
+  const manualButton = document.getElementById("save-manual");
+  const manualName = document.getElementById("manual-name");
+  const diagnosticButton = document.getElementById("diagnose");
+  const candidates = document.getElementById("candidates");
+  async function scan(name = "") {
     button.disabled = true;
-    try { await runScan(chrome, value => { status.textContent = value; }); }
-    catch (error) {
+    manualButton.disabled = true;
+    try {
+      const reply = await runScan(chrome, value => { status.textContent = value; }, {}, name);
+      manual.hidden = reply.active_status !== "identity_incomplete";
+    } catch (error) {
       status.textContent = `Thất bại: ${error.message || error}`;
       console.error("TE Studio Connector scan failed");
-    } finally { button.disabled = false; }
+    } finally { button.disabled = false; manualButton.disabled = false; }
+  }
+  button.addEventListener("click", async () => {
+    await scan();
+  });
+  manualButton.addEventListener("click", async () => {
+    if (!manualName.value.trim()) {
+      status.textContent = "Thất bại: Nhập tên kênh đang mở trước khi lưu tên tay.";
+      return;
+    }
+    await scan(manualName.value);
+  });
+  diagnosticButton.addEventListener("click", async () => {
+    diagnosticButton.disabled = true;
+    candidates.textContent = "Đang đọc vùng nhận diện kênh…";
+    try {
+      const result = await runDiagnostic(chrome);
+      candidates.textContent = `ID URL: ${result.active_id_found ? "có" : "không"}; ${result.candidates.length} phần tử ứng viên.\n` +
+        result.candidates.map(item => JSON.stringify(item)).join("\n");
+    } catch (error) { candidates.textContent = `Chẩn đoán thất bại: ${error.message || error}`; }
+    finally { diagnosticButton.disabled = false; }
   });
 }
 
-if (typeof module !== "undefined") module.exports = {timed, nativeError, diagnosticText, sendToHost, runScan};
+if (typeof module !== "undefined") module.exports = {timed, nativeError, diagnosticText, sendToHost,
+  runScan, runDiagnostic};

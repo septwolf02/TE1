@@ -37,6 +37,12 @@ def validate_scan(message: object) -> dict:
     if message.get("page_url_after") != page_url:
         raise ValueError("Trang Studio đã đổi trong lúc quét; kết quả bị hủy.")
     active_id = channel_id_from_url(page_url)
+    manual_name = message.get("manual_name")
+    if manual_name is not None:
+        if (not active_id or not isinstance(manual_name, str) or not manual_name.strip() or
+                len(manual_name.strip()) > 160 or any(ord(char) < 32 for char in manual_name)):
+            raise ValueError("Tên nhập tay không hợp lệ hoặc URL Studio không có Channel ID.")
+        manual_name = manual_name.strip()
     raw_diagnostics = message.get("diagnostics")
     if raw_diagnostics is not None:
         if (not isinstance(raw_diagnostics, dict) or set(raw_diagnostics) !=
@@ -68,7 +74,7 @@ def validate_scan(message: object) -> dict:
                 previous = records[seen_ids[channel_id]]
                 if name and not previous["name"]:
                     previous.update(name=name, status="identity_verified", source_url=url,
-                                    evidence="visible_studio_link")
+                                    evidence="visible_studio_link", name_source="studio_switcher_dom")
                 continue
             seen_ids[channel_id] = len(records)
         else:
@@ -81,14 +87,24 @@ def validate_scan(message: object) -> dict:
                                   "identity_incomplete" if channel_id else "discovered",
                         "permission_status": "permission_unverified",
                         "source_url": url, "evidence": "visible_studio_link" if channel_id else "visible_switcher_name",
+                        "id_source": "studio_url" if channel_id and channel_id == active_id else
+                                     "studio_link" if channel_id else "missing",
+                        "name_source": "studio_identity_dom" if name and channel_id == active_id else
+                                       "studio_switcher_dom" if name else "missing",
                         "active": bool(channel_id and channel_id == active_id),
                         "connection_type": "studio_connector"})
+    if manual_name is not None:
+        active = next((item for item in records if item["id"] == active_id and item["active"]), None)
+        if active is None or active["name"]:
+            raise ValueError("Chỉ nhập tên tay khi ID đang mở đã xác nhận nhưng tên DOM còn thiếu.")
+        active.update(name=manual_name, status="identity_user_named", name_source="user_supplied")
     scanned_at = datetime.now(timezone.utc).isoformat()
     for record in records:
         record["last_seen_at"] = scanned_at
     diagnostics = {"active_id_found": bool(active_id),
                    "active_name_found": raw_diagnostics["active_name_found"] if raw_diagnostics else
-                                        any(item["active"] and item["name"] for item in records),
+                                        any(item["active"] and item["name"] and
+                                            item["name_source"] != "user_supplied" for item in records),
                    "switcher_detected": message.get("switcher_open") is True,
                    "switcher_entries": raw_diagnostics["switcher_entries"] if raw_diagnostics else 0,
                    "switcher_names": raw_diagnostics["switcher_names"] if raw_diagnostics else 0,
@@ -105,15 +121,20 @@ class StudioConnectorStore:
     def save_message(self, message: object) -> dict:
         result = validate_scan(message)
         result["latest_verified_count"] = sum(item["status"] == "identity_verified" for item in result["channels"])
+        result["latest_user_named_count"] = sum(item["status"] == "identity_user_named" for item in result["channels"])
         result["latest_id_count"] = sum(bool(item["id"]) for item in result["channels"])
+        result["latest_active_status"] = next((item["status"] for item in result["channels"] if item["active"]), "")
         if self.path.exists():
             old = self.load()
             seen = {item["id"] for item in result["channels"] if item["id"]}
             by_id = {item["id"]: index for index, item in enumerate(result["channels"]) if item["id"]}
             for item in old["channels"]:
                 index = by_id.get(item.get("id"))
-                if index is not None and result["channels"][index]["status"] == "identity_incomplete" and \
-                        item.get("name") and item.get("status") == "identity_verified":
+                if index is not None and result["channels"][index]["status"] in \
+                        {"identity_incomplete", "identity_user_named"} and item.get("name") and \
+                        (item.get("status") == "identity_verified" or
+                         item.get("status") == "identity_user_named" and
+                         result["channels"][index]["status"] == "identity_incomplete"):
                     # A later name-less view must not erase a previously observed name for the same URL ID.
                     result["channels"][index] = item
             result["channels"].extend(item for item in old["channels"]

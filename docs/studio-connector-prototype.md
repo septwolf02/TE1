@@ -6,6 +6,10 @@ Extension MV3 trong `studio_connector_extension/` chỉ chạy trên `https://st
 
 Khi URL kênh đang mở có ID `UC…` nhưng không tìm được tên ở thành phần nhận diện kênh trong sidebar/header, TE vẫn giữ ID với trạng thái `identity_incomplete`; kênh đó chưa chọn được làm đích. Popup hiển thị riêng: có/không ID đang mở, có/không tên ở sidebar/header, có/không menu chuyển kênh, số mục menu, số tên đọc được và số danh tính xác nhận. Các bộ chọn tên chỉ đi qua thành phần nhận diện kênh của sidebar/header (kể cả shadow root), không lấy văn bản tùy ý từ trang.
 
+Nếu tên vẫn thiếu, bấm **Chẩn đoán tên kênh** trong popup. Chế độ này chỉ hiển thị tối đa 24 phần tử ứng viên ở vùng nhận diện kênh phía trên sidebar/header: tag, ID, class, thuộc tính accessibility và mẫu văn bản ngắn của phần tử tên. Nó không gửi các ứng viên đến Native Host, không ghi log, không đọc nội dung video hay ô nhập; email trong mẫu bị che. Hãy đối chiếu ứng viên với tên nhìn thấy trước khi báo lại selector cần sửa. DOM thật của tài khoản Windows chưa được Codex kiểm tra.
+
+Nếu URL đã có ID nhưng tên DOM vẫn thiếu, nhập tên hiển thị vào ô **Tên kênh đang mở (nhập tay)** và bấm **Lưu tên nhập tay**. Popup quét lại trang ngay lúc lưu; Native Host chỉ gắn tên với ID của URL kênh đang mở. TE lưu `id_source=studio_url`, `name_source=user_supplied`, `status=identity_user_named`; đây **không phải tên được DOM xác minh** và cũng không chứng minh quyền upload. Tên nhập tay có thể dùng để chọn đích dự kiến trong TE, nhưng upload vẫn bị khóa. Nếu về sau DOM xác nhận tên của cùng ID, bản ghi được nâng lên `identity_verified`.
+
 Chrome Native Messaging gửi một thông điệp đến host `com.testudio.studio_connector`. Manifest host chỉ cho phép **ID extension đã cài**; launcher cũng kiểm tra origin argument Chrome truyền vào. Host Python chỉ nhận thông điệp `scan_results` giới hạn 1 MiB, xác thực schema/URL/ID và ghi bản quét tại `%LOCALAPPDATA%\TEStudio\studio-connector\scan.json`. Không có HTTP listener, lệnh tùy ý, quyền đọc file tùy ý hay truyền credential OAuth. Bản quét là quan sát DOM từ trình duyệt, **không phải xác nhận quyền đăng video**. TE hiển thị loại kết nối `Studio Connector` riêng với `YouTube API`. Bản ghi có ID và tên được phép chọn làm đích trong project, nhưng nút upload vẫn bị khóa cho kết nối đó. Bản ghi quá 24 giờ được hiển thị `unavailable` cho đến khi quét lại. Lần quét sau giữ ID đã từng xác nhận cùng thời điểm quan sát cũ để hỗ trợ người dùng chọn lần lượt từng kênh; không ngầm coi danh sách là đầy đủ.
 
 Thiết kế bridge theo [Chrome Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) và [Content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts). Chrome kiểm tra `allowed_origins`; một tiến trình khác chạy cùng tài khoản Windows vẫn có thể sửa dữ liệu máy cục bộ, nên bản quét không phải bằng chứng mật mã về danh tính hay quyền kênh.
@@ -19,6 +23,8 @@ Nếu báo **Content script chưa có**, trong `chrome://extensions` bấm **Rel
 **Chưa có test thực tế trên Windows/YouTube Studio.** DOM của Studio có thể thay đổi. Menu có thể chỉ lộ tên mà không lộ URL/ID, và có thể không liệt kê mọi kênh được ủy quyền. Trong trường hợp đó, người dùng cần chuyển từng kênh thủ công, mở trang Studio của kênh đó và quét lại. Nếu ID vẫn không xuất hiện trong URL hoặc DOM, extension sẽ không xác nhận danh tính. Editor/Manager/Owner và khả năng upload đều chưa được xác minh bởi prototype này.
 
 Để tích lũy nhiều kênh: mở kênh A trong Studio → quét → chuyển thủ công sang kênh B → quét tiếp → vào TE bấm **Quét kênh Studio** để tải danh sách. TE ghép theo ID từ URL, giữ A khi quét B và không dùng tên cũ để gán cho ID khác. Bản quét mới thiếu tên của cùng ID cũng không xóa tên đã từng quan sát được; thời điểm quan sát cũ vẫn được giữ.
+
+Popup extension có thể làm menu chuyển kênh mất focus và đóng khi được mở. Hành vi này **chưa được xác minh trực tiếp trên Chrome Windows**; quy trình hoạt động dựa trên URL và vùng nhận diện của kênh đang mở, không phụ thuộc menu còn mở. Để đăng ký từng kênh được ủy quyền, hãy chuyển kênh trong Studio trước rồi bấm quét.
 
 ## Cài đặt trên Windows
 
@@ -42,7 +48,9 @@ cd D:\TE-Git
 
 **Sau khi cập nhật từ commit `0981fb5`: đóng Chrome, chạy lại installer với Extension ID hiện tại, mở lại Chrome, bấm Reload cho extension tại `chrome://extensions`, rồi tải lại tab YouTube Studio.** Cần cài lại vì launcher `.exe` đã thay đổi; chỉ `git pull` không cập nhật bản launcher đã biên dịch trong `%LOCALAPPDATA%`.
 
-Sau bản sửa nhận diện tên kênh này, cần **Reload extension** và tải lại tab Studio để content script mới chạy. Không cần chạy lại installer nếu Native Host từ bản trước đang hoạt động và Extension ID không đổi; Python host được cập nhật qua `pip install -e '.[gui]'` và `git pull`. Nếu popup báo host thiếu hoặc Extension ID đổi, chạy lại lệnh installer ở trên.
+Sau bản sửa nhận diện tên kênh này, cần **Reload extension** và tải lại tab Studio để content script mới chạy. Python host được cập nhật qua `pip install -e '.[gui]'` và `git pull`.
+
+**Bản sửa lỗi biên dịch C# `header` trong installer:** Sau lần cập nhật chứa bản sửa này, hãy đóng Chrome và chạy lại `install-studio-connector.ps1` với Extension ID hiện tại để thay launcher `.exe` cũ. Sau đó mở Chrome, bấm **Reload** cho extension và tải lại tab Studio. Không cần gỡ extension hoặc xóa các kênh đã quét.
 
 Nếu PowerShell chặn script theo chính sách máy, chạy phiên PowerShell dành riêng cho bước cài với chính sách do quản trị viên cho phép. Script ghi manifest/exe vào `%LOCALAPPDATA%\TEStudio\studio-connector` và đăng ký tại `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.testudio.studio_connector`; không sửa Chrome profile cá nhân. Native host dùng `.venv\Scripts\python.exe` của bản TE hiện tại.
 

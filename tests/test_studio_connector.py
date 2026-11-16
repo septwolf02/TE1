@@ -51,6 +51,26 @@ def test_valid_active_url_without_name_keeps_identity_incomplete():
     assert scan["diagnostics"]["active_name_found"] is False
 
 
+def test_manual_name_is_bound_only_to_url_confirmed_active_id(tmp_path):
+    raw = message(entries=[{"id": A, "name": "", "source_url": page(A)}])
+    incomplete_reply = handle(json.dumps(raw).encode(), tmp_path / "settings.json")
+    assert incomplete_reply["active_status"] == "identity_incomplete"
+    result = validate_scan({**raw, "manual_name": "大谷翔平速報"})
+    record = result["channels"][0]
+    assert record["id"] == A and record["name"] == "大谷翔平速報"
+    assert record["status"] == "identity_user_named"
+    assert record["id_source"] == "studio_url" and record["name_source"] == "user_supplied"
+    assert result["diagnostics"]["active_name_found"] is False
+    with pytest.raises(ValueError, match="Chỉ nhập tên tay"):
+        validate_scan({**message(), "manual_name": "Unrelated"})
+    with pytest.raises(ValueError, match="URL Studio"):
+        no_id = {**raw, "page_url": "https://studio.youtube.com/", "page_url_after": "https://studio.youtube.com/"}
+        validate_scan({**no_id, "manual_name": "Unrelated"})
+    with pytest.raises(ValueError, match="Chỉ nhập tên tay"):
+        validate_scan({**message(A, [{"id": B, "name": "", "source_url": page(B)}]),
+                       "manual_name": "Wrong channel"})
+
+
 @pytest.mark.parametrize("change", [
     {"page_url_after": page(B)}, {"page_url": "https://evil.test/channel/" + A},
     {"channels": [{"id": B, "name": "Wrong", "source_url": page(A)}]},
@@ -75,6 +95,7 @@ def test_native_host_rejects_extra_commands_and_oversized_payload(tmp_path):
     unresolved = message(entries=[{"id": "", "name": "Only a name", "source_url": "https://studio.youtube.com/"}])
     result = handle(json.dumps(unresolved).encode(), config)
     assert result["ok"] and result["count"] == 2 and result["verified_count"] == 0
+    assert result["active_status"] == ""
 
 
 def test_extension_scope_and_native_launcher_origin_guard():
@@ -88,6 +109,9 @@ def test_extension_scope_and_native_launcher_origin_guard():
     assert "allowed_origins" in installer
     assert "ReadExact(input, 4)" in installer
     assert "child.StandardInput.Close()" in installer
+    assert "var frameHeader = ReadExact(input, 4)" in installer
+    assert "var requestHeader = frameTask.Result[0]" in installer
+    assert "var header = frameTask.Result[0]" not in installer
 
 
 def test_popup_timeouts_progress_and_native_failures():
@@ -150,6 +174,23 @@ def test_scan_b_does_not_erase_verified_a_or_downgrade_its_name(tmp_path):
     assert records[B]["name"] == "Channel B" and records[B]["status"] == "identity_verified"
 
 
+def test_repeated_manual_active_scans_preserve_channels_and_source(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    def manual(channel, name):
+        return {**message(channel, [{"id": channel, "name": "", "source_url": page(channel)}]),
+                "manual_name": name}
+    store.save_message(manual(A, "大谷翔平速報"))
+    store.save_message(manual(B, "Delegated B"))
+    store.save_message(manual(A, "Updated A"))
+    records = {item["id"]: item for item in StudioConnectorStore(tmp_path / "settings.json").load()["channels"]}
+    assert set(records) == {A, B}
+    assert records[A]["name"] == "Updated A" and records[A]["name_source"] == "user_supplied"
+    assert records[B]["name"] == "Delegated B" and records[B]["status"] == "identity_user_named"
+    store.save_message(message(A, [{"id": A, "name": "DOM A", "source_url": page(A)}]))
+    records = {item["id"]: item for item in store.load()["channels"]}
+    assert records[A]["name"] == "DOM A" and records[A]["name_source"] == "studio_identity_dom"
+
+
 def test_project_destination_is_separate_from_api_authorization(tmp_path):
     from te.studio.service import StudioService
     repo = StudioService(tmp_path / "settings.json")
@@ -209,12 +250,41 @@ const doc = (withSidebar,withMenu=true) => ({querySelectorAll: selector => selec
 const missing = scanStudioDocument(doc(false,false),url(A));
 if (!missing.diagnostics.active_id_found || missing.diagnostics.active_name_found ||
     missing.channels[0].id !== A || missing.channels[0].name !== "") process.exit(1);
-const found = scanStudioDocument(doc(true),url(A));
-if (found.channels[0].name !== "Sidebar A" || found.diagnostics.switcher_entries !== 2 ||
-    found.diagnostics.switcher_names !== 2 || found.channels[2].id !== B) process.exit(2);
+const found = scanStudioDocument(doc(true,false),url(A));
+if (found.channels[0].name !== "Sidebar A" || found.diagnostics.switcher_entries !== 0 ||
+    found.diagnostics.switcher_detected || found.channels.length !== 1) process.exit(2);
 console.log(JSON.stringify({missing,found}));
 '''
     completed = subprocess.run(["node", "-e", fixture, str(extension)], capture_output=True, text=True, check=True)
     results = json.loads(completed.stdout)
     assert validate_scan(results["missing"])["channels"][0]["status"] == "identity_incomplete"
     assert validate_scan(results["found"])["channels"][0]["status"] == "identity_verified"
+
+
+def test_identity_diagnostic_is_scoped_to_sidebar_components():
+    if not shutil.which("node"):
+        pytest.skip("Node.js is unavailable for the diagnostic fixture")
+    extension = Path(__file__).resolve().parents[1] / "studio_connector_extension" / "content.js"
+    fixture = r'''
+const {identityCandidates, activeChannelName} = require(process.argv[1]);
+const A = "UC" + "a".repeat(22);
+const channel = {tagName:"YT-FORMATTED-STRING",id:"channel-name",className:"channel-name",
+  textContent:"大谷翔平速報",isContentEditable:false,getClientRects:()=>[1],
+  getBoundingClientRect:()=>({top:90,left:40}),
+  getAttribute:key=>key==="aria-label"?"owner@example.com":null};
+const outside = {...channel,textContent:"Private video metadata"};
+const shadow = {querySelectorAll:selector=>selector==="*"?[]:[channel]};
+const sidebar = {shadowRoot:shadow,querySelectorAll:()=>[]};
+const doc = {querySelectorAll:selector=>selector==="ytcp-app-sidebar"?[sidebar]:
+  selector==="article"?[outside]:[]};
+const result = identityCandidates(doc,`https://studio.youtube.com/channel/${A}/videos`);
+if (activeChannelName(doc)!=="大谷翔平速報" || result.candidates.length!==1 ||
+  result.candidates[0].text_sample!=="大谷翔平速報") process.exit(1);
+console.log(JSON.stringify(result));
+'''
+    completed = subprocess.run(["node", "-e", fixture, str(extension)], capture_output=True, text=True, check=True)
+    result = json.loads(completed.stdout)
+    assert result["active_id_found"] is True
+    assert result["candidates"][0]["id"] == "channel-name"
+    assert "Private video" not in completed.stdout
+    assert "owner@example.com" not in completed.stdout

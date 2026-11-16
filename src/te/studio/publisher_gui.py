@@ -112,8 +112,9 @@ class PublisherController:
             channels.extend(scan["channels"])
             if scan["scanned_at"]:
                 verified = sum(c["status"] == "identity_verified" for c in scan["channels"])
+                manual = sum(c["status"] == "identity_user_named" for c in scan["channels"])
                 self.studio_status.set(f"Studio Connector: {scan['scanned_at']} • {verified} ID có chứng cứ • "
-                                       f"{len(scan['channels'])} bản ghi • " +
+                                       f"{manual} tên nhập tay • {len(scan['channels'])} bản ghi • " +
                                        ("đã cũ" if scan.get("stale") else "quyền upload chưa xác minh"))
         except (OSError, ValueError, KeyError, TypeError):
             self.studio_status.set("Studio Connector: bản quét không đọc được; hãy quét lại trong extension.")
@@ -141,7 +142,8 @@ class PublisherController:
         channels = self.channel_records
         if 0 <= index < len(channels):
             selected = channels[index]
-            if selected["connection_type"] == "studio_connector" and selected["status"] != "identity_verified":
+            if selected["connection_type"] == "studio_connector" and selected["status"] not in \
+                    {"identity_verified", "identity_user_named"}:
                 self.status.set("Kênh Studio chưa có ID được xác minh hoặc bản quét đã cũ; không thể chọn làm đích.")
                 return
             self.values["channel_id"].set(selected["id"])
