@@ -16,11 +16,13 @@ def handle(payload: bytes, config_path: Path) -> dict:
         raise ValueError("Thông điệp quá lớn.")
     message = json.loads(payload.decode("utf-8"))
     if not isinstance(message, dict) or set(message) - {
-            "type", "schema", "page_url", "page_url_after", "channels", "switcher_open"}:
+            "type", "schema", "page_url", "page_url_after", "channels", "switcher_open", "diagnostics"}:
         raise ValueError("Thông điệp có trường không được phép.")
     scan = StudioConnectorStore(config_path).save_message(message)
     return {"ok": True, "count": len(scan["channels"]),
             "verified_count": scan["latest_verified_count"],
+            "id_count": scan["latest_id_count"],
+            "diagnostics": scan["diagnostics"],
             "scanned_at": scan["scanned_at"]}
 
 

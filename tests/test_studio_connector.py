@@ -42,6 +42,15 @@ def test_verified_ids_duplicate_names_and_unresolved_candidates():
     assert scan["complete_channel_list"] is False
 
 
+def test_valid_active_url_without_name_keeps_identity_incomplete():
+    scan = validate_scan(message(entries=[{"id": A, "name": "", "source_url": page(A)}]))
+    assert scan["active_channel_id"] == A
+    assert scan["channels"][0]["id"] == A
+    assert scan["channels"][0]["status"] == "identity_incomplete"
+    assert scan["diagnostics"]["active_id_found"] is True
+    assert scan["diagnostics"]["active_name_found"] is False
+
+
 @pytest.mark.parametrize("change", [
     {"page_url_after": page(B)}, {"page_url": "https://evil.test/channel/" + A},
     {"channels": [{"id": B, "name": "Wrong", "source_url": page(A)}]},
@@ -130,6 +139,17 @@ def test_persists_each_selected_channel_and_marks_old_observations_unavailable(t
     assert all(item["status"] == "unavailable" for item in stale["channels"])
 
 
+def test_scan_b_does_not_erase_verified_a_or_downgrade_its_name(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    store.save_message(message(A, [{"id": A, "name": "Channel A", "source_url": page(A)}]))
+    store.save_message(message(B, [{"id": B, "name": "Channel B", "source_url": page(B)}]))
+    store.save_message(message(A, [{"id": A, "name": "", "source_url": page(A)}]))
+    records = {item["id"]: item for item in StudioConnectorStore(tmp_path / "settings.json").load()["channels"]}
+    assert set(records) == {A, B}
+    assert records[A]["name"] == "Channel A" and records[A]["status"] == "identity_verified"
+    assert records[B]["name"] == "Channel B" and records[B]["status"] == "identity_verified"
+
+
 def test_project_destination_is_separate_from_api_authorization(tmp_path):
     from te.studio.service import StudioService
     repo = StudioService(tmp_path / "settings.json")
@@ -167,3 +187,34 @@ console.log(JSON.stringify(result));
     completed = subprocess.run(["node", "-e", fixture, str(extension)], capture_output=True, text=True, check=True)
     scan = validate_scan(json.loads(completed.stdout))
     assert {item["id"] for item in scan["channels"]} == {A, B}
+
+
+def test_content_script_sidebar_shadow_root_and_missing_name():
+    if not shutil.which("node"):
+        pytest.skip("Node.js is unavailable for the mocked Studio DOM fixture")
+    extension = Path(__file__).resolve().parents[1] / "studio_connector_extension" / "content.js"
+    fixture = r'''
+const {scanStudioDocument} = require(process.argv[1]);
+const A = "UC" + "a".repeat(22), B = "UC" + "b".repeat(22);
+const url = id => `https://studio.youtube.com/channel/${id}/videos`;
+const nameNode = {textContent:"Sidebar A",getClientRects:()=>[1],getAttribute:()=>null};
+const shadow = {querySelectorAll: selector => selector.includes("#channel-name") ? [nameNode] : []};
+const sidebar = {querySelectorAll:()=>[],shadowRoot:shadow};
+const entry = (name,id) => ({getClientRects:()=>[1],getAttribute:()=>null,querySelector:()=>null,
+  closest:()=>({href:url(id)}),textContent:name});
+const menu = {getClientRects:()=>[1],getAttribute:()=>null,
+  querySelectorAll:()=>[entry("Sidebar A",A),entry("Delegated B",B)]};
+const doc = (withSidebar,withMenu=true) => ({querySelectorAll: selector => selector.includes("ytcp-app-sidebar") ?
+  (withSidebar ? [sidebar] : []) : selector.includes("ytcp-account-switcher") ? (withMenu ? [menu] : []) : []});
+const missing = scanStudioDocument(doc(false,false),url(A));
+if (!missing.diagnostics.active_id_found || missing.diagnostics.active_name_found ||
+    missing.channels[0].id !== A || missing.channels[0].name !== "") process.exit(1);
+const found = scanStudioDocument(doc(true),url(A));
+if (found.channels[0].name !== "Sidebar A" || found.diagnostics.switcher_entries !== 2 ||
+    found.diagnostics.switcher_names !== 2 || found.channels[2].id !== B) process.exit(2);
+console.log(JSON.stringify({missing,found}));
+'''
+    completed = subprocess.run(["node", "-e", fixture, str(extension)], capture_output=True, text=True, check=True)
+    results = json.loads(completed.stdout)
+    assert validate_scan(results["missing"])["channels"][0]["status"] == "identity_incomplete"
+    assert validate_scan(results["found"])["channels"][0]["status"] == "identity_verified"

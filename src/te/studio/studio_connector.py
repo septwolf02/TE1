@@ -37,6 +37,17 @@ def validate_scan(message: object) -> dict:
     if message.get("page_url_after") != page_url:
         raise ValueError("Trang Studio đã đổi trong lúc quét; kết quả bị hủy.")
     active_id = channel_id_from_url(page_url)
+    raw_diagnostics = message.get("diagnostics")
+    if raw_diagnostics is not None:
+        if (not isinstance(raw_diagnostics, dict) or set(raw_diagnostics) !=
+                {"active_id_found", "active_name_found", "switcher_detected", "switcher_entries",
+                 "switcher_names", "verified_identities"} or
+                any(type(raw_diagnostics[key]) is not bool for key in
+                    ("active_id_found", "active_name_found", "switcher_detected")) or
+                any(type(raw_diagnostics[key]) is not int or not 0 <= raw_diagnostics[key] <= MAX_CHANNELS
+                    for key in ("switcher_entries", "switcher_names", "verified_identities")) or
+                raw_diagnostics["active_id_found"] != bool(active_id)):
+            raise ValueError("Chẩn đoán Studio Connector không hợp lệ.")
     records = []
     seen_ids: dict[str, int] = {}
     seen_names = set()
@@ -66,7 +77,8 @@ def validate_scan(message: object) -> dict:
                 continue
             seen_names.add(name)
         records.append({"id": channel_id or "", "name": name,
-                        "status": "identity_verified" if channel_id and name else "discovered",
+                        "status": "identity_verified" if channel_id and name else
+                                  "identity_incomplete" if channel_id else "discovered",
                         "permission_status": "permission_unverified",
                         "source_url": url, "evidence": "visible_studio_link" if channel_id else "visible_switcher_name",
                         "active": bool(channel_id and channel_id == active_id),
@@ -74,9 +86,16 @@ def validate_scan(message: object) -> dict:
     scanned_at = datetime.now(timezone.utc).isoformat()
     for record in records:
         record["last_seen_at"] = scanned_at
+    diagnostics = {"active_id_found": bool(active_id),
+                   "active_name_found": raw_diagnostics["active_name_found"] if raw_diagnostics else
+                                        any(item["active"] and item["name"] for item in records),
+                   "switcher_detected": message.get("switcher_open") is True,
+                   "switcher_entries": raw_diagnostics["switcher_entries"] if raw_diagnostics else 0,
+                   "switcher_names": raw_diagnostics["switcher_names"] if raw_diagnostics else 0,
+                   "verified_identities": sum(item["status"] == "identity_verified" for item in records)}
     return {"schema": 1, "page_url": page_url, "active_channel_id": active_id or "",
             "complete_channel_list": False, "switcher_open": message.get("switcher_open") is True,
-            "channels": records, "scanned_at": scanned_at}
+            "channels": records, "diagnostics": diagnostics, "scanned_at": scanned_at}
 
 
 class StudioConnectorStore:
@@ -86,9 +105,17 @@ class StudioConnectorStore:
     def save_message(self, message: object) -> dict:
         result = validate_scan(message)
         result["latest_verified_count"] = sum(item["status"] == "identity_verified" for item in result["channels"])
+        result["latest_id_count"] = sum(bool(item["id"]) for item in result["channels"])
         if self.path.exists():
             old = self.load()
             seen = {item["id"] for item in result["channels"] if item["id"]}
+            by_id = {item["id"]: index for index, item in enumerate(result["channels"]) if item["id"]}
+            for item in old["channels"]:
+                index = by_id.get(item.get("id"))
+                if index is not None and result["channels"][index]["status"] == "identity_incomplete" and \
+                        item.get("name") and item.get("status") == "identity_verified":
+                    # A later name-less view must not erase a previously observed name for the same URL ID.
+                    result["channels"][index] = item
             result["channels"].extend(item for item in old["channels"]
                 if item.get("id") and item.get("id") not in seen and
                 item.get("evidence") == "visible_studio_link")

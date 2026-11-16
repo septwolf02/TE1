@@ -21,6 +21,15 @@ function nativeError(message) {
   return "Native Host ngắt kết nối hoặc Python dừng lỗi. Kiểm tra diagnostics của Studio Connector và cài lại host nếu cần.";
 }
 
+function diagnosticText(diagnostics) {
+  const value = diagnostics || {};
+  return `ID kênh đang mở: ${value.active_id_found ? "có" : "không"}; ` +
+    `tên sidebar/header: ${value.active_name_found ? "có" : "không"}; ` +
+    `menu chuyển kênh: ${value.switcher_detected ? "có" : "không"}; ` +
+    `mục menu: ${value.switcher_entries ?? 0}; tên đọc được: ${value.switcher_names ?? 0}; ` +
+    `danh tính xác nhận: ${value.verified_identities ?? 0}.`;
+}
+
 function sendToHost(chromeApi, payload, setStatus, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     let port;
@@ -73,9 +82,16 @@ async function runScan(chromeApi, setStatus, limits = {}) {
   if (result.page_url !== result.page_url_after) throw new Error("Kênh đã đổi trong lúc quét; mở lại menu rồi thử lại.");
   setStatus("Đang gửi dữ liệu đến Native Host…");
   const reply = await sendToHost(chromeApi, result, setStatus, limits.host || 15000);
-  if (!Number.isInteger(reply.verified_count) || reply.verified_count === 0)
-    throw new Error("Không tìm thấy kênh có tên và ID xác nhận được. Mở trang của từng kênh, mở menu chuyển kênh rồi quét lại; bản ghi chỉ có tên vẫn được lưu.");
-  setStatus(`Hoàn tất: ${reply.verified_count} kênh có ID, ${reply.count} bản ghi. Mở TE → 7. Xuất bản YouTube → Quét kênh Studio để xem.`);
+  const details = diagnosticText(reply.diagnostics);
+  if (!Number.isInteger(reply.verified_count) || !Number.isInteger(reply.id_count))
+    throw new Error("Native Host không trả về số lượng kênh hợp lệ. " + details);
+  if (reply.verified_count === 0 && reply.id_count === 0)
+    throw new Error("Không tìm thấy Channel ID hợp lệ trong lần quét này. " + details);
+  if (reply.verified_count === 0) {
+    setStatus(`Đã lưu ID kênh nhưng thiếu tên hiển thị; danh tính chưa hoàn chỉnh. ${details}\nMở TE → 7. Xuất bản YouTube → Quét kênh Studio để xem.`);
+    return reply;
+  }
+  setStatus(`Hoàn tất: ${reply.verified_count} danh tính xác nhận trong lần quét, ${reply.count} bản ghi đã lưu. ${details}\nMở TE → 7. Xuất bản YouTube → Quét kênh Studio để xem.`);
   return reply;
 }
 
@@ -92,4 +108,4 @@ if (typeof document !== "undefined") {
   });
 }
 
-if (typeof module !== "undefined") module.exports = {timed, nativeError, sendToHost, runScan};
+if (typeof module !== "undefined") module.exports = {timed, nativeError, diagnosticText, sendToHost, runScan};
