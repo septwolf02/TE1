@@ -7,7 +7,9 @@ body{font:13px system-ui;margin:12px;min-width:330px}button{padding:6px;margin:3
 <button id="start">Quét danh sách đang hiển thị (20 giây)</button><button id="stop">Dừng quét</button>
 <button id="save">Lưu tên và đồng bộ TE</button>
 <button id="verify">Xác nhận ID cho ứng viên đã chọn</button>
+<button id="diagnose">Chẩn đoán menu kênh</button><button id="copyDiagnostic">Sao chép báo cáo đã lọc</button>
 <div id="status" role="status">Chưa quét.</div><small id="counts"></small>
+<pre id="diagnostic" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto"></pre>
 <table><thead><tr><th>Tên hiển thị (sửa được)</th><th>Handle</th><th>Channel ID / chứng cứ</th><th>Trạng thái</th></tr></thead><tbody id="rows"></tbody></table>
 <p><small>Tên sửa tay không xác minh ID hoặc quyền đăng. Kênh thiếu ID giữ là ứng viên. Upload qua Connector vẫn khóa.</small></p>
 <script src="catalog.js"></script><script src="sidepanel.js"></script></body></html>

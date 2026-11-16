@@ -10,6 +10,12 @@ Connector chỉ đọc vùng nhận diện kênh đang mở và các mục trong
 
 **Chưa kiểm tra DOM thật của YouTube Studio trên Windows.** Các bài kiểm thử DOM giả lập chỉ xác nhận thuật toán và luồng lưu/đồng bộ, không chứng minh Chrome thật hiển thị các thuộc tính mà selector cần. Không phát triển upload tự động trước khi người dùng kiểm tra việc quét nhiều kênh thật.
 
+## Chẩn đoán menu kênh trên Chrome thật
+
+Khi menu chuyển kênh đang mở, bấm **Chẩn đoán menu kênh** trong Side Panel và cuộn menu trong 3 giây. Báo cáo gồm cấu trúc của các menu/container ứng viên: tag, ID/class phù hợp dạng CSS, role, thuộc tính `aria-haspopup`/`aria-expanded`/`aria-modal`, ranh giới shadow root, số phần tử hàng nhìn thấy, dạng phần tử con, số liên kết và số liên kết có Channel ID hợp lệ. Báo cáo ghi kích thước/vị trí cuộn, số mutation và sự kiện cuộn; `possible` chỉ là dấu hiệu tải động, không phải kết luận chắc chắn về virtualization. Báo cáo không chứa tên kênh, email, nội dung trang, URL liên kết, token hay cookie. Nó chỉ được hiển thị trong Side Panel, không gửi cho Native Host hay máy chủ nào. Bấm **Sao chép báo cáo đã lọc**, kiểm tra nội dung, rồi gửi cho người phát triển.
+
+Các bộ đếm tách riêng mục menu đã quan sát trong lượt quét hiện tại, catalog tích lũy, ID có chứng cứ, ứng viên thiếu ID và số bản ghi ở TE sau lần đồng bộ gần nhất. Catalog tích lũy có thể chứa bản ghi từ lượt quét trước; không coi chúng là mục vừa được phát hiện. Chẩn đoán không thay đổi catalog. Nếu báo cáo không nhận diện được menu nào, thông tin cấu trúc đó là bằng chứng để sửa bộ chọn ở bước tiếp theo; hiện chưa thêm bộ chọn DOM mới theo suy đoán.
+
 ## Cập nhật trên Windows
 
 ```powershell
@@ -32,10 +38,11 @@ Installer có bản sửa C# đổi biến `header` bị trùng thành `frameHea
 ## Kiểm tra trên Chrome Windows
 
 1. Mở một tab Studio tại `/channel/UC…`, bấm biểu tượng extension để mở Side Panel.
-2. Bấm **Quét danh sách (20 giây)**, mở menu chuyển kênh rồi cuộn từ đầu tới cuối trong thời gian quét. Kiểm tra số bản ghi, tên, handle, ID và nguồn từng trường. Nếu menu đang mở trước khi mở Side Panel và tự đóng, mở lại menu sau khi panel đã xuất hiện.
-3. Sửa thử một tên, bấm **Lưu và đồng bộ TE**, đóng/mở Side Panel và quét lại: tên sửa phải còn. Đổi sang tab kênh khác và quét tiếp; bản ghi cũ phải còn.
-4. Mở TE Studio, vào **7. Xuất bản YouTube** → **Quét kênh Studio**; kiểm tra catalog. Khởi động lại Chrome và TE để kiểm tra dữ liệu còn nguyên. Không thử upload qua Connector.
-5. Nếu thiếu mục, ghi nhận số kênh thật trong menu, số mục bảng thu được và liệu cuộn menu có thêm mục hay không. Không gửi cookie, token hoặc dữ liệu đăng nhập.
+2. Khi Side Panel đã mở, mở menu chuyển kênh. Bấm **Chẩn đoán menu kênh**, cuộn menu trong 3 giây, rồi sao chép báo cáo đã lọc. Đây là kết quả cần gửi lại để xác định DOM thật. Nếu menu tự đóng lúc mở Side Panel, mở lại sau khi panel xuất hiện.
+3. Có thể bấm **Quét danh sách (20 giây)** và cuộn từ đầu tới cuối; ghi riêng số mục menu lượt này và số bản ghi catalog tích lũy. Kết quả quét hiện tại chưa được xem là bằng chứng bulk discovery hoạt động.
+4. Sửa thử một tên, bấm **Lưu và đồng bộ TE**, đóng/mở Side Panel và quét lại: tên sửa phải còn. Đổi sang tab kênh khác và quét tiếp; bản ghi cũ phải còn.
+5. Mở TE Studio, vào **7. Xuất bản YouTube** → **Quét kênh Studio**; kiểm tra catalog. Khởi động lại Chrome và TE để kiểm tra dữ liệu còn nguyên. Không thử upload qua Connector.
+6. Nếu thiếu mục, ghi nhận số kênh thật trong menu và số mục quét được. Không gửi cookie, token hoặc dữ liệu đăng nhập.
 
 Nếu báo content script không có, Reload extension rồi tải lại tab Studio. Nếu Native Host thiếu hoặc Extension ID không khớp, chạy lại installer với ID hiện tại. Nếu host lỗi, catalog vẫn được giữ trong Chrome và có thể đồng bộ lại. Log Native Host ở `%LOCALAPPDATA%\TEStudio\studio-connector\connector.log` chỉ ghi thời gian/chặng/lỗi, không ghi credential.
 

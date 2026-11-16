@@ -112,6 +112,75 @@ function switcherContainers(doc) {
   return containers;
 }
 
+// Structural report only: no text, labels, hrefs, or attribute values that may contain identities.
+function diagnoseChannelMenu(doc) {
+  const structure = node => ({
+    tag:String(node.tagName || "").toLowerCase(),
+    id:structuralToken(node.id),
+    classes:typeof node.className === "string" ? node.className.split(/\s+/)
+      .map(structuralToken).filter(Boolean).slice(0, 6) : [],
+    role:structuralToken(node.getAttribute?.("role")),
+    aria_haspopup:structuralToken(node.getAttribute?.("aria-haspopup")),
+    aria_expanded:structuralToken(node.getAttribute?.("aria-expanded")),
+    aria_modal:structuralToken(node.getAttribute?.("aria-modal"))
+  });
+  const roots = [doc], boundaries = [], seen = new Set();
+  for (let i = 0; i < roots.length && roots.length < 120; i++) {
+    const root = roots[i];
+    if (seen.has(root)) continue;
+    seen.add(root);
+    for (const node of root.querySelectorAll("*")) {
+      if (node.shadowRoot && roots.length < 120) {
+        roots.push(node.shadowRoot);
+        if (boundaries.length < 24 && /account|switcher|popup|dropdown|dialog|menu/i.test(
+          `${node.tagName} ${node.id} ${typeof node.className === "string" ? node.className : ""}`))
+          boundaries.push({host:structure(node), visible:visible(node)});
+      }
+    }
+  }
+  const candidates = [], candidateSet = new Set();
+  for (const root of roots) for (const node of root.querySelectorAll("*")) {
+    if (candidates.length >= 16) break;
+    if (!visible(node) || candidateSet.has(node)) continue;
+    const tag = String(node.tagName || "").toLowerCase();
+    const role = node.getAttribute?.("role") || "";
+    const structuralName = `${tag} ${node.id || ""} ${typeof node.className === "string" ? node.className : ""}`;
+    if (!/account|switcher|popup|dropdown|dialog|menu|listbox/i.test(structuralName) &&
+        !["dialog", "menu", "listbox"].includes(role)) continue;
+    if (["script", "style", "input", "textarea"].includes(tag)) continue;
+    candidateSet.add(node);
+    const inside = node.shadowRoot || node;
+    const descendants = [...inside.querySelectorAll("*")];
+    const links = descendants.filter(child => String(child.tagName).toLowerCase() === "a" && child.href);
+    const scrolls = [node, ...descendants].filter(child =>
+      visible(child) && child.scrollHeight > child.clientHeight + 20 && child.clientHeight > 20)
+      .slice(0, 5).map(child => ({element:structure(child),
+        client_height:Math.round(child.clientHeight), scroll_height:Math.round(child.scrollHeight),
+        scroll_top:Math.round(child.scrollTop)}));
+    const possibleRows = descendants.filter(child => visible(child) &&
+      (child.getAttribute?.("role") === "menuitem" || child.getAttribute?.("role") === "option" ||
+       /account|channel|item/i.test(String(child.tagName || ""))));
+    candidates.push({element:structure(node), shadow_root:!!node.shadowRoot,
+      visible_direct_children:[...inside.children || []].filter(visible).length,
+      direct_child_shapes:[...inside.children || []].filter(visible).slice(0, 10).map(structure),
+      visible_row_candidates:possibleRows.length,
+      row_shapes:possibleRows.slice(0, 12).map(structure),
+      visible_links:links.filter(visible).length,
+      visible_studio_channel_links:links.filter(link => visible(link) && studioId(link.href)).length,
+      scroll_containers:scrolls});
+  }
+  return {schema:1, scope:"visible menu/account structural metadata only",
+    active_url_has_channel_id:!!studioId(doc.location?.href || globalThis.location?.href || ""),
+    shadow_roots_seen:roots.length - 1, shadow_boundaries:boundaries,
+    candidate_count:candidates.length, candidates,
+    virtualization:"undetermined from one snapshot; scroll while running diagnostics"};
+}
+
+function structuralToken(value) {
+  // Only CSS-like identifiers; never copy arbitrary label, email, URL, or channel text.
+  return typeof value === "string" && /^[a-z][a-z0-9_-]{0,63}$/i.test(value) ? value : "";
+}
+
 function visibleSwitcherEntry(entry, index) {
   if (!visible(entry)) return null;
   const link = entry.closest?.("a[href]") || entry.querySelector("a[href]");
@@ -209,8 +278,25 @@ function startBulkScan(doc, pageUrl, emit, durationMs = 20000, Observer = global
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message, _sender, respond) => {
-    if (!["scan_visible_studio", "diagnose_channel_identity", "start_bulk_scan", "stop_bulk_scan"].includes(message?.type)) return;
+    if (!["scan_visible_studio", "diagnose_channel_identity", "diagnose_channel_menu",
+          "start_bulk_scan", "stop_bulk_scan"].includes(message?.type)) return;
     try {
+      if (message.type === "diagnose_channel_menu") {
+        const first = diagnoseChannelMenu(document);
+        let mutations = 0, scrolls = 0;
+        const observer = new MutationObserver(records => { mutations += records.length; });
+        observer.observe(document, {subtree:true, childList:true});
+        const onScroll = () => { scrolls++; };
+        document.addEventListener("scroll", onScroll, true);
+        setTimeout(() => {
+          observer.disconnect(); document.removeEventListener("scroll", onScroll, true);
+          const last = diagnoseChannelMenu(document);
+          respond({first, last, dynamics:{mutations:Math.min(mutations, 9999),
+            scroll_events:Math.min(scrolls, 9999),
+            lazy_or_virtualized_evidence:scrolls > 0 && mutations > 0 ? "possible" : "not_observed"}});
+        }, 3000);
+        return true;
+      }
       if (message.type === "start_bulk_scan") {
         respond(startBulkScan(document, () => location.href,
           update => { chrome.runtime.sendMessage(update).catch(() => {}); }, message.duration_ms));
@@ -230,4 +316,4 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
 }
 
 if (typeof module !== "undefined") module.exports = {studioId, activeChannelName, identityCandidates,
-  visibleSwitcherEntry, scanStudioDocument, startBulkScan, stopBulkScan};
+  visibleSwitcherEntry, scanStudioDocument, diagnoseChannelMenu, startBulkScan, stopBulkScan};

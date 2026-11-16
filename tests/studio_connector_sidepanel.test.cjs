@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const {mergeCatalog, editName, markDuplicates} = require("../studio_connector_extension/catalog.js");
 Object.assign(globalThis,{mergeCatalog,editName,markDuplicates});
-const {startBulkScan, stopBulkScan} = require("../studio_connector_extension/content.js");
+const {startBulkScan, stopBulkScan, diagnoseChannelMenu} = require("../studio_connector_extension/content.js");
 const {createPanel, withTimeout} = require("../studio_connector_extension/sidepanel.js");
 
 const A = "UC" + "a".repeat(22), B = "UC" + "b".repeat(22);
@@ -34,6 +34,25 @@ function fakeElement(tag="div") {
   assert.equal(rows.filter(row=>!row.id).length,1);
   rows = mergeCatalog(rows,[{...unresolved,name:"Other",handle:""}]);
   assert.equal(rows.filter(row=>!row.id).length,2);
+  const noHandle={...unresolved,handle:""};
+  rows=mergeCatalog(rows,[noHandle,noHandle],()=>`new${Math.random()}`);
+  const candidateCount=rows.filter(row=>!row.id).length;
+  rows=mergeCatalog(rows,[noHandle,noHandle],()=>`new${Math.random()}`);
+  assert.equal(rows.filter(row=>!row.id).length,candidateCount);
+  assert.equal(rows.find(row=>row.id===A).display_name,"Edited A");
+
+  const row={tagName:"YTCP-ACCOUNT-ITEM",id:"",className:"account-row",textContent:"secret@example.com",
+    getClientRects:()=>[1],getAttribute:key=>key==="aria-label"?"private@example.com":null,
+    querySelectorAll:()=>[],children:[],clientHeight:40,scrollHeight:40,scrollTop:0};
+  const diagnosticMenu={tagName:"YTCP-ACCOUNT-SWITCHER",id:"account-menu",className:"switcher",
+    getClientRects:()=>[1],getAttribute:key=>key==="role"?"menu":null,
+    querySelectorAll:()=>[row],children:[row],clientHeight:100,scrollHeight:300,scrollTop:0};
+  const diagnosticDoc={location:{href:url(A)},querySelectorAll:()=>[diagnosticMenu,row]};
+  const diagnostic=diagnoseChannelMenu(diagnosticDoc);
+  assert(diagnostic.candidates.some(item=>item.element.tag==="ytcp-account-switcher"));
+  assert(diagnostic.candidates.some(item=>item.visible_row_candidates===1));
+  assert(!JSON.stringify(diagnostic).includes("secret@example.com"));
+  assert(!JSON.stringify(diagnostic).includes("private@example.com"));
 
   const events=[];
   let items=[], open=false;
@@ -65,11 +84,17 @@ function fakeElement(tag="div") {
       return {onMessage,onDisconnect,postMessage(payload){
         setTimeout(()=>failHost?onDisconnect.emit():onMessage.emit({ok:true,count:payload.records.length}),0);
       },disconnect(){}};}},
-    tabs:{async query(){return [{id:1,url:url(A)}]},async sendMessage(){return {session:"s",channels:[observation(A,"A")]}}}};
+    tabs:{async query(){return [{id:1,url:url(A)}]},async sendMessage(id,message){
+      return message.type==="diagnose_channel_menu" ? {first:diagnostic,last:diagnostic,dynamics:{}} :
+        {session:"s",channels:[observation(A,"A")]};}}};
   const ui=()=>({status:fakeElement(),counts:fakeElement(),rows:fakeElement()});
   const firstUi=ui();
   const first=await createPanel(chromeMock,firstUi,{duration:1000,hostTimeout:50});
   first.merge([observation(A,"A")]);
+  assert.match(firstUi.counts.textContent,/Mục menu lượt quét này: 0/);
+  await first.start();
+  assert.match(firstUi.counts.textContent,/Mục menu lượt quét này: 1/);
+  assert.match(firstUi.counts.textContent,/Catalog tích lũy: 1/);
   const nameInput=firstUi.rows.children[0].children[0].children[0];
   nameInput.value="Edited in panel"; nameInput.fire("change");
   await first.save();
@@ -78,6 +103,9 @@ function fakeElement(tag="div") {
   const reopened=await createPanel(chromeMock,ui(),{duration:1000,hostTimeout:50});
   assert.equal(reopened.getRows().length,1);
   assert.equal(reopened.getRows()[0].display_name,"Edited in panel");
+  const beforeDiagnostic=JSON.stringify(state.studioCatalog);
+  await reopened.diagnose();
+  assert.equal(JSON.stringify(state.studioCatalog),beforeDiagnostic);
   reopened.merge([observation(A,"Changed DOM")]);
   assert.equal(reopened.getRows()[0].display_name,"Edited in panel");
   failHost=false;

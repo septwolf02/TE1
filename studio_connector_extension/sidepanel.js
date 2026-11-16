@@ -35,15 +35,21 @@ function nativeSync(chromeApi, records, timeoutMs = 15000) {
 async function createPanel(chromeApi, ui, defaults = {}) {
   let rows = [], scanSession = "", tabId = null, dirty = false, revision = 0,
       storageWrite = Promise.resolve(),
-      candidateKey = "", lastSnapshot = "";
-  const saved = await chromeApi.storage.local.get(["studioCatalog", "studioDraft", "studioUnsynced"]);
+      candidateKey = "", lastSnapshot = "", syncedCount = 0, diagnosticReport = "";
+  const observedThisScan = new Set();
+  const saved = await chromeApi.storage.local.get(["studioCatalog", "studioDraft", "studioUnsynced",
+    "studioLastSyncedCount"]);
+  syncedCount = Number.isSafeInteger(saved.studioLastSyncedCount) ? saved.studioLastSyncedCount : 0;
   rows = Array.isArray(saved.studioDraft) ? saved.studioDraft : Array.isArray(saved.studioCatalog) ? saved.studioCatalog : [];
   dirty = !!saved.studioUnsynced || JSON.stringify(saved.studioCatalog || []) !== JSON.stringify(rows);
   const status = message => { ui.status.textContent = message; };
   const render = () => {
     ui.rows.replaceChildren();
-    ui.counts.textContent = `${rows.length} bản ghi • ${rows.filter(r=>r.id).length} có ID • ` +
-      `${rows.filter(r=>!r.id).length} chưa rõ ID • ${dirty ? "chưa đồng bộ TE" : "đã đồng bộ TE"}`;
+    ui.counts.textContent = `Mục menu lượt quét này: ${observedThisScan.size} • ` +
+      `Catalog tích lũy: ${rows.length} • ID đã xác nhận: ${rows.filter(r=>r.id).length} • ` +
+      `Ứng viên thiếu ID: ${rows.filter(r=>!r.id).length} • ` +
+      `Bản ghi ở TE sau lần đồng bộ gần nhất: ${syncedCount} • ` +
+      (dirty ? "Chưa đồng bộ thay đổi mới" : "Đã đồng bộ catalog hiện tại");
     for (const row of rows) {
       const tr = document.createElement("tr");
       const nameCell = tr.insertCell();
@@ -83,6 +89,8 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   };
   const merge = observations => {
     if (!Array.isArray(observations) || !observations.length) return;
+    if (scanSession) for (const item of observations) if (item.evidence === "visible_switcher_item")
+      observedThisScan.add(JSON.stringify([item.id, item.handle, item.name, item.entry_index]));
     const signature = JSON.stringify(observations);
     if (signature === lastSnapshot) return;
     lastSnapshot = signature;
@@ -94,7 +102,7 @@ async function createPanel(chromeApi, ui, defaults = {}) {
         message.session !== scanSession) return;
     merge(message.channels);
     status(message.complete ? "Đã dừng quét. Kiểm tra bảng rồi bấm Lưu và đồng bộ TE." :
-      `Đang quét và chờ mục mới khi cuộn menu… đã thấy ${rows.length} bản ghi. ${message.switcher_open ? "Menu đang hiện." : "Chưa thấy menu chuyển kênh."}`);
+      `Đang quét và chờ mục mới khi cuộn menu… thấy ${observedThisScan.size} mục menu lượt này. ${message.switcher_open ? "Menu đang hiện." : "Chưa thấy menu chuyển kênh."}`);
   };
   chromeApi.runtime.onMessage.addListener(listener);
   async function activeTab() {
@@ -105,7 +113,7 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   }
   async function start() {
     const tab = await activeTab(); tabId = tab.id;
-    lastSnapshot = "";
+    lastSnapshot = ""; observedThisScan.clear(); render();
     status("Đang đọc menu chuyển kênh; hãy mở và cuộn danh sách trong Studio…");
     const reply = await withTimeout(chromeApi.tabs.sendMessage(tabId,
       {type:"start_bulk_scan", duration_ms:defaults.duration || 20000}), 8000,
@@ -131,9 +139,11 @@ async function createPanel(chromeApi, ui, defaults = {}) {
       const reply = await nativeSync(chromeApi, snapshot, defaults.hostTimeout || 15000);
       await storageWrite;
       if (revision === savedRevision) {
-        await chromeApi.storage.local.set({studioUnsynced:false, studioLastSyncedAt:new Date().toISOString()});
+        await chromeApi.storage.local.set({studioUnsynced:false, studioLastSyncedAt:new Date().toISOString(),
+          studioLastSyncedCount:reply.count});
         dirty = false;
       }
+      syncedCount = reply.count;
       render();
       status(`Đã đồng bộ ${reply.count} bản ghi sang TE.` + (dirty ? " Có thay đổi mới cần lưu tiếp." : ""));
     } catch (error) { status(`Chưa đồng bộ TE: ${error.message}`); }
@@ -156,15 +166,34 @@ async function createPanel(chromeApi, ui, defaults = {}) {
     candidateKey = ""; revision++; dirty = true; scheduleDraft(); render();
     status("Đã liên kết ID từ URL theo xác nhận của bạn. Bấm Lưu để đồng bộ TE.");
   }
+  async function diagnose() {
+    const tab = await activeTab();
+    status("Đang đọc cấu trúc menu trong 3 giây; hãy cuộn menu nếu có thể…");
+    const report = await withTimeout(chromeApi.tabs.sendMessage(tab.id,
+      {type:"diagnose_channel_menu"}), 8000,
+      "Chẩn đoán quá hạn; tải lại tab Studio và thử lại khi menu đang mở.");
+    if (!report?.first || !report?.last) throw new Error(report?.error ||
+      "Content script không trả về chẩn đoán; tải lại tab Studio.");
+    diagnosticReport = JSON.stringify(report, null, 2);
+    if (ui.diagnostic) ui.diagnostic.textContent = diagnosticReport;
+    status("Đã hiển thị báo cáo cấu trúc. Kiểm tra nội dung trước khi sao chép và gửi lại.");
+  }
+  async function copyDiagnostic() {
+    if (!diagnosticReport) throw new Error("Hãy chạy Chẩn đoán menu kênh trước.");
+    await (defaults.clipboard || navigator.clipboard).writeText(diagnosticReport);
+    status("Đã sao chép báo cáo đã lọc. Hãy xem lại nội dung trước khi chia sẻ.");
+  }
   render();
-  return {start, stop, save, verify, getRows:()=>rows, merge, render};
+  return {start, stop, save, verify, diagnose, copyDiagnostic,
+    getRows:()=>rows, merge, render};
 }
 
 if (typeof document !== "undefined") {
   const ui = {status:document.getElementById("status"), counts:document.getElementById("counts"),
-    rows:document.getElementById("rows")};
+    rows:document.getElementById("rows"), diagnostic:document.getElementById("diagnostic")};
   createPanel(chrome,ui).then(panel => {
-    for (const [id, action] of [["start",panel.start],["stop",panel.stop],["save",panel.save],["verify",panel.verify]]) {
+    for (const [id, action] of [["start",panel.start],["stop",panel.stop],["save",panel.save],
+      ["verify",panel.verify],["diagnose",panel.diagnose],["copyDiagnostic",panel.copyDiagnostic]]) {
       document.getElementById(id).addEventListener("click", () => action().catch(error => {
         ui.status.textContent = `Lỗi: ${error.message || error}`;
       }));

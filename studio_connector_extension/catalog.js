@@ -26,23 +26,28 @@ function normalizeObservation(raw, keyFactory = () => crypto.randomUUID()) {
     user_edited: false, last_seen_at: new Date().toISOString()};
 }
 
-function sameUnresolved(old, incoming, oldRows, incomingRows) {
-  if (old.id || incoming.id || !old.handle || old.handle !== incoming.handle ||
-      old.discovered_name !== incoming.discovered_name || old.source_url !== incoming.source_url) return false;
-  const matches = row => !row.id && row.handle === incoming.handle &&
-    row.discovered_name === incoming.discovered_name && row.source_url === incoming.source_url;
-  return oldRows.filter(matches).length === 1 && incomingRows.filter(matches).length === 1;
-}
-
 function mergeCatalog(existing, observations, keyFactory) {
   const oldRows = Array.isArray(existing) ? existing.map(row => ({...row})) : [];
   const newRows = (Array.isArray(observations) ? observations : []).map(row =>
     normalizeObservation(row, keyFactory));
   const result = [...oldRows];
+  const matched = new Set();
   for (const incoming of newRows) {
-    const index = result.findIndex(old => incoming.id ? old.id === incoming.id :
-      sameUnresolved(old, incoming, oldRows, newRows));
-    if (index < 0) { result.push(incoming); continue; }
+    let index = incoming.id ? result.findIndex(old => old.id === incoming.id) : -1;
+    if (index < 0 && !incoming.id) {
+      const exact = old => !old.id && old.handle === incoming.handle &&
+        old.discovered_name === incoming.discovered_name && old.source_url === incoming.source_url &&
+        old.evidence === incoming.evidence;
+      index = result.findIndex((old, position) => !matched.has(position) && exact(old));
+      if (index < 0 && incoming.handle) {
+        const handleMatch = row => !row.id && row.handle === incoming.handle &&
+          row.source_url === incoming.source_url;
+        if (oldRows.filter(handleMatch).length === 1 && newRows.filter(handleMatch).length === 1)
+          index = result.findIndex((old, position) => !matched.has(position) && handleMatch(old));
+      }
+    }
+    if (index < 0) { matched.add(result.length); result.push(incoming); continue; }
+    matched.add(index);
     const old = result[index];
     result[index] = {...old, ...incoming, key: old.key,
       display_name: old.user_edited ? old.display_name : incoming.discovered_name || old.display_name,
