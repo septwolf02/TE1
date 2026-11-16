@@ -7,6 +7,7 @@ import pytest
 from te.studio.gui import StudioApp, _write_project_open_diagnostic
 from te.studio.publisher import PublisherStore, normalize_metadata
 from te.studio.publisher_gui import PublisherController
+from te.studio.studio_connector import StudioConnectorStore
 from te.studio.service import StudioService
 
 
@@ -65,6 +66,8 @@ def publisher_harness(repo, state):
     controller = PublisherController.__new__(PublisherController)
     controller.app = SimpleNamespace(queue=SimpleNamespace(jobs=lambda: []))
     controller.store = PublisherStore(repo.config_path)
+    controller.studio_store = StudioConnectorStore(repo.config_path)
+    controller.studio_status = Var()
     controller.values = {key: Var() for key in normalize_metadata({})}
     controller.description = Text()
     controller.channel_combo = Combo()
@@ -112,6 +115,39 @@ def test_empty_channel_list_and_missing_optional_metadata_load(tmp_path):
     assert controller.channel_combo.values == []
     assert controller.channel_combo.selection == ""
     assert controller.values["channel_id"].get() == ""
+
+
+def test_studio_connector_selection_stays_separate_from_api_credentials(tmp_path):
+    from te.studio.studio_connector import StudioConnectorStore
+    from te.studio.youtube_api import SCOPES
+
+    repo = service(tmp_path)
+    state = repo.create_project("Two connections")
+    controller = publisher_harness(repo, state)
+    controller.store.register_authorized_channel({"id": CHANNEL, "name": "API channel",
+        "credential_ref": "a" * 32, "scopes": list(SCOPES), "authorization_status": "authorized"})
+    url = f"https://studio.youtube.com/channel/{CHANNEL}/videos"
+    StudioConnectorStore(repo.config_path).save_message({"type": "scan_results", "schema": 1,
+        "page_url": url, "page_url_after": url, "switcher_open": True,
+        "channels": [{"id": CHANNEL, "name": "Studio channel", "source_url": url}]})
+    controller.refresh_channels()
+    assert len(controller.channel_records) == 2
+    controller.channel_combo.current(1)
+    controller._select_channel()
+    assert controller.values["connection_type"].get() == "studio_connector"
+    assert controller.values["channel_id"].get() == CHANNEL
+    assert controller._selected_connection() is None
+    controller.channel_combo.current(0)
+    controller._select_channel()
+    assert controller.values["connection_type"].get() == "youtube_api"
+    assert controller._selected_connection()["id"] == CHANNEL
+    controller.channel_records.append({"id": "", "name": "Unresolved", "status": "discovered",
+                                       "connection_type": "studio_connector"})
+    controller.channel_combo["values"] = list(controller.channel_combo.values) + ["Unresolved"]
+    controller.channel_combo.current(2)
+    controller._select_channel()
+    assert controller.values["connection_type"].get() == "youtube_api"
+    assert controller.values["channel_id"].get() == CHANNEL
 
 
 def test_gui_hydration_failure_rolls_back_without_saving(tmp_path):

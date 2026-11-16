@@ -17,7 +17,8 @@ VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 MODES = {"immediate", "scheduled"}
 STATUSES = {"draft", "ready", "uploading", "processing", "configuring",
             "scheduled", "published", "failed", "needs_attention", "private_test"}
-DEFAULTS = {"channel_id": "", "video_path": "", "thumbnail_path": "", "title": "",
+# Legacy project metadata has no connection_type; retain its API-era meaning.
+DEFAULTS = {"channel_id": "", "connection_type": "youtube_api", "video_path": "", "thumbnail_path": "", "title": "",
             "description": "", "tags": "", "playlist": "", "audience": "not_made_for_kids",
             "mode": "immediate", "scheduled_local": "", "timezone": "Asia/Tokyo",
             "monetization": "requested", "end_screen": "most_recent_upload",
@@ -33,6 +34,8 @@ def normalize_metadata(raw: object) -> dict:
             result[key] = DEFAULTS[key]
     if result["mode"] not in MODES:
         result["mode"] = "immediate"
+    if result["connection_type"] not in {"youtube_api", "studio_connector"}:
+        result["connection_type"] = "youtube_api"
     if result["audience"] not in {"made_for_kids", "not_made_for_kids"}:
         result["audience"] = "not_made_for_kids"
     if result["status"] not in STATUSES:
@@ -159,6 +162,8 @@ class PublisherStore:
 
     def prepare(self, project_id: str, metadata: dict, identity: dict) -> dict:
         meta = normalize_metadata(metadata)
+        if meta["connection_type"] != "youtube_api":
+            raise ValueError("Studio Connector chưa hỗ trợ upload; chỉ OAuth API được phép tạo tác vụ.")
         channel = meta["channel_id"]
         if not CHANNEL_ID.fullmatch(channel):
             raise ValueError("Chọn một kênh Studio đã xác minh.")

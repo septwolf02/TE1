@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "TE YouTube Studio Connector (prototype)",
+  "version": "0.1.0",
+  "description": "Read visible YouTube Studio channel identities on request. No uploading.",
+  "permissions": ["activeTab", "nativeMessaging"],
+  "content_scripts": [{
+    "matches": ["https://studio.youtube.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "action": {"default_popup": "popup.html"}
+}

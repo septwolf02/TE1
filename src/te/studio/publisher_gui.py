@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .publisher import PublisherStore, file_identity, normalize_metadata
+from .studio_connector import StudioConnectorStore
 from .youtube_api import (CredentialVault, OwnerOAuth, YouTubeAPIClient,
                           YouTubeAPIError, validate_client_config)
 from te.project.manager import _write_json
@@ -18,12 +19,14 @@ class PublisherController:
     def __init__(self, app):
         self.app = app
         self.store = PublisherStore(app.service.config_path)
+        self.studio_store = StudioConnectorStore(app.service.config_path)
         self.events = Queue()
         self.busy = False
         self.values = {key: tk.StringVar() for key in normalize_metadata({})}
         self.status = tk.StringVar(value="Upload tự động tạm khóa: TE chưa xác minh tài khoản và quyền kênh.")
         self.channel_name = tk.StringVar()
         self.oauth_status = tk.StringVar(value="Owner OAuth: chưa kết nối kênh API trên máy này.")
+        self.studio_status = tk.StringVar(value="Studio Connector: chưa nhận bản quét từ extension.")
         app.root.after(300, self.poll)
 
     def build(self):
@@ -50,9 +53,11 @@ class PublisherController:
             row=1, column=4, sticky="w", padx=4)
         ttk.Label(box, textvariable=self.status, wraplength=850).grid(row=2, column=0, columnspan=4, sticky="w")
         ttk.Label(box, textvariable=self.oauth_status, wraplength=850).grid(row=3, column=0, columnspan=4, sticky="w")
-        ttk.Label(box, text="Channel ID (API)").grid(row=4, column=0, sticky="w")
+        ttk.Button(box, text="Quét kênh Studio", command=self.scan_studio).grid(row=2, column=4, sticky="w", padx=4)
+        ttk.Label(box, textvariable=self.studio_status, wraplength=330).grid(row=3, column=4, sticky="w")
+        ttk.Label(box, text="Channel ID (API/Studio)").grid(row=4, column=0, sticky="w")
         ttk.Entry(box, textvariable=self.values["channel_id"], width=35, state="readonly").grid(row=4, column=1, sticky="ew")
-        ttk.Label(box, text="Tên kênh (API)").grid(row=5, column=0, sticky="w")
+        ttk.Label(box, text="Tên kênh").grid(row=5, column=0, sticky="w")
         ttk.Label(box, textvariable=self.channel_name).grid(row=5, column=1, sticky="w")
         ttk.Label(box, text="Chọn kênh").grid(row=6, column=0, sticky="w")
         self.channel_combo = ttk.Combobox(box, state="readonly")
@@ -101,14 +106,29 @@ class PublisherController:
         self.app.body = host
 
     def refresh_channels(self):
-        channels = self.store.channels()
+        channels = [dict(channel, connection_type="youtube_api") for channel in self.store.channels()]
+        try:
+            scan = self.studio_store.load()
+            channels.extend(scan["channels"])
+            if scan["scanned_at"]:
+                verified = sum(c["status"] == "identity_verified" for c in scan["channels"])
+                self.studio_status.set(f"Studio Connector: {scan['scanned_at']} • {verified} ID có chứng cứ • "
+                                       f"{len(scan['channels'])} bản ghi • " +
+                                       ("đã cũ" if scan.get("stale") else "quyền upload chưa xác minh"))
+        except (OSError, ValueError, KeyError, TypeError):
+            self.studio_status.set("Studio Connector: bản quét không đọc được; hãy quét lại trong extension.")
         self.channel_records = channels
-        self.channel_combo["values"] = [f"{c['name']} — {c['id']} — " +
-            ("OAuth OK" if c["authorization_status"] == "authorized" else "chưa hỗ trợ API")
+        self.channel_combo["values"] = [
+            f"{c['name'] or '(chưa có tên)'} — {c['id'] or '(chưa có ID)'} — " +
+            ("YouTube API: OAuth OK" if c.get("authorization_status") == "authorized" else
+             "YouTube API: chưa ủy quyền" if c["connection_type"] == "youtube_api" else
+             "Studio Connector: " + c["status"])
             for c in channels]
         self._refresh_upload_button()
 
     def _selected_connection(self):
+        if self.values["connection_type"].get() != "youtube_api":
+            return None
         return next((c for c in self.store.authorized_channels()
                      if c["id"] == self.values["channel_id"].get()), None)
 
@@ -120,10 +140,22 @@ class PublisherController:
         index = self.channel_combo.current()
         channels = self.channel_records
         if 0 <= index < len(channels):
-            self.values["channel_id"].set(channels[index]["id"])
-            self.channel_name.set(channels[index]["name"])
-            self.oauth_status.set("API authorization: " + channels[index]["authorization_status"])
+            selected = channels[index]
+            if selected["connection_type"] == "studio_connector" and selected["status"] != "identity_verified":
+                self.status.set("Kênh Studio chưa có ID được xác minh hoặc bản quét đã cũ; không thể chọn làm đích.")
+                return
+            self.values["channel_id"].set(selected["id"])
+            self.values["connection_type"].set(selected["connection_type"])
+            self.channel_name.set(selected["name"])
+            self.oauth_status.set("Studio Connector: quyền upload chưa xác minh" if
+                selected["connection_type"] == "studio_connector" else
+                "API authorization: " + selected["authorization_status"])
             self._refresh_upload_button()
+
+    def scan_studio(self):
+        """Refresh the latest user-triggered Chrome scan; TE never drives Chrome."""
+        self.refresh_channels()
+        self.status.set("Mở Studio trong Chrome, mở menu chuyển kênh, bấm Quét trong extension, rồi bấm nút này để cập nhật danh sách. Không xác minh quyền upload.")
 
     def choose(self, key):
         path = filedialog.askopenfilename(parent=self.app._details["publisher"],
@@ -140,13 +172,16 @@ class PublisherController:
         self.description.delete("1.0", "end")
         self.description.insert("1.0", meta["description"])
         self.refresh_channels()
-        selected = next((c for c in self.channel_records if c["id"] == meta["channel_id"]), None)
+        selected = next((c for c in self.channel_records if c["id"] == meta["channel_id"] and
+                         c["connection_type"] == meta["connection_type"]), None)
         if selected:
             self.channel_combo.current(self.channel_records.index(selected))
         else:
             self.channel_combo.set("")
         self.channel_name.set(selected["name"] if selected else "")
-        self.oauth_status.set("API authorization: " + (selected["authorization_status"] if selected else "chưa kết nối"))
+        self.oauth_status.set("Studio Connector: quyền upload chưa xác minh" if selected and
+            selected["connection_type"] == "studio_connector" else
+            "API authorization: " + (selected["authorization_status"] if selected else "chưa kết nối"))
         self._refresh_upload_button()
         self.status.set("Kênh có OAuth API authorization; có thể tải thử Riêng tư trên máy Owner."
                         if self._selected_connection() else "Kênh chưa có OAuth API authorization; upload đã bị chặn.")
@@ -322,8 +357,10 @@ class PublisherController:
             elif action == "authorized":
                 self.refresh_channels()
                 self.values["channel_id"].set(result["id"])
+                self.values["connection_type"].set("youtube_api")
                 self.channel_combo.current(next(i for i, channel in enumerate(self.channel_records)
-                                                if channel["id"] == result["id"]))
+                                                if channel["id"] == result["id"] and
+                                                channel["connection_type"] == "youtube_api"))
                 self.channel_name.set(result["name"])
                 self._refresh_upload_button()
                 self.oauth_status.set(f"OAuth OK: {result['name']} — {result['id']}")
