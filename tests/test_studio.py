@@ -313,7 +313,7 @@ def test_legacy_v8_project_and_interrupted_sidecar_recovery(tmp_path):
 @pytest.mark.skipif(os.environ.get("TE_STUDIO_GUI_SMOKE") != "1", reason="requires a desktop display")
 def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     import tkinter as tk
-    from tkinter import messagebox, simpledialog, ttk
+    from tkinter import simpledialog, ttk
     from te.studio.gui import StudioApp
 
     monkeypatch.setattr(simpledialog, "askstring", lambda *args, **kwargs: "GUI 日本語")
@@ -375,14 +375,12 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     app._open_key_entry("draft", draft_id)
     panel = root.winfo_children()[-1].winfo_children()[0]
     combos = [child for child in panel.winfo_children() if isinstance(child, ttk.Combobox)]
-    assert len(combos) == 3
+    assert len(combos) == 2
     combos[0].set("P2")
     combos[1].set(combos[1]["values"][0])
-    assert "Phần thứ hai." in combos[1].get()
-    assert "次の部分です。" in combos[2].get()
-    monkeypatch.setattr(messagebox, "askyesno", lambda *args, **kwargs: True)
+    assert "次の部分です。" in combos[1].get()
     confirm = next(child for child in panel.winfo_children()
-                   if isinstance(child, ttk.Button) and child["text"] == "Xác nhận VN–JP")
+                   if isinstance(child, ttk.Button) and child["text"] == "Lưu vị trí KEY")
     confirm.invoke()
     assert len(app.state.project.key_placements) == 1
     app._switch_section(SectionName.P1)
@@ -397,11 +395,10 @@ def test_tk_gui_launch_autosave_and_reopen(tmp_path, monkeypatch):
     app._open_key_entry("draft", draft_id)
     draft_panel = root.winfo_children()[-1].winfo_children()[0]
     draft_combos = [child for child in draft_panel.winfo_children() if isinstance(child, ttk.Combobox)]
-    draft_combos[1].set(draft_combos[1]["values"][0])
-    assert not draft_combos[2].get()
-    draft_combos[2].set(draft_combos[2]["values"][1])
+    assert not draft_combos[1].get()
+    draft_combos[1].set(draft_combos[1]["values"][1])
     second_confirm = next(child for child in draft_panel.winfo_children()
-                          if isinstance(child, ttk.Button) and child["text"] == "Xác nhận VN–JP")
+                          if isinstance(child, ttk.Button) and child["text"] == "Lưu vị trí KEY")
     second_confirm.invoke()
     assert len(app.state.project.key_placements) == 2
     app.speed.set("1.2")

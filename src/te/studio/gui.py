@@ -30,6 +30,14 @@ from te.studio.publisher_gui import PublisherController
 
 
 SECTIONS = tuple(SectionName)
+
+
+def _key_sentence_label(number: int, text: str, limit: int = 40) -> str:
+    """Bound KEY dialog labels without changing the selected sentence ID or text."""
+    preview = text.strip().replace("\n", " ").replace("\r", " ")
+    return f"Câu {number}: {preview[:limit]}{'…' if len(preview) > limit else ''}"
+
+
 MOTION_LABELS = {
     "Tự động: zoom và pan": "mixed", "Chỉ zoom vào/ra": "zoom",
     "Chỉ pan": "pan", "Không chuyển động": "none",
@@ -1281,26 +1289,23 @@ class StudioApp:
             return
         dialog = tk.Toplevel(self.root)
         dialog.title("Chỉnh sửa ảnh KEY")
-        dialog.geometry("900x410")
         dialog.transient(self._details["keys"])
         dialog.grab_set()
+        dialog.resizable(True, False)
         panel = ttk.Frame(dialog, padding=12)
         panel.pack(fill="both", expand=True)
         if kind == "draft":
             item = next(item for item in self.state.key_drafts if item["id"] == identifier)
             duration, offset, _, _ = self._render_key_draft(panel, item)
-            ttk.Label(panel, text="Thời lượng (giây)").grid(row=4, column=1, sticky="w")
-            ttk.Entry(panel, textvariable=duration, width=8).grid(row=4, column=2, sticky="w")
-            ttk.Label(panel, text="Lệch (ms)").grid(row=5, column=1, sticky="w")
-            ttk.Entry(panel, textvariable=offset, width=8).grid(row=5, column=2, sticky="w")
+            ttk.Label(panel, text="Thời lượng (giây)").grid(row=2, column=1, sticky="w")
+            ttk.Entry(panel, textvariable=duration, width=8).grid(row=2, column=2, sticky="w")
+            ttk.Label(panel, text="Lệch (ms)").grid(row=3, column=1, sticky="w")
+            ttk.Entry(panel, textvariable=offset, width=8).grid(row=3, column=2, sticky="w")
         else:
             item = next(item for item in self.state.project.key_placements if item.id == identifier)
             unit = next((u for u in self.state.project.sentence_units if u.id == item.sentence_id), None)
-            ttk.Label(panel, text="Tiếng Nhật: " + (unit.synthesis_text if unit else "Câu đã thay đổi"),
-                      wraplength=800).pack(anchor="w", pady=6)
-            if item.confirmed_vietnamese_text:
-                ttk.Label(panel, text="Tham khảo tiếng Việt: " + item.confirmed_vietnamese_text,
-                          wraplength=800).pack(anchor="w", pady=6)
+            ttk.Label(panel, text="Tiếng Nhật: " + (_key_sentence_label(unit.order, unit.synthesis_text)
+                      if unit else "Câu đã thay đổi")).pack(anchor="w", pady=6)
             duration = tk.StringVar(value="" if item.duration_ms is None else str(item.duration_ms / 1000))
             offset = tk.StringVar(value=str(item.offset_ms))
             timing = ttk.Frame(panel)
@@ -1331,12 +1336,10 @@ class StudioApp:
         offset = tk.StringVar(value=str(item.get("offset_ms", 0)))
         ttk.Combobox(panel, textvariable=section, values=[s.value for s in SECTIONS],
                      state="readonly", width=5).grid(row=0, column=2, padx=4)
-        ja_combo = ttk.Combobox(panel, textvariable=selected_ja, width=48, state="readonly")
+        ja_combo = ttk.Combobox(panel, textvariable=selected_ja, width=45, state="readonly")
         ja_combo.grid(row=1, column=3, sticky="ew", padx=4)
         ttk.Label(panel, text="Phần").grid(row=0, column=1, sticky="w")
         ttk.Label(panel, text="Chọn câu Nhật").grid(row=1, column=1, sticky="w")
-        context = tk.StringVar()
-        ttk.Label(panel, textvariable=context, wraplength=750).grid(row=2, column=1, columnspan=3, sticky="w")
         ja_choices = {}
         initializing = True
         def remember(*_):
@@ -1351,13 +1354,11 @@ class StudioApp:
             previous = initializing
             initializing = True
             ja_choices.clear()
-            ja_choices.update((unit.label, unit) for unit in
+            ja_choices.update((_key_sentence_label(unit.order + 1, unit.text), unit) for unit in
                 self.service.japanese_choices(self.state, SectionName(section.get())))
             ja_combo.configure(values=list(ja_choices))
             selected_ja.set(next((label for label, unit in ja_choices.items()
                 if unit.sentence_id == item.get("sentence_id")), ""))
-            vietnamese = self.state.sections[section.get()]["vi"].strip()
-            context.set("Tiếng Việt tham khảo: " + vietnamese if vietnamese else "")
             initializing = previous
             if not previous:
                 remember()
@@ -1383,7 +1384,7 @@ class StudioApp:
                 panel.winfo_toplevel().destroy()
             except Exception as exc:
                 self._fail(str(exc))
-        ttk.Button(panel, text="Lưu vị trí KEY", command=confirm).grid(row=3, column=3, sticky="e")
+        ttk.Button(panel, text="Lưu vị trí KEY", command=confirm).grid(row=4, column=3, sticky="e", pady=8)
         identifier = item["id"]
         status = "Chưa xác nhận"
         return duration, offset, identifier, status
@@ -1408,6 +1409,7 @@ class StudioApp:
         dialog.title("Chọn lại câu Nhật cho KEY")
         dialog.transient(self.root)
         dialog.grab_set()
+        dialog.resizable(True, False)
         panel = ttk.Frame(dialog, padding=12)
         panel.pack(fill="both", expand=True)
         section = tk.StringVar(value="P1")
@@ -1420,20 +1422,16 @@ class StudioApp:
         ttk.Combobox(panel, values=[s.value for s in SECTIONS], textvariable=section,
                      state="readonly", width=7).grid(row=0, column=1, sticky="w")
         ttk.Label(panel, text="Chọn câu Nhật").grid(row=1, column=0, sticky="w")
-        ja_combo = ttk.Combobox(panel, textvariable=selected_ja, state="readonly", width=75)
+        ja_combo = ttk.Combobox(panel, textvariable=selected_ja, state="readonly", width=45)
         ja_combo.grid(row=1, column=1, sticky="ew")
-        context = tk.StringVar()
-        ttk.Label(panel, textvariable=context, wraplength=750).grid(row=2, column=0, columnspan=2, sticky="w")
         ja_choices = {}
         def update_choices(*_, reset=False):
             ja_choices.clear()
-            ja_choices.update((item.label, item) for item in
+            ja_choices.update((_key_sentence_label(item.order + 1, item.text), item) for item in
                 self.service.japanese_choices(self.state, SectionName(section.get())))
             ja_combo.configure(values=list(ja_choices))
             selected_ja.set("" if reset else next((label for label, item in ja_choices.items()
                 if item.sentence_id == placement.sentence_id), ""))
-            vietnamese = self.state.sections[section.get()]["vi"].strip()
-            context.set("Tiếng Việt tham khảo: " + vietnamese if vietnamese else "")
         section.trace_add("write", lambda *_: update_choices(reset=True))
         update_choices()
         def approve():
@@ -1450,7 +1448,10 @@ class StudioApp:
                 self._refresh_key_rows()
             except Exception as exc:
                 self._fail(str(exc))
-        ttk.Button(panel, text="Lưu vị trí KEY", command=approve).grid(row=3, column=1, sticky="e", pady=8)
+        actions = ttk.Frame(panel)
+        actions.grid(row=2, column=1, sticky="e", pady=8)
+        ttk.Button(actions, text="Lưu vị trí KEY", command=approve).pack(side="left", padx=4)
+        ttk.Button(actions, text="Đóng", command=dialog.destroy).pack(side="left", padx=4)
         panel.columnconfigure(1, weight=1)
 
     def _choose_intro(self, section: SectionName) -> None:
