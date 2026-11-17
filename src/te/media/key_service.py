@@ -80,14 +80,13 @@ class KeyPlacementService:
         if asset.category != MediaCategory.KEY or asset.media_type != MediaType.IMAGE:
             raise ValueError("Only a marked KEY image can be placed")
         context = KeyPlacementService.context(project, sentence_id)
-        if not context.mapping_confirmed or not context.vietnamese_sentence_text:
-            raise ValueError("Confirm the VN-JP sentence mapping before placing KEY media")
         if any(item.media_id == media_id for item in project.media_assignments):
             raise ValueError("Remove the segment media assignment before placing this KEY image")
         if any(item.media_id == media_id for item in project.key_placements):
             raise ValueError("This KEY image already has a sentence placement")
         placement = KeyPlacement(new_id("plc"), media_id, sentence_id,
-            context.vietnamese_sentence_text, offset_ms, duration_ms, locked, notes=notes)
+            context.vietnamese_sentence_text if context.mapping_confirmed and context.vietnamese_sentence_text
+            else "", offset_ms, duration_ms, locked, notes=notes)
         project.key_placements.append(placement)
         try:
             project.validate()
@@ -123,16 +122,15 @@ class KeyPlacementService:
     @staticmethod
     def retarget_key(project: Project, directory: Path, placement_id: str, sentence_id: str, *,
                      force: bool = False) -> KeyPlacement:
-        """Explicit editor review after a deleted sentence or changed VN-JP mapping."""
+        """Explicit editor review after the Japanese sentence changes or disappears."""
         placement = next(item for item in project.key_placements if item.id == placement_id)
         if placement.locked and not force:
             raise ValueError("Unlock the KEY placement or pass force=True to retarget")
         context = KeyPlacementService.context(project, sentence_id)
-        if not context.mapping_confirmed or not context.vietnamese_sentence_text:
-            raise ValueError("Confirm the new VN-JP sentence mapping first")
         old = (placement.sentence_id, placement.confirmed_vietnamese_text, placement.status)
         placement.sentence_id = sentence_id
-        placement.confirmed_vietnamese_text = context.vietnamese_sentence_text
+        placement.confirmed_vietnamese_text = (context.vietnamese_sentence_text
+            if context.mapping_confirmed and context.vietnamese_sentence_text else "")
         placement.status = "ready"
         try:
             project.validate()
@@ -147,8 +145,8 @@ class KeyPlacementService:
         if placement.status != "ready":
             raise ValueError("KEY placement needs manual review")
         unit = next((unit for unit in project.sentence_units if unit.id == placement.sentence_id), None)
-        if unit is None or not unit.mapping_confirmed or unit.vietnamese_reference != placement.confirmed_vietnamese_text:
-            raise ValueError("KEY placement sentence mapping is no longer confirmed")
+        if unit is None:
+            raise ValueError("KEY Japanese sentence is missing; review the placement")
         spoken_start, spoken_end = TimelineService.get_sentence_range(project, timeline, unit.id)
         block = TimelineService.get_segment_block(timeline, unit.segment_id)
         start = spoken_start + placement.offset_ms

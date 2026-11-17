@@ -1199,8 +1199,7 @@
             "pattern": "^sen_[0-9a-f]{32}$"
           },
           "confirmed_vietnamese_text": {
-            "type": "string",
-            "minLength": 1
+            "type": "string"
           },
           "offset_ms": {
             "type": "integer"

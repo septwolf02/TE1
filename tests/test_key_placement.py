@@ -42,17 +42,15 @@ def project_with_key_media(tmp_path):
     return manager, folder, project, target, images
 
 
-def test_confirmation_timing_offset_lock_random_exclusion_and_rebuild(tmp_path):
+def test_japanese_only_timing_offset_lock_random_exclusion_and_rebuild(tmp_path):
     manager, folder, project, target, images = project_with_key_media(tmp_path)
     service = KeyPlacementService()
     context = service.context(project, target.id)
     assert context.japanese_text == "大谷が打った！"
     assert context.vietnamese_segment_text == "Đầu tiên, pitcher chuẩn bị. Ohtani đánh bóng!"
     assert not context.mapping_confirmed and context.vietnamese_sentence_text is None
-    with pytest.raises(ValueError, match="Confirm"):
-        service.assign_key(project, folder, images[2].id, target.id)
-    service.confirm_mapping(project, folder, target.id, "Ohtani đánh bóng!")
     placement = service.assign_key(project, folder, images[2].id, target.id, offset_ms=-40)
+    assert placement.sentence_id == target.id and placement.confirmed_vietnamese_text == ""
     created = service.assign_random_images(project, folder)
     assert len(created) == 2
     assert all(a.media_id != images[2].id and a.assignment_type == "random"

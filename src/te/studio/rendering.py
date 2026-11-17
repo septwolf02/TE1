@@ -121,9 +121,8 @@ class StudioRenderService:
             if asset is None or not Path(asset.path).is_file():
                 raise ValueError("Ảnh KEY bị thiếu; hãy chọn lại trước khi render.")
             unit = next((unit for unit in project.sentence_units if unit.id == placement.sentence_id), None)
-            if (placement.status != "ready" or unit is None or not unit.mapping_confirmed or
-                    unit.vietnamese_reference != placement.confirmed_vietnamese_text):
-                raise ValueError("Cặp câu VN–JP của KEY cần xem lại; hãy xác nhận lại trước khi render.")
+            if placement.status != "ready" or unit is None:
+                raise ValueError("Câu Nhật của KEY cần xem lại; hãy chọn lại trước khi render.")
         if need_audio:
             if state.audio_mode != state.narration_mode:
                 raise ValueError("Chế độ lời đọc đã đổi; hãy cập nhật WAV trước khi render.")

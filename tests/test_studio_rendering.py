@@ -17,7 +17,7 @@ from te.studio.rendering import StudioRenderService, project_job_lock
 from te.timeline import TimelineService
 
 
-def studio_project(tmp_path, *, intro=True, key=True):
+def studio_project(tmp_path, *, intro=True, key=True, vietnamese=True):
     studio = StudioService(tmp_path / "settings.json")
     studio.set_directories(tmp_path / "projects", tmp_path / "output")
     state = studio.create_project("日本の試合: Test")
@@ -26,9 +26,9 @@ def studio_project(tmp_path, *, intro=True, key=True):
     state.project.tts_settings.voice_id = "local-test"
     studio.set_section(state, SectionName.P1,
         japanese="試合が始まる。秘密が明かされる！観客が沸いた。",
-        vietnamese="Trận đấu bắt đầu. Bí mật được tiết lộ! Khán giả reo hò.")
+        vietnamese="Trận đấu bắt đầu. Bí mật được tiết lộ! Khán giả reo hò." if vietnamese else "")
     studio.set_section(state, SectionName.P2,
-        japanese="物語は続く。", vietnamese="Câu chuyện tiếp tục.")
+        japanese="物語は続く。", vietnamese="Câu chuyện tiếp tục." if vietnamese else "")
     studio.save_project(state)
     library = tmp_path / "media"
     library.mkdir()
@@ -46,10 +46,9 @@ def studio_project(tmp_path, *, intro=True, key=True):
         key_path = tmp_path / "key.png"
         Image.new("RGB", (320, 180), (255, 30, 180)).save(key_path)
         draft = studio.add_key_draft(state, key_path)
-        vi = studio.vietnamese_units(state, SectionName.P1)[1]
         ja = studio.japanese_choices(state, SectionName.P1)[1]
         studio.confirm_key_draft(state, draft["id"], section=SectionName.P1,
-            vietnamese_key=vi.key, sentence_id=ja.sentence_id, duration_seconds=1.7)
+            sentence_id=ja.sentence_id, duration_seconds=1.7)
     return studio, state
 
 
@@ -251,7 +250,7 @@ def test_same_project_job_lock(tmp_path):
 
 
 def test_intro_key_conflict_is_actionable(tmp_path):
-    studio, state = studio_project(tmp_path)
+    studio, state = studio_project(tmp_path, vietnamese=False)
     workflow = StudioRenderService(studio)
     workflow.generate_narration(state)
     intro_id = state.project.section_intros["P1"]

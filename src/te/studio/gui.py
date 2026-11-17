@@ -1298,8 +1298,9 @@ class StudioApp:
             unit = next((u for u in self.state.project.sentence_units if u.id == item.sentence_id), None)
             ttk.Label(panel, text="Tiếng Nhật: " + (unit.synthesis_text if unit else "Câu đã thay đổi"),
                       wraplength=800).pack(anchor="w", pady=6)
-            ttk.Label(panel, text="Tiếng Việt: " + item.confirmed_vietnamese_text,
-                      wraplength=800).pack(anchor="w", pady=6)
+            if item.confirmed_vietnamese_text:
+                ttk.Label(panel, text="Tham khảo tiếng Việt: " + item.confirmed_vietnamese_text,
+                          wraplength=800).pack(anchor="w", pady=6)
             duration = tk.StringVar(value="" if item.duration_ms is None else str(item.duration_ms / 1000))
             offset = tk.StringVar(value=str(item.offset_ms))
             timing = ttk.Frame(panel)
@@ -1319,118 +1320,70 @@ class StudioApp:
                 except Exception as exc:
                     self._fail(str(exc))
             ttk.Button(panel, text="Lưu thời điểm", command=update).pack(anchor="w", pady=5)
-            ttk.Button(panel, text="Chọn lại câu", command=lambda: self._retarget_key(identifier)).pack(
+            ttk.Button(panel, text="Chọn lại câu Nhật", command=lambda: self._retarget_key(identifier)).pack(
                 anchor="w", pady=5)
         ttk.Button(dialog, text="Đóng", command=dialog.destroy).pack(side="right", padx=12, pady=8)
 
     def _render_key_draft(self, panel, item):
         section = tk.StringVar(value=item.get("section", "P1"))
-        selected_vi = tk.StringVar()
         selected_ja = tk.StringVar()
-        suggestion = tk.StringVar(value="Chọn câu Việt để xem gợi ý.")
-        vi_review = tk.StringVar(value="")
-        ja_review = tk.StringVar(value="")
         duration = tk.StringVar(value="" if item.get("duration_seconds") is None else str(item["duration_seconds"]))
         offset = tk.StringVar(value=str(item.get("offset_ms", 0)))
         ttk.Combobox(panel, textvariable=section, values=[s.value for s in SECTIONS],
                      state="readonly", width=5).grid(row=0, column=2, padx=4)
-        vi_combo = ttk.Combobox(panel, textvariable=selected_vi, width=48, state="readonly")
-        vi_combo.grid(row=0, column=3, sticky="ew", padx=4)
         ja_combo = ttk.Combobox(panel, textvariable=selected_ja, width=48, state="readonly")
         ja_combo.grid(row=1, column=3, sticky="ew", padx=4)
-        ttk.Label(panel, text="Chọn câu Việt").grid(row=0, column=1, sticky="w")
-        ttk.Label(panel, text="Câu Nhật gợi ý").grid(row=1, column=1, sticky="w")
-        ttk.Label(panel, textvariable=suggestion, wraplength=270).grid(row=1, column=2, sticky="w")
-        ttk.Label(panel, textvariable=vi_review, wraplength=350).grid(row=3, column=2, sticky="nw")
-        ttk.Label(panel, textvariable=ja_review, wraplength=350).grid(row=3, column=3, sticky="nw")
-        vi_choices = {}
+        ttk.Label(panel, text="Phần").grid(row=0, column=1, sticky="w")
+        ttk.Label(panel, text="Chọn câu Nhật").grid(row=1, column=1, sticky="w")
+        context = tk.StringVar()
+        ttk.Label(panel, textvariable=context, wraplength=750).grid(row=2, column=1, columnspan=3, sticky="w")
         ja_choices = {}
         initializing = True
         def remember(*_):
             if initializing:
                 return
-            vi_unit = vi_choices.get(selected_vi.get())
             ja_unit = ja_choices.get(selected_ja.get())
-            item.update(section=section.get(), vietnamese_key=vi_unit.key if vi_unit else None,
-                        vietnamese_text=vi_unit.text if vi_unit else "",
-                        sentence_id=ja_unit.sentence_id if ja_unit else None,
+            item.update(section=section.get(), sentence_id=ja_unit.sentence_id if ja_unit else None,
                         duration_seconds=duration.get() or None, offset_ms=offset.get())
             self._dirty()
-        def review(*_):
-            vi_unit = vi_choices.get(selected_vi.get())
-            ja_unit = ja_choices.get(selected_ja.get())
-            vi_review.set("Tiếng Việt: " + (vi_unit.text if vi_unit else "Chưa chọn"))
-            ja_review.set("Tiếng Nhật: " + (ja_unit.text if ja_unit else "Chưa chọn"))
-            remember()
-        def suggest(*_):
-            vi_unit = vi_choices.get(selected_vi.get())
-            if vi_unit:
-                proposal = self.service.suggest_japanese(self.state, SectionName(section.get()), vi_unit.key)
-                suggestion.set(proposal.message)
-                selected_ja.set(next((label for label, unit in ja_choices.items()
-                    if unit.sentence_id == proposal.sentence_id), ""))
-            else:
-                suggestion.set("Chọn câu Việt để xem gợi ý.")
-                selected_ja.set("")
-            review()
         def update_choices(*_):
             nonlocal initializing
             previous = initializing
             initializing = True
-            vi_choices.clear()
-            vi_choices.update((unit.label, unit) for unit in
-                self.service.vietnamese_units(self.state, SectionName(section.get())))
             ja_choices.clear()
             ja_choices.update((unit.label, unit) for unit in
                 self.service.japanese_choices(self.state, SectionName(section.get())))
-            vi_combo.configure(values=list(vi_choices))
             ja_combo.configure(values=list(ja_choices))
-            selected_vi.set(next((label for label, unit in vi_choices.items()
-                if unit.key == item.get("vietnamese_key") or
-                (not item.get("vietnamese_key") and unit.text == item.get("vietnamese_text"))), ""))
             selected_ja.set(next((label for label, unit in ja_choices.items()
                 if unit.sentence_id == item.get("sentence_id")), ""))
+            vietnamese = self.state.sections[section.get()]["vi"].strip()
+            context.set("Tiếng Việt tham khảo: " + vietnamese if vietnamese else "")
             initializing = previous
             if not previous:
-                suggest()
-            else:
-                vi_unit = vi_choices.get(selected_vi.get())
-                if vi_unit:
-                    suggestion.set(self.service.suggest_japanese(
-                        self.state, SectionName(section.get()), vi_unit.key).message)
-                review()
+                remember()
         update_choices()
         initializing = False
         def switch_section(*_):
-            item["vietnamese_key"] = None
-            item["vietnamese_text"] = ""
             item["sentence_id"] = None
             update_choices()
         section.trace_add("write", switch_section)
-        selected_vi.trace_add("write", suggest)
-        selected_ja.trace_add("write", review)
+        selected_ja.trace_add("write", remember)
         for variable in (duration, offset):
             variable.trace_add("write", remember)
         def confirm():
             try:
-                vi_unit = vi_choices.get(selected_vi.get())
                 ja_unit = ja_choices.get(selected_ja.get())
-                if not vi_unit:
-                    raise ValueError("Chọn câu tiếng Việt mô tả ảnh KEY.")
                 if not ja_unit:
-                    raise ValueError("Cần chọn câu Nhật tương ứng.")
-                if not messagebox.askyesno("Xác nhận cặp câu", f"Tiếng Việt: {vi_unit.text}\n\n"
-                    f"Tiếng Nhật: {ja_unit.text}\n\nXác nhận cặp câu này cho ảnh KEY?", parent=self.root):
-                    return
+                    raise ValueError("Hãy chọn câu Nhật cho ảnh KEY.")
                 self.service.confirm_key_draft(self.state, item["id"], section=SectionName(section.get()),
-                    sentence_id=ja_unit.sentence_id, vietnamese_key=vi_unit.key,
+                    sentence_id=ja_unit.sentence_id,
                     offset_ms=int(offset.get()), duration_seconds=float(duration.get()) if duration.get() else None)
                 self._refresh_key_rows()
                 self._refresh_summary()
                 panel.winfo_toplevel().destroy()
             except Exception as exc:
                 self._fail(str(exc))
-        ttk.Button(panel, text="Xác nhận VN–JP", command=confirm).grid(row=2, column=3, sticky="e")
+        ttk.Button(panel, text="Lưu vị trí KEY", command=confirm).grid(row=3, column=3, sticky="e")
         identifier = item["id"]
         status = "Chưa xác nhận"
         return duration, offset, identifier, status
@@ -1452,7 +1405,7 @@ class StudioApp:
             return
         placement = next(item for item in self.state.project.key_placements if item.id == placement_id)
         dialog = tk.Toplevel(self.root)
-        dialog.title("Xác nhận lại câu KEY")
+        dialog.title("Chọn lại câu Nhật cho KEY")
         dialog.transient(self.root)
         dialog.grab_set()
         panel = ttk.Frame(dialog, padding=12)
@@ -1462,70 +1415,33 @@ class StudioApp:
         if unit:
             parent = next(s for s in self.state.project.segments if s.id == unit.segment_id)
             section.set(parent.section.value)
-        selected_vi = tk.StringVar()
         selected_ja = tk.StringVar()
-        suggestion = tk.StringVar(value="Chọn câu Việt để xem gợi ý.")
-        vi_review = tk.StringVar(value="")
-        ja_review = tk.StringVar(value="")
         ttk.Label(panel, text="Phần").grid(row=0, column=0, sticky="w")
         ttk.Combobox(panel, values=[s.value for s in SECTIONS], textvariable=section,
                      state="readonly", width=7).grid(row=0, column=1, sticky="w")
-        ttk.Label(panel, text="Chọn câu Việt").grid(row=1, column=0, sticky="w")
-        vi_combo = ttk.Combobox(panel, textvariable=selected_vi, state="readonly", width=75)
-        vi_combo.grid(row=1, column=1, sticky="ew")
-        ttk.Label(panel, text="Câu Nhật tương ứng").grid(row=2, column=0, sticky="w")
+        ttk.Label(panel, text="Chọn câu Nhật").grid(row=1, column=0, sticky="w")
         ja_combo = ttk.Combobox(panel, textvariable=selected_ja, state="readonly", width=75)
-        ja_combo.grid(row=2, column=1, sticky="ew")
-        ttk.Label(panel, textvariable=suggestion, wraplength=450).grid(row=3, column=1, sticky="w")
-        ttk.Label(panel, textvariable=vi_review, wraplength=450).grid(row=4, column=0, sticky="w")
-        ttk.Label(panel, textvariable=ja_review, wraplength=450).grid(row=4, column=1, sticky="w")
-        vi_choices = {}
+        ja_combo.grid(row=1, column=1, sticky="ew")
+        context = tk.StringVar()
+        ttk.Label(panel, textvariable=context, wraplength=750).grid(row=2, column=0, columnspan=2, sticky="w")
         ja_choices = {}
-        def review(*_):
-            vi_unit = vi_choices.get(selected_vi.get())
-            ja_unit = ja_choices.get(selected_ja.get())
-            vi_review.set("Tiếng Việt: " + (vi_unit.text if vi_unit else "Chưa chọn"))
-            ja_review.set("Tiếng Nhật: " + (ja_unit.text if ja_unit else "Chưa chọn"))
-        def suggest(*_):
-            vi_unit = vi_choices.get(selected_vi.get())
-            if vi_unit:
-                proposal = self.service.suggest_japanese(self.state, SectionName(section.get()), vi_unit.key)
-                suggestion.set(proposal.message)
-                selected_ja.set(next((label for label, choice in ja_choices.items()
-                    if choice.sentence_id == proposal.sentence_id), ""))
-            else:
-                suggestion.set("Chọn câu Việt để xem gợi ý.")
-                selected_ja.set("")
-            review()
         def update_choices(*_, reset=False):
-            vi_choices.clear()
-            vi_choices.update((item.label, item) for item in
-                self.service.vietnamese_units(self.state, SectionName(section.get())))
             ja_choices.clear()
             ja_choices.update((item.label, item) for item in
                 self.service.japanese_choices(self.state, SectionName(section.get())))
-            vi_combo.configure(values=list(vi_choices))
             ja_combo.configure(values=list(ja_choices))
-            selected_vi.set("" if reset else next((label for label, item in vi_choices.items()
-                if item.text == placement.confirmed_vietnamese_text), ""))
             selected_ja.set("" if reset else next((label for label, item in ja_choices.items()
                 if item.sentence_id == placement.sentence_id), ""))
-            review()
+            vietnamese = self.state.sections[section.get()]["vi"].strip()
+            context.set("Tiếng Việt tham khảo: " + vietnamese if vietnamese else "")
         section.trace_add("write", lambda *_: update_choices(reset=True))
-        selected_vi.trace_add("write", suggest)
-        selected_ja.trace_add("write", review)
         update_choices()
         def approve():
             try:
-                vi_unit = vi_choices.get(selected_vi.get())
                 ja_unit = ja_choices.get(selected_ja.get())
-                if not vi_unit or not ja_unit:
-                    raise ValueError("Chọn câu Việt và câu Nhật tương ứng.")
-                if not messagebox.askyesno("Xác nhận lại", f"Tiếng Việt: {vi_unit.text}\n\n"
-                    f"Tiếng Nhật: {ja_unit.text}\n\nXác nhận cặp câu này cho ảnh KEY?", parent=dialog):
-                    return
+                if not ja_unit:
+                    raise ValueError("Hãy chọn câu Nhật cho ảnh KEY.")
                 working = deepcopy(self.state.project)
-                KeyPlacementService.confirm_mapping(working, self.state.directory, ja_unit.sentence_id, vi_unit.text)
                 KeyPlacementService.retarget_key(working, self.state.directory, placement_id,
                     ja_unit.sentence_id, force=True)
                 self.state.project = working
@@ -1534,7 +1450,7 @@ class StudioApp:
                 self._refresh_key_rows()
             except Exception as exc:
                 self._fail(str(exc))
-        ttk.Button(panel, text="Xác nhận lại KEY", command=approve).grid(row=5, column=1, sticky="e", pady=8)
+        ttk.Button(panel, text="Lưu vị trí KEY", command=approve).grid(row=3, column=1, sticky="e", pady=8)
         panel.columnconfigure(1, weight=1)
 
     def _choose_intro(self, section: SectionName) -> None:

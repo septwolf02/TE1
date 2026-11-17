@@ -88,12 +88,12 @@ def test_key_assignment_is_flagged_and_preserved_for_review(tmp_path):
     placement = service.confirm_key_draft(state, draft["id"], section=SectionName.P1,
                                           sentence_id=sentence_id, vietnamese_text="Câu Việt đầu.")
     plan = service.prepare_full_script_import(state, "P1\nCâu Việt mới.", "P1\n最初の文。")
-    assert plan.key_review == (placement.id,)
+    assert plan.key_review == ()
     assert state.project.key_placements[0].status == "ready"
     service.apply_full_script_import(state, plan)
     reopened = service.open_project(state.directory)
     assert reopened.project.key_placements[0].id == placement.id
-    assert reopened.project.key_placements[0].status == "manual_review"
+    assert reopened.project.key_placements[0].status == "ready"
     assert reopened.project.key_placements[0].confirmed_vietnamese_text == "Câu Việt đầu."
 
 

@@ -65,8 +65,9 @@ class SentenceSpeechService:
         project.sentence_audio_records = [record for record in project.sentence_audio_records
                                           if record.sentence_id in active]
         for placement in project.key_placements:
-            unit = next((unit for unit in project.sentence_units if unit.id == placement.sentence_id), None)
-            if unit is None or not unit.mapping_confirmed or unit.vietnamese_reference != placement.confirmed_vietnamese_text:
+            before = next((unit for unit in old if unit.id == placement.sentence_id), None)
+            after = next((unit for unit in project.sentence_units if unit.id == placement.sentence_id), None)
+            if before is not None and (after is None or before.synthesis_text != after.synthesis_text):
                 placement.status = "manual_review"
         surviving = {unit.id: unit.order for unit in replacement}
         for sentence_id, new_text in rewritten_captions.items():
@@ -96,9 +97,6 @@ class SentenceSpeechService:
             raise KeyError(sentence_id)
         unit.vietnamese_reference = vietnamese_text
         unit.mapping_confirmed = True
-        for placement in project.key_placements:
-            if placement.sentence_id == sentence_id and placement.confirmed_vietnamese_text != vietnamese_text:
-                placement.status = "manual_review"
         project.validate()
 
     @staticmethod

@@ -455,9 +455,6 @@ class StudioService:
             for unit in project.sentence_units:
                 if unit.segment_id in segment_ids and unit.mapping_confirmed and unit.vietnamese_reference not in source_sentences:
                     unit.mapping_confirmed = False
-                    for placement in project.key_placements:
-                        if placement.sentence_id == unit.id:
-                            placement.status = "manual_review"
         project.validate()
         splitter = SentenceSpeechService()
         for segment in updated:
@@ -594,6 +591,8 @@ class StudioService:
                     for section in SectionName}
         changed = [section.value for section in SectionName
                    if state.sections[section.value] != proposed[section.value]]
+        changed_japanese = {section.value for section in SectionName
+                            if state.sections[section.value]["ja"] != proposed[section.value]["ja"]}
         overwritten = tuple(section for section in changed
                             if any(state.sections[section].values()) and
                             any(proposed[section].values()))
@@ -610,7 +609,7 @@ class StudioService:
             old_segment = next((segment for segment in state.project.segments
                                 if old_unit and segment.id == old_unit.segment_id), None)
             new_key = next((item for item in trial.key_placements if item.id == key.id), None)
-            if (old_segment and old_segment.section.value in changed) or (
+            if (old_segment and old_segment.section.value in changed_japanese) or (
                     new_key and new_key.status != key.status):
                 impacted.append(key.id)
         warnings = list(alignment_warnings(vi, ja))
@@ -819,16 +818,15 @@ class StudioService:
             if selected is None:
                 raise ValueError("Câu Việt đã thay đổi; hãy chọn lại trước khi xác nhận.")
             vietnamese_text = selected.text
-        if not vietnamese_text or not vietnamese_text.strip():
-            raise ValueError("Hãy chọn câu tiếng Việt tương ứng trước.")
         unit = next((u for u in state.project.sentence_units if u.id == sentence_id), None)
         segment = next((s for s in state.project.segments if unit and s.id == unit.segment_id), None)
         if segment is None or segment.section != SectionName(section):
-            raise ValueError("Câu Nhật không thuộc phần đã chọn.")
+            raise ValueError("Câu Nhật đã thay đổi hoặc không thuộc phần đã chọn; hãy chọn lại.")
         duration_ms = round((duration_seconds if duration_seconds is not None else
                              state.image_min_seconds) * 1000)
         working = deepcopy(state.project)
-        KeyPlacementService.confirm_mapping(working, state.directory, sentence_id, vietnamese_text)
+        if vietnamese_text and vietnamese_text.strip():
+            KeyPlacementService.confirm_mapping(working, state.directory, sentence_id, vietnamese_text)
         placement = KeyPlacementService.assign_key(working, state.directory, draft["media_id"],
             sentence_id, offset_ms=offset_ms, duration_ms=duration_ms)
         state.project = working

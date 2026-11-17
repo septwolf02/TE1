@@ -413,12 +413,11 @@ class Project:
                 raise ValueError("Invalid KEY duration")
             if placement.status not in ("ready", "manual_review") or not isinstance(placement.locked, bool):
                 raise ValueError("Invalid KEY status or lock")
-            if not placement.confirmed_vietnamese_text.strip() or not isinstance(placement.notes, str):
+            if not isinstance(placement.confirmed_vietnamese_text, str) or not isinstance(placement.notes, str):
                 raise ValueError("Invalid KEY mapping or notes")
             unit = sentence_by_id.get(placement.sentence_id)
-            if placement.status == "ready" and (unit is None or not unit.mapping_confirmed or
-                    unit.vietnamese_reference != placement.confirmed_vietnamese_text):
-                raise ValueError("KEY placement requires current confirmed VN-JP mapping")
+            if placement.status == "ready" and unit is None:
+                raise ValueError("KEY placement requires a current Japanese sentence")
             key_ids.add(placement.id)
             placed_key_media.add(placement.media_id)
         seen_sentence_audio: set[str] = set()
@@ -534,7 +533,9 @@ class Project:
             units = {unit.id: unit for unit in project.sentence_units}
             for placement in project.key_placements:
                 unit = units.get(placement.sentence_id)
-                if unit is None or not unit.mapping_confirmed or unit.vietnamese_reference != placement.confirmed_vietnamese_text:
+                # Legacy VN-JP evidence stays in the saved record. KEY validity now follows
+                # the Japanese sentence ID; missing targets still require manual review.
+                if unit is None:
                     placement.status = "manual_review"
             project.validate()
             return project
