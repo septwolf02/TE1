@@ -18,7 +18,7 @@ MODES = {"immediate", "scheduled"}
 STATUSES = {"draft", "ready", "uploading", "processing", "configuring",
             "scheduled", "published", "failed", "needs_attention", "private_test"}
 # Legacy project metadata has no connection_type; retain its API-era meaning.
-DEFAULTS = {"channel_id": "", "connection_type": "youtube_api", "video_path": "", "thumbnail_path": "", "title": "",
+DEFAULTS = {"channel_id": "", "studio_catalog_key": "", "connection_type": "youtube_api", "video_path": "", "thumbnail_path": "", "title": "",
             "description": "", "tags": "", "playlist": "", "audience": "not_made_for_kids",
             "mode": "immediate", "scheduled_local": "", "timezone": "Asia/Tokyo",
             "monetization": "requested", "end_screen": "most_recent_upload",
@@ -186,6 +186,43 @@ class PublisherStore:
                "last_confirmed_operation": "source_validated",
                "created_at": datetime.now().astimezone().isoformat()}
         self.data["jobs"].append(job)
+        self._save()
+        return deepcopy(job)
+
+    def prepare_studio_draft(self, project_id: str, metadata: dict, channel: dict) -> dict:
+        """Save a local publishing plan; no browser or API operation is started."""
+        meta = normalize_metadata(metadata)
+        if meta["connection_type"] != "studio_connector" or not channel.get("key") or \
+                channel.get("key") != meta["studio_catalog_key"]:
+            raise ValueError("Chọn một bản ghi Studio Connector trong bảng kênh.")
+        if channel.get("id") and not CHANNEL_ID.fullmatch(channel["id"]):
+            raise ValueError("Channel ID của bản ghi Studio không hợp lệ.")
+        video = Path(meta["video_path"])
+        if not video.is_file() or video.suffix.lower() != ".mp4" or video.stat().st_size == 0:
+            raise ValueError("Chọn file Full HD MP4 có dữ liệu trước khi lưu bản nháp Studio.")
+        if meta["thumbnail_path"]:
+            thumbnail = Path(meta["thumbnail_path"])
+            if not thumbnail.is_file() or thumbnail.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+                raise ValueError("Thumbnail phải là file PNG hoặc JPEG đang tồn tại.")
+        if not meta["title"].strip() or len(meta["title"]) > 100:
+            raise ValueError("Tiêu đề tiếng Nhật phải có 1–100 ký tự.")
+        if not channel.get("name") and not channel.get("display_name"):
+            raise ValueError("Bản ghi kênh chưa có tên hiển thị.")
+        meta["channel_id"] = channel.get("id") or ""
+        key = "studio-draft:" + sha256(f"{project_id}:{meta['studio_catalog_key']}".encode()).hexdigest()
+        job = next((item for item in self.data["jobs"] if item.get("fingerprint") == key), None)
+        if job is None:
+            job = {"id": uuid4().hex, "fingerprint": key, "project_id": project_id,
+                   "created_at": datetime.now().astimezone().isoformat()}
+            self.data["jobs"].append(job)
+        job.update(channel_id=meta["channel_id"], channel_key=meta["studio_catalog_key"],
+                   channel_name=channel.get("name") or channel.get("display_name"),
+                   channel_handle=channel.get("handle", ""),
+                   id_source=channel.get("id_source", "missing"), credential_ref="",
+                   source={"path": str(video.resolve()), "bytes": video.stat().st_size},
+                   metadata=meta, status="draft", video_id="", video_url="", error="",
+                   last_confirmed_operation="metadata_saved",
+                   updated_at=datetime.now().astimezone().isoformat())
         self._save()
         return deepcopy(job)
 

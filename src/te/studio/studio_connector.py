@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from te.project.manager import _write_json
 from .channel_probe import channel_id_from_url
+from .publisher import CHANNEL_ID
 
 MAX_MESSAGE_BYTES = 1024 * 1024
 MAX_CHANNELS = 100
@@ -120,6 +121,38 @@ class StudioConnectorStore:
     def __init__(self, config_path: Path):
         self.path = Path(config_path).parent / "studio-connector" / "scan.json"
 
+    def _raw_data(self) -> dict:
+        if not self.path.exists():
+            return {"schema": 1, "channels": []}
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("schema") != 1 or not isinstance(data.get("channels"), list):
+            raise ValueError("Catalog Studio Connector không hợp lệ.")
+        return data
+
+    def catalog_records(self) -> list[dict]:
+        """Return stored catalog rows without converting old observations to stale UI status."""
+        return [dict(item) for item in self._raw_data()["channels"]
+                if isinstance(item, dict) and item.get("key")]
+
+    def link_manual_id(self, key: str, channel_id: str) -> dict:
+        """Keep discovery evidence intact; a typed ID is never Studio-verified."""
+        if not CHANNEL_ID.fullmatch(channel_id):
+            raise ValueError("Channel ID phải có dạng UC và 22 ký tự tiếp theo.")
+        data = self._raw_data()
+        matches = [item for item in data["channels"] if item.get("key") == key]
+        if len(matches) != 1:
+            raise ValueError("Không tìm thấy đúng một bản ghi kênh; hãy quét lại catalog.")
+        record = matches[0]
+        if record.get("id_source") in {"studio_url", "studio_link", "studio_url_user_confirmed"}:
+            raise ValueError("ID đã có chứng cứ Studio; không thể sửa bằng nhập tay.")
+        if any(item is not record and item.get("id") == channel_id for item in data["channels"]):
+            raise ValueError("Channel ID này đã gắn với một bản ghi khác.")
+        record.update(id=channel_id, id_source="user_supplied", status="identity_user_supplied",
+                      permission_status="permission_unverified", upload_status="upload_unverified")
+        data["catalog_synced_at"] = datetime.now(timezone.utc).isoformat()
+        _write_json(self.path, data)
+        return dict(record)
+
     def save_message(self, message: object) -> dict:
         result = validate_scan(message)
         result["latest_verified_count"] = sum(item["status"] == "identity_verified" for item in result["channels"])
@@ -127,7 +160,7 @@ class StudioConnectorStore:
         result["latest_id_count"] = sum(bool(item["id"]) for item in result["channels"])
         result["latest_active_status"] = next((item["status"] for item in result["channels"] if item["active"]), "")
         if self.path.exists():
-            old = self.load()
+            old = self._raw_data()
             seen = {item["id"] for item in result["channels"] if item["id"]}
             by_id = {item["id"]: index for index, item in enumerate(result["channels"]) if item["id"]}
             for item in old["channels"]:
@@ -140,8 +173,8 @@ class StudioConnectorStore:
                     # A later name-less view must not erase a previously observed name for the same URL ID.
                     result["channels"][index] = item
             result["channels"].extend(item for item in old["channels"]
-                if item.get("id") and item.get("id") not in seen and
-                item.get("evidence") == "visible_studio_link")
+                if item.get("id") not in seen and
+                (item.get("key") or item.get("evidence") == "visible_studio_link"))
         _write_json(self.path, result)
         return result
 
@@ -176,18 +209,20 @@ class StudioConnectorStore:
                     not isinstance(handle, str) or handle and not HANDLE.fullmatch(handle) or
                     any(not isinstance(value, str) or len(value) > 160 or any(ord(ch) < 32 for ch in value)
                         for value in (discovered, display)) or not _studio_url(url) or
-                    (channel_id_from_url(url) or "") != channel_id or
+                    (channel_id_from_url(url) or "") != ("" if id_source == "user_supplied" else channel_id) or
+                    (id_source == "user_supplied" and not channel_id) or
+                    (bool(channel_id) != (id_source != "missing")) or
                     not isinstance(raw.get("user_edited"), bool) or
                     raw.get("user_edited") and raw.get("name_source") != "user_edited" or
                     name_source not in {"missing", "studio_switcher_dom", "studio_identity_dom", "user_edited"} or
-                    id_source not in {"missing", "studio_url", "studio_link", "studio_url_user_confirmed"} or
+                    id_source not in {"missing", "studio_url", "studio_link", "studio_url_user_confirmed", "user_supplied"} or
                     handle_source not in {"missing", "studio_switcher_dom"} or
                     not isinstance(evidence, str) or len(evidence) > 80 or
                     evidence not in {"visible_switcher_item", "active_studio_url"} or
                     raw.get("permission_status") != "permission_unverified" or
                     raw.get("upload_status") != "upload_unverified"):
                 raise ValueError("Tên, ID, handle hoặc chứng cứ catalog không hợp lệ.")
-            if channel_id and not channel_id.startswith("UC"):
+            if channel_id and not CHANNEL_ID.fullmatch(channel_id):
                 raise ValueError("Channel ID không hợp lệ.")
             if not channel_id and not handle and not discovered:
                 raise ValueError("Ứng viên thiếu tên, handle và ID.")
@@ -195,7 +230,8 @@ class StudioConnectorStore:
             if channel_id:
                 ids.add(channel_id)
             name_source = "user_edited" if raw["user_edited"] else name_source
-            status = ("identity_user_confirmed" if channel_id and raw.get("id_source") == "studio_url_user_confirmed" else
+            status = ("identity_user_supplied" if id_source == "user_supplied" else
+                      "identity_user_confirmed" if channel_id and id_source == "studio_url_user_confirmed" else
                       "identity_verified" if channel_id and discovered else
                       "identity_user_named" if channel_id and display and raw["user_edited"] else
                       "identity_incomplete" if channel_id else "discovered")
@@ -210,7 +246,24 @@ class StudioConnectorStore:
                 "duplicate_name":raw.get("duplicate_name") is True,
                 "duplicate_handle":raw.get("duplicate_handle") is True,
                 "connection_type":"studio_connector"})
-        previous = self.load()["channels"]
+        previous = self._raw_data()["channels"]
+        previous_by_key = {item.get("key"): item for item in previous if item.get("key")}
+        for item in incoming:
+            old = previous_by_key.get(item["key"])
+            if old and old.get("id_source") == "user_supplied" and item["id_source"] != "studio_url_user_confirmed":
+                item.update(id=old["id"], id_source="user_supplied", status="identity_user_supplied",
+                            source_url=old["source_url"])
+            elif old and old.get("id_source") == "user_supplied" and item["id"] != old["id"]:
+                raise ValueError("ID xác minh không khớp ID nhập tay; hãy sửa bản ghi trong TE trước.")
+            elif old and old.get("id_source") in {"studio_url", "studio_link", "studio_url_user_confirmed"}:
+                if item["id"] and item["id"] != old["id"]:
+                    raise ValueError("ID mới xung đột với ID có chứng cứ Studio.")
+                if not item["id"] or item["id_source"] == "user_supplied":
+                    item.update(id=old["id"], id_source=old["id_source"], status=old["status"],
+                                source_url=old["source_url"])
+        all_ids = [item["id"] for item in incoming if item["id"]]
+        if len(all_ids) != len(set(all_ids)):
+            raise ValueError("Một Channel ID đang gắn với nhiều bản ghi khác nhau.")
         previous_by_id = {item["id"]: item for item in previous if item.get("id")}
         for item in incoming:
             old = previous_by_id.get(item["id"])
@@ -226,6 +279,9 @@ class StudioConnectorStore:
         incoming.extend(item for item in previous if
             (item.get("key") or ("id:" + item["id"] if item.get("id") else "")) not in by_key and
             (not item.get("id") or item["id"] not in ids))
+        all_ids = [item["id"] for item in incoming if item.get("id")]
+        if len(all_ids) != len(set(all_ids)):
+            raise ValueError("Một Channel ID đang gắn với nhiều bản ghi khác nhau.")
         result = {"schema":1, "channels":incoming, "scanned_at":now, "complete_channel_list":False,
                   "catalog_synced_at":now}
         _write_json(self.path, result)

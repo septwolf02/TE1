@@ -38,7 +38,12 @@ function mergeCatalog(existing, observations, keyFactory) {
       const exact = old => !old.id && old.handle === incoming.handle &&
         old.discovered_name === incoming.discovered_name && old.source_url === incoming.source_url &&
         old.evidence === incoming.evidence;
-      index = result.findIndex((old, position) => !matched.has(position) && exact(old));
+      const manualExact = old => old.id_source === "user_supplied" &&
+        old.handle === incoming.handle &&
+        old.discovered_name === incoming.discovered_name && old.source_url === incoming.source_url &&
+        old.evidence === incoming.evidence;
+      index = result.findIndex((old, position) => !matched.has(position) &&
+        (exact(old) || manualExact(old)));
       if (index < 0 && incoming.handle) {
         const handleMatch = row => !row.id && row.handle === incoming.handle &&
           row.source_url === incoming.source_url;
@@ -50,12 +55,35 @@ function mergeCatalog(existing, observations, keyFactory) {
     matched.add(index);
     const old = result[index];
     result[index] = {...old, ...incoming, key: old.key,
+      id:old.id_source === "user_supplied" && !incoming.id ? old.id : incoming.id,
+      status:old.id_source === "user_supplied" && !incoming.id ? old.status : incoming.status,
+      source_url:old.id_source === "user_supplied" && !incoming.id ? old.source_url : incoming.source_url,
       display_name: old.user_edited ? old.display_name : incoming.discovered_name || old.display_name,
       discovered_name: incoming.discovered_name || old.discovered_name,
       name_source: old.user_edited ? "user_edited" : incoming.discovered_name ? incoming.name_source : old.name_source,
       user_edited: !!old.user_edited, id_source: incoming.id_source !== "missing" ? incoming.id_source : old.id_source};
   }
   return markDuplicates(result);
+}
+
+function mergeRemoteCatalog(local, remote) {
+  const rows = Array.isArray(local) ? local.map(row=>({...row})) : [];
+  for (const item of Array.isArray(remote) ? remote : []) {
+    if (!item || typeof item.key !== "string") continue;
+    const index = rows.findIndex(row=>row.key===item.key);
+    if (index < 0) { rows.push({...item}); continue; }
+    const old = rows[index];
+    const oldVerified = ["studio_url", "studio_link", "studio_url_user_confirmed"].includes(old.id_source);
+    if (oldVerified && item.id && item.id !== old.id)
+      throw new Error("ID trong Chrome và TE xung đột; cần kiểm tra trước khi đồng bộ.");
+    const keepVerified = oldVerified && old.id === item.id && item.id_source === "user_supplied";
+    rows[index] = {...old, ...item,
+      ...(keepVerified ? {id_source:old.id_source,status:old.status,source_url:old.source_url} : {}),
+      display_name:old.user_edited ? old.display_name : item.display_name || item.name || old.display_name,
+      name_source:old.user_edited ? "user_edited" : item.name_source,
+      user_edited:!!old.user_edited || !!item.user_edited};
+  }
+  return markDuplicates(rows);
 }
 
 function markDuplicates(rows) {
@@ -78,4 +106,5 @@ function editName(rows, key, value) {
     {...row, display_name:name, name_source:"user_edited", user_edited:true} : row));
 }
 
-if (typeof module !== "undefined") module.exports = {normalizeObservation, mergeCatalog, markDuplicates, editName};
+if (typeof module !== "undefined") module.exports = {normalizeObservation, mergeCatalog,
+  mergeRemoteCatalog, markDuplicates, editName};

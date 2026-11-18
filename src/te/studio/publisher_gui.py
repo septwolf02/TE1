@@ -27,6 +27,7 @@ class PublisherController:
         self.channel_name = tk.StringVar()
         self.oauth_status = tk.StringVar(value="Owner OAuth: chưa kết nối kênh API trên máy này.")
         self.studio_status = tk.StringVar(value="Studio Connector: chưa nhận bản quét từ extension.")
+        self.manual_channel_id = tk.StringVar()
         app.root.after(300, self.poll)
 
     def build(self):
@@ -59,11 +60,28 @@ class PublisherController:
         ttk.Entry(box, textvariable=self.values["channel_id"], width=35, state="readonly").grid(row=4, column=1, sticky="ew")
         ttk.Label(box, text="Tên kênh").grid(row=5, column=0, sticky="w")
         ttk.Label(box, textvariable=self.channel_name).grid(row=5, column=1, sticky="w")
-        ttk.Label(box, text="Chọn kênh").grid(row=6, column=0, sticky="w")
-        self.channel_combo = ttk.Combobox(box, state="readonly")
-        self.channel_combo.grid(row=6, column=1, sticky="ew")
-        self.channel_combo.bind("<<ComboboxSelected>>", self._select_channel)
-        row = 7
+        ttk.Label(box, text="Danh sách kênh (chọn một hàng)").grid(row=6, column=0, columnspan=3, sticky="w")
+        table = ttk.Frame(box)
+        table.grid(row=7, column=0, columnspan=5, sticky="nsew", pady=4)
+        table.columnconfigure(0, weight=1)
+        columns = ("name", "handle", "id", "connection", "identity", "authorization")
+        self.channel_tree = ttk.Treeview(table, columns=columns, show="headings", height=11, selectmode="browse")
+        for key, label, width in (("name", "Tên kênh", 360), ("handle", "Handle", 145),
+                                  ("id", "Channel ID", 235), ("connection", "Kết nối", 135),
+                                  ("identity", "Danh tính", 150), ("authorization", "Upload", 165)):
+            self.channel_tree.heading(key, text=label)
+            self.channel_tree.column(key, width=width, minwidth=95, stretch=key == "name")
+        self.channel_tree.grid(row=0, column=0, sticky="nsew")
+        vertical = ttk.Scrollbar(table, orient="vertical", command=self.channel_tree.yview)
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal = ttk.Scrollbar(table, orient="horizontal", command=self.channel_tree.xview)
+        horizontal.grid(row=1, column=0, sticky="ew")
+        self.channel_tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.channel_tree.bind("<<TreeviewSelect>>", self._select_channel)
+        ttk.Label(box, text="ID nhập tay cho bản ghi Studio").grid(row=8, column=0, sticky="w")
+        ttk.Entry(box, textvariable=self.manual_channel_id, width=32).grid(row=8, column=1, sticky="ew")
+        ttk.Button(box, text="Gắn / sửa ID", command=self.link_manual_id).grid(row=8, column=2, sticky="w")
+        row = 9
         for key, label in (("video_path", "Video Full HD MP4"), ("thumbnail_path", "Thumbnail")):
             ttk.Label(box, text=label).grid(row=row, column=0, sticky="w")
             ttk.Entry(box, textvariable=self.values[key]).grid(row=row, column=1, sticky="ew")
@@ -94,6 +112,8 @@ class PublisherController:
                   wraplength=850).grid(row=row, column=0, columnspan=3, sticky="w", pady=5)
         row += 1
         ttk.Button(box, text="Lưu thông tin xuất bản", command=self.save).grid(row=row, column=0, sticky="w")
+        ttk.Button(box, text="Lưu bản nháp Studio (không upload)", command=self.save_studio_draft).grid(
+            row=row, column=2, sticky="w")
         self.upload_button = ttk.Button(box, text="Tải thử Riêng tư (Owner)", command=self.upload, state="disabled")
         self.upload_button.grid(row=row, column=1, sticky="w")
         row += 1
@@ -119,14 +139,39 @@ class PublisherController:
         except (OSError, ValueError, KeyError, TypeError):
             self.studio_status.set("Studio Connector: bản quét không đọc được; hãy quét lại trong extension.")
         self.channel_records = channels
-        self.channel_combo["values"] = [
-            f"{c['name'] or '(chưa có tên)'} — {c['id'] or '(chưa có ID)'} — " +
-            ("YouTube API: OAuth OK" if c.get("authorization_status") == "authorized" else
-             "YouTube API: chưa ủy quyền" if c["connection_type"] == "youtube_api" else
-             "Studio Connector: " + c["status"] +
-             (" • tên sửa tay" if c.get("name_source") == "user_edited" else ""))
-            for c in channels]
+        self.channel_by_iid = {}
+        for iid in self.channel_tree.get_children():
+            self.channel_tree.delete(iid)
+        for index, channel in enumerate(channels):
+            studio = channel["connection_type"] == "studio_connector"
+            iid = f"studio:{channel.get('key') or index}" if studio else f"api:{channel['id']}"
+            identity = ("ID nhập tay" if channel.get("id_source") == "user_supplied" else
+                        "ID từ Studio" if studio and channel.get("id") else
+                        "Chưa có ID" if studio else "OAuth API")
+            if studio and channel.get("status") == "unavailable":
+                identity += " • bản quét cũ"
+            authorization = ("Chưa xác minh" if studio else
+                             "OAuth được cấp" if channel.get("authorization_status") == "authorized" else
+                             channel.get("authorization_status", "chưa ủy quyền"))
+            self.channel_by_iid[iid] = channel
+            self.channel_tree.insert("", "end", iid=iid, values=(
+                channel.get("name") or channel.get("display_name") or "(chưa có tên)",
+                channel.get("handle") or "—", channel.get("id") or "(chưa có ID)",
+                "Studio Connector" if studio else "YouTube API", identity, authorization))
         self._refresh_upload_button()
+
+    def _selected_row(self):
+        selected = self.channel_tree.selection()
+        return self.channel_by_iid.get(selected[0]) if selected else None
+
+    def _focus_record(self, record):
+        iid = next((iid for iid, channel in self.channel_by_iid.items()
+                    if channel["connection_type"] == record["connection_type"] and
+                    (channel.get("key") == record.get("key") if record.get("key") else
+                     channel.get("id") == record.get("id"))), None)
+        if iid:
+            self.channel_tree.selection_set(iid)
+            self.channel_tree.see(iid)
 
     def _selected_connection(self):
         if self.values["connection_type"].get() != "youtube_api":
@@ -139,22 +184,34 @@ class PublisherController:
             self.upload_button.configure(state="normal" if self._selected_connection() else "disabled")
 
     def _select_channel(self, _event=None):
-        index = self.channel_combo.current()
-        channels = self.channel_records
-        if 0 <= index < len(channels):
-            selected = channels[index]
-            if selected["connection_type"] == "studio_connector" and selected["status"] not in \
-                    {"identity_verified", "identity_user_named", "identity_user_confirmed"} or \
-                    selected["connection_type"] == "studio_connector" and not selected["name"]:
-                self.status.set("Kênh Studio chưa có ID được xác minh hoặc bản quét đã cũ; không thể chọn làm đích.")
-                return
+        selected = self._selected_row()
+        if selected:
             self.values["channel_id"].set(selected["id"])
             self.values["connection_type"].set(selected["connection_type"])
-            self.channel_name.set(selected["name"])
+            self.values["studio_catalog_key"].set(selected.get("key", "") if
+                selected["connection_type"] == "studio_connector" else "")
+            self.channel_name.set(selected.get("name") or selected.get("display_name") or "")
+            self.manual_channel_id.set(selected.get("id", "") if
+                selected.get("id_source") == "user_supplied" else "")
             self.oauth_status.set("Studio Connector: quyền upload chưa xác minh" if
                 selected["connection_type"] == "studio_connector" else
-                "API authorization: " + selected["authorization_status"])
+                "API authorization: " + selected.get("authorization_status", "chưa ủy quyền"))
             self._refresh_upload_button()
+
+    def link_manual_id(self):
+        selected = self._selected_row()
+        if not selected or selected.get("connection_type") != "studio_connector" or not selected.get("key"):
+            self.status.set("Chọn một bản ghi Studio Connector trong bảng trước.")
+            return
+        try:
+            updated = self.studio_store.link_manual_id(selected["key"], self.manual_channel_id.get().strip())
+        except (ValueError, OSError) as exc:
+            self.status.set(str(exc))
+            return
+        self.refresh_channels()
+        self._focus_record(updated)
+        self._select_channel()
+        self.status.set("Đã lưu ID nhập tay; chưa xác minh bằng Studio và chưa có quyền upload. Mở Side Panel để đồng bộ sang Chrome.")
 
     def scan_studio(self):
         """Refresh the latest user-triggered Chrome scan; TE never drives Chrome."""
@@ -176,13 +233,17 @@ class PublisherController:
         self.description.delete("1.0", "end")
         self.description.insert("1.0", meta["description"])
         self.refresh_channels()
-        selected = next((c for c in self.channel_records if c["id"] == meta["channel_id"] and
-                         c["connection_type"] == meta["connection_type"]), None)
+        selected = next((c for c in self.channel_records if c["connection_type"] == meta["connection_type"] and
+                         (c.get("key") == meta["studio_catalog_key"] if meta["connection_type"] == "studio_connector"
+                          and meta["studio_catalog_key"] else c["id"] == meta["channel_id"])), None)
         if selected:
-            self.channel_combo.current(self.channel_records.index(selected))
+            self._focus_record(selected)
         else:
-            self.channel_combo.set("")
-        self.channel_name.set(selected["name"] if selected else "")
+            current = self.channel_tree.selection()
+            if current:
+                self.channel_tree.selection_remove(*current)
+        self.channel_name.set((selected.get("name") or selected.get("display_name") or "") if selected else "")
+        self.manual_channel_id.set(selected["id"] if selected and selected.get("id_source") == "user_supplied" else "")
         self.oauth_status.set("Studio Connector: quyền upload chưa xác minh" if selected and
             selected["connection_type"] == "studio_connector" else
             "API authorization: " + (selected["authorization_status"] if selected else "chưa kết nối"))
@@ -214,6 +275,23 @@ class PublisherController:
     def save(self):
         self.capture()
         self.app._save()
+
+    def save_studio_draft(self):
+        selected = self._selected_row()
+        if not selected or selected.get("connection_type") != "studio_connector" or not selected.get("key"):
+            self.status.set("Chọn một bản ghi Studio Connector trong bảng trước.")
+            return
+        self.capture()
+        if not self.app.state or not self.app._save():
+            return
+        try:
+            job = self.store.prepare_studio_draft(self.app.state.project.id,
+                self.app.state.publisher, selected)
+        except (ValueError, OSError) as exc:
+            self.status.set(str(exc))
+            return
+        self.values["status"].set(job["status"])
+        self.status.set("Đã lưu bản nháp Studio trên máy; chưa upload hoặc thay đổi cài đặt YouTube.")
 
     def _start(self, action, worker):
         if self.busy:
@@ -362,9 +440,8 @@ class PublisherController:
                 self.refresh_channels()
                 self.values["channel_id"].set(result["id"])
                 self.values["connection_type"].set("youtube_api")
-                self.channel_combo.current(next(i for i, channel in enumerate(self.channel_records)
-                                                if channel["id"] == result["id"] and
-                                                channel["connection_type"] == "youtube_api"))
+                self.values["studio_catalog_key"].set("")
+                self._focus_record({"id": result["id"], "connection_type": "youtube_api"})
                 self.channel_name.set(result["name"])
                 self._refresh_upload_button()
                 self.oauth_status.set(f"OAuth OK: {result['name']} — {result['id']}")

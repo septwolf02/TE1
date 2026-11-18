@@ -148,6 +148,57 @@ def test_unresolved_duplicate_names_remain_distinct_candidates(tmp_path):
     assert {item["key"] for item in store.load()["channels"]} == {"candidate:one", "candidate:two"}
 
 
+def test_manual_channel_id_correction_sync_and_studio_verification(tmp_path):
+    config = tmp_path / "settings.json"
+    store = StudioConnectorStore(config)
+    candidate = {**catalog_record(A, "大谷翔平速報", edited=True), "key":"candidate:one",
+                 "id":"", "id_source":"missing", "status":"discovered",
+                 "source_url":"https://studio.youtube.com/"}
+    other = {**catalog_record(B, "別のチャンネル"), "key":"candidate:two",
+             "id":"", "id_source":"missing", "status":"discovered",
+             "source_url":"https://studio.youtube.com/"}
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[candidate, other]})
+    with pytest.raises(ValueError, match="Channel ID"):
+        store.link_manual_id("candidate:one", "not-a-channel")
+    store.link_manual_id("candidate:one", A)
+    corrected = store.link_manual_id("candidate:one", B)
+    assert corrected["id_source"] == "user_supplied" and corrected["status"] == "identity_user_supplied"
+    assert corrected["name"] == "Edited 大谷翔平速報" and corrected["handle"] == "@sample"
+    with pytest.raises(ValueError, match="đã gắn"):
+        store.link_manual_id("candidate:two", B)
+    # A stale Chrome draft cannot undo a correction made in TE.
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[candidate, other]})
+    assert store.catalog_records()[0]["id"] == B
+    fetched = handle(json.dumps({"type":"catalog_get", "schema":1}).encode(), config)
+    assert fetched["records"][0]["id_source"] == "user_supplied"
+    assert len(fetched["records"]) == 2
+    verified = {**candidate, "id":B, "id_source":"studio_url_user_confirmed",
+                "source_url":page(B), "status":"identity_user_confirmed"}
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[verified, other]})
+    assert StudioConnectorStore(config).catalog_records()[0]["status"] == "identity_user_confirmed"
+    assert StudioConnectorStore(config).catalog_records()[0]["name"] == "Edited 大谷翔平速報"
+
+
+def test_manual_id_cannot_replace_verified_id_or_collide_with_old_record(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    verified = catalog_record(A, "Confirmed")
+    candidate = {**catalog_record(B, "Candidate"), "key":"candidate:other", "id":"",
+                 "id_source":"missing", "source_url":"https://studio.youtube.com/"}
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[verified, candidate]})
+    with pytest.raises(ValueError, match="chứng cứ Studio"):
+        store.link_manual_id(verified["key"], B)
+    with pytest.raises(ValueError, match="đã gắn"):
+        store.link_manual_id(candidate["key"], A)
+    assert len(store.catalog_records()) == 2
+    stale = {**verified, "id":"", "id_source":"missing",
+             "source_url":"https://studio.youtube.com/"}
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[stale, candidate]})
+    assert store.catalog_records()[0]["id"] == A
+    malformed = {**candidate, "id":"UCshort", "id_source":"user_supplied"}
+    with pytest.raises(ValueError, match="ID"):
+        store.save_catalog({"type":"catalog_sync", "schema":1, "records":[malformed]})
+
+
 def test_bulk_sync_missing_name_keeps_previous_name(tmp_path):
     store = StudioConnectorStore(tmp_path / "settings.json")
     store.save_catalog({"type":"catalog_sync", "schema":1,

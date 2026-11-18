@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
-const {mergeCatalog, editName, markDuplicates} = require("../studio_connector_extension/catalog.js");
-Object.assign(globalThis,{mergeCatalog,editName,markDuplicates});
+const {mergeCatalog, mergeRemoteCatalog, editName, markDuplicates} = require("../studio_connector_extension/catalog.js");
+Object.assign(globalThis,{mergeCatalog,mergeRemoteCatalog,editName,markDuplicates});
 const {startBulkScan, stopBulkScan, diagnoseChannelMenu, beginRegionTargeting,
   cancelRegionTargeting, confirmRegion, inNavigationDrawer, visibleSwitcherEntry} =
   require("../studio_connector_extension/content.js");
@@ -29,6 +29,18 @@ function fakeElement(tag="div") {
   rows = editName(rows,"id:"+A,"Edited A");
   rows = mergeCatalog(rows,[observation(A,"New DOM"),observation(B,"Same")]);
   assert.equal(rows.find(row=>row.id===A).display_name,"Edited A");
+  let localCandidate=mergeCatalog([], [{id:"",name:"日本語の候補",handle:"@candidate",
+    source_url:"https://studio.youtube.com/",evidence:"visible_switcher_item"}]);
+  localCandidate=editName(localCandidate,localCandidate[0].key,"編集した名前");
+  const remoteCandidate={...localCandidate[0],id:B,id_source:"user_supplied",
+    status:"identity_user_supplied"};
+  localCandidate=mergeRemoteCatalog(localCandidate,[remoteCandidate]);
+  assert.equal(localCandidate[0].id,B);
+  assert.equal(localCandidate[0].display_name,"編集した名前");
+  localCandidate=mergeCatalog(localCandidate,[{id:"",name:"日本語の候補",handle:"@candidate",
+    source_url:"https://studio.youtube.com/",evidence:"visible_switcher_item"}]);
+  assert.equal(localCandidate.length,1);
+  assert.equal(localCandidate[0].id_source,"user_supplied");
   assert.equal(rows.find(row=>row.id===A).discovered_name,"New DOM");
   const unresolved = {id:"",name:"Candidate",handle:"@candidate",source_url:"https://studio.youtube.com/"};
   rows = mergeCatalog(rows,[unresolved]);
@@ -117,12 +129,15 @@ function fakeElement(tag="div") {
   assert(accumulated.some(row=>!row.id));
 
   global.document={createElement:fakeElement};
-  const state={}; let failHost=true;
+  const state={}; let failHost=true, teRecords=[];
   const messages=event();
   const chromeMock={storage:{local:{async get(keys){return {...state};},async set(value){Object.assign(state,value);}}},
     runtime:{onMessage:messages,connectNative(){const onMessage=event(),onDisconnect=event();
       return {onMessage,onDisconnect,postMessage(payload){
-        setTimeout(()=>failHost?onDisconnect.emit():onMessage.emit({ok:true,count:payload.records.length}),0);
+        if (payload.type==="catalog_sync" && !failHost) teRecords=payload.records;
+        setTimeout(()=>failHost?onDisconnect.emit():onMessage.emit(payload.type==="catalog_get" ?
+          {ok:true,count:teRecords.length,records:teRecords} :
+          {ok:true,count:payload.records.length}),0);
       },disconnect(){}};}},
     tabs:{async query(){return [{id:1,url:url(A)}]},async sendMessage(id,message){
       return message.type==="diagnose_channel_menu" ? {first:diagnostic,last:diagnostic,dynamics:{}} :
@@ -160,4 +175,12 @@ function fakeElement(tag="div") {
   failHost=false;
   await reopened.save();
   assert.equal(state.studioUnsynced,false);
+  assert.equal(teRecords.length,1);
+  teRecords.push({...remoteCandidate,key:"candidate:from-te"});
+  const afterTeEdit=await createPanel(chromeMock,ui(),{duration:1000,hostTimeout:50});
+  assert.equal(afterTeEdit.getRows().find(row=>row.key==="candidate:from-te").id,B);
+  assert.equal(afterTeEdit.getRows().find(row=>row.key==="candidate:from-te").id_source,"user_supplied");
+  await afterTeEdit.save();
+  assert.equal(teRecords.find(row=>row.key==="candidate:from-te").id,B);
+  assert.equal(teRecords.length,2);
 })().catch(error=>{console.error(error);process.exitCode=1;});

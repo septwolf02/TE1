@@ -7,7 +7,7 @@ function withTimeout(promise, ms, message) {
   })]).finally(() => clearTimeout(timer));
 }
 
-function nativeSync(chromeApi, records, timeoutMs = 15000) {
+function nativeRequest(chromeApi, payload, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     let port, done = false, timer;
     const finish = (error, value) => {
@@ -27,9 +27,13 @@ function nativeSync(chromeApi, records, timeoutMs = 15000) {
         if (!done) finish(new Error("Native Host ngắt kết nối. Bản catalog vẫn được giữ trong Chrome; kiểm tra installer rồi bấm Lưu lại."));
       });
       timer = setTimeout(() => finish(new Error("Native Host quá hạn 15 giây. Catalog vẫn ở Chrome; thử Lưu lại.")), timeoutMs);
-      port.postMessage({type:"catalog_sync", schema:1, records});
+      port.postMessage(payload);
     } catch (error) { finish(new Error("Không mở được Native Host. Catalog vẫn ở Chrome; kiểm tra cài đặt và Extension ID.")); }
   });
+}
+
+function nativeSync(chromeApi, records, timeoutMs = 15000) {
+  return nativeRequest(chromeApi, {type:"catalog_sync", schema:1, records}, timeoutMs);
 }
 
 async function createPanel(chromeApi, ui, defaults = {}) {
@@ -44,10 +48,20 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   rows = Array.isArray(saved.studioDraft) ? saved.studioDraft : Array.isArray(saved.studioCatalog) ? saved.studioCatalog : [];
   dirty = !!saved.studioUnsynced || JSON.stringify(saved.studioCatalog || []) !== JSON.stringify(rows);
   const status = message => { ui.status.textContent = message; };
+  const pullCatalog = async () => {
+    const reply = await nativeRequest(chromeApi, {type:"catalog_get",schema:1}, defaults.hostTimeout || 15000);
+    if (!Array.isArray(reply.records)) throw new Error("Native Host không trả về catalog hợp lệ.");
+    rows = mergeRemoteCatalog(rows, reply.records);
+    await chromeApi.storage.local.set({studioCatalog:rows, studioDraft:rows, studioUnsynced:dirty});
+    render();
+    return reply.count;
+  };
   const render = () => {
     ui.rows.replaceChildren();
     ui.counts.textContent = `Mục menu lượt quét này: ${observedThisScan.size} • ` +
-      `Catalog tích lũy: ${rows.length} • ID đã xác nhận: ${rows.filter(r=>r.id).length} • ` +
+      `Catalog tích lũy: ${rows.length} • ID có chứng cứ Studio: ${rows.filter(r=>r.id &&
+        ["studio_url", "studio_link", "studio_url_user_confirmed"].includes(r.id_source)).length} • ` +
+      `ID nhập tay: ${rows.filter(r=>r.id_source === "user_supplied").length} • ` +
       `Ứng viên thiếu ID: ${rows.filter(r=>!r.id).length} • ` +
       `Bản ghi ở TE sau lần đồng bộ gần nhất: ${syncedCount} • ` +
       (dirty ? "Chưa đồng bộ thay đổi mới" : "Đã đồng bộ catalog hiện tại");
@@ -70,7 +84,7 @@ async function createPanel(chromeApi, ui, defaults = {}) {
       const stateCell = tr.insertCell();
       stateCell.textContent = `${row.status}; quyền: chưa xác minh; upload: chưa xác minh` +
         (row.duplicate_name || row.duplicate_handle ? " • trùng tên/handle" : "");
-      if (!row.id) {
+      if (!row.id || row.id_source === "user_supplied") {
         const verify = document.createElement("button"); verify.textContent = "Xác minh ID (tùy chọn)";
         verify.addEventListener("click", () => {
           candidateKey = row.key;
@@ -183,9 +197,14 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   }
   async function save() {
     await storageWrite;
-    const snapshot = rows, savedRevision = revision;
-    await chromeApi.storage.local.set({studioCatalog:snapshot, studioDraft:snapshot, studioUnsynced:true});
+    await chromeApi.storage.local.set({studioCatalog:rows, studioDraft:rows, studioUnsynced:true});
     dirty = true; render();
+    try { await pullCatalog(); }
+    catch (error) {
+      status(`Chưa thể đồng bộ: ${error.message}. Catalog trong Chrome vẫn được giữ.`);
+      return;
+    }
+    const snapshot = rows, savedRevision = revision;
     status("Đã giữ catalog trong Chrome; đang đồng bộ sang TE…");
     try {
       const reply = await nativeSync(chromeApi, snapshot, defaults.hostTimeout || 15000);
@@ -201,14 +220,17 @@ async function createPanel(chromeApi, ui, defaults = {}) {
     } catch (error) { status(`Chưa đồng bộ TE: ${error.message}`); }
   }
   async function verify() {
-    const candidate = rows.find(row => row.key === candidateKey && !row.id);
-    if (!candidate) throw new Error("Chọn một ứng viên chưa có ID trong bảng trước.");
+    const candidate = rows.find(row => row.key === candidateKey &&
+      (!row.id || row.id_source === "user_supplied"));
+    if (!candidate) throw new Error("Chọn ứng viên thiếu ID hoặc có ID nhập tay trong bảng trước.");
     const tab = await activeTab();
     const reply = await chromeApi.tabs.sendMessage(tab.id, {type:"scan_visible_studio"});
     const active = reply?.channels?.find(row => row.id && row.id_source === "studio_url" &&
       reply.page_url?.startsWith(`https://studio.youtube.com/channel/${row.id}`));
     if (!active) throw new Error("URL Studio của kênh đang mở chưa có Channel ID UC hợp lệ.");
-    if (rows.some(row => row.id === active.id))
+    if (candidate.id && candidate.id !== active.id)
+      throw new Error("ID trên URL Studio khác ID nhập tay; hãy sửa ID trong TE trước.");
+    if (rows.some(row => row.key !== candidate.key && row.id === active.id))
       throw new Error("ID này đã có trong catalog; không tự gộp ứng viên để tránh mất chỉnh sửa.");
     const approved = (defaults.confirm || window.confirm)(
       `Bạn đã đối chiếu ứng viên “${candidate.display_name || candidate.handle}” với kênh đang mở có ID ${active.id}?\nViệc liên kết này do bạn xác nhận; quyền upload vẫn chưa được xác minh.`);
@@ -238,8 +260,10 @@ async function createPanel(chromeApi, ui, defaults = {}) {
     status("Đã sao chép báo cáo đã lọc. Hãy xem lại nội dung trước khi chia sẻ.");
   }
   render();
+  try { await pullCatalog(); }
+  catch (error) { status(`Chưa đọc được catalog từ TE: ${error.message}. Dữ liệu Chrome vẫn được giữ.`); }
   return {start, stop, save, verify, diagnose, copyDiagnostic,
-    target, cancelTarget, propose, confirmTarget,
+    target, cancelTarget, propose, confirmTarget, pullCatalog,
     getRows:()=>rows, merge, render};
 }
 
@@ -251,7 +275,7 @@ if (typeof document !== "undefined") {
     for (const [id, action] of [["start",panel.start],["stop",panel.stop],["save",panel.save],
       ["verify",panel.verify],["diagnose",panel.diagnose],["copyDiagnostic",panel.copyDiagnostic],
       ["target",panel.target],["cancelTarget",panel.cancelTarget],
-      ["confirmTarget",panel.confirmTarget]]) {
+      ["confirmTarget",panel.confirmTarget],["pullCatalog",panel.pullCatalog]]) {
       document.getElementById(id).addEventListener("click", () => action().catch(error => {
         ui.status.textContent = `Lỗi: ${error.message || error}`;
       }));
@@ -262,4 +286,4 @@ if (typeof document !== "undefined") {
     window.addEventListener("pagehide", () => panel.cancelTarget().catch(() => {}));
   }).catch(error => { ui.status.textContent = `Không mở được catalog: ${error.message}`; });
 }
-if (typeof module !== "undefined") module.exports = {withTimeout, nativeSync, createPanel};
+if (typeof module !== "undefined") module.exports = {withTimeout, nativeRequest, nativeSync, createPanel};
