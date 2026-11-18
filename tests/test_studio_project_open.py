@@ -1,6 +1,7 @@
 """Project loading safety and diagnostics without a Tk display."""
 import json
 import os
+from queue import Queue
 from types import SimpleNamespace
 
 import pytest
@@ -233,6 +234,39 @@ def test_channel_table_17_rows_manual_id_and_studio_draft(tmp_path):
     controller.channel_tree.selection_set(f"api:{CHANNEL}")
     controller._select_channel()
     assert controller._selected_connection()["id"] == CHANNEL
+
+
+def test_publisher_selection_request_updates_only_selected_studio_channel(tmp_path):
+    repo = service(tmp_path)
+    state = repo.create_project("Verify selected")
+    controller = publisher_harness(repo, state)
+    first = {"key":"candidate:first", "id":"", "handle":"@first",
+             "discovered_name":"同じ名前", "display_name":"同じ名前",
+             "name_source":"studio_switcher_dom", "handle_source":"studio_switcher_dom",
+             "id_source":"missing", "status":"discovered",
+             "permission_status":"permission_unverified", "upload_status":"upload_unverified",
+             "source_url":"https://studio.youtube.com/", "evidence":"visible_switcher_item",
+             "user_edited":False}
+    second = {**first, "key":"candidate:second", "handle":"@second"}
+    controller.studio_store.save_catalog({"type":"catalog_sync", "schema":1,
+                                          "records":[first, second]})
+    controller.refresh_channels()
+    controller.channel_tree.selection_set("studio:candidate:second")
+    controller._select_channel()
+    controller.open_studio_verification()
+    request = controller.studio_store.selection_request()
+    assert request["key"] == "candidate:second"
+    channel_id = "UC" + "b" * 22
+    studio_url = f"https://studio.youtube.com/channel/{channel_id}/videos"
+    controller.studio_store.confirm_selection(request["request_id"], studio_url,
+                                              studio_url, "Studio B")
+    controller.events = Queue()
+    controller.app.root = SimpleNamespace(winfo_exists=lambda: False)
+    controller.poll()
+    assert controller.values["channel_id"].get() == channel_id
+    assert controller._selected_connection() is None
+    assert controller.studio_store.catalog_records()[0]["id"] == ""
+    assert controller.studio_store.catalog_records()[1]["id"] == channel_id
 
 
 @pytest.mark.skipif(os.environ.get("TE_STUDIO_GUI_SMOKE") != "1", reason="requires a desktop display")

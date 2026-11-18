@@ -199,6 +199,103 @@ def test_manual_id_cannot_replace_verified_id_or_collide_with_old_record(tmp_pat
         store.save_catalog({"type":"catalog_sync", "schema":1, "records":[malformed]})
 
 
+def test_selection_request_confirms_url_without_granting_upload(tmp_path):
+    config = tmp_path / "settings.json"
+    store = StudioConnectorStore(config)
+    first = catalog_record(A, "同じ名前", edited=True)
+    second = {**catalog_record(B, "同じ名前"), "key": "candidate:second", "id": "",
+              "id_source": "missing", "status": "discovered",
+              "source_url": "https://studio.youtube.com/"}
+    store.save_catalog({"type": "catalog_sync", "schema": 1, "records": [first, second]})
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    request = store.create_selection_request("candidate:second", now=start)
+    assert request["id"] == "" and request["name"] == "同じ名前"
+    assert store.selection_request(now=start)["request_id"] == request["request_id"]
+    with pytest.raises(ValueError, match="URL Studio"):
+        store.confirm_selection(request["request_id"], "https://studio.youtube.com/",
+                                "https://studio.youtube.com/", now=start)
+    with pytest.raises(ValueError, match="bản ghi kênh khác"):
+        store.confirm_selection(request["request_id"], page(A), page(A), now=start)
+    with pytest.raises(ValueError, match="không khớp"):
+        store.confirm_selection("0" * 32, page(B), page(B), now=start)
+    result = store.confirm_selection(request["request_id"], page(B), page(B), "Studio B", now=start)
+    assert result["id"] == B and result["id_source"] == "studio_url_user_confirmed"
+    assert result["name"] == "同じ名前"
+    assert result["permission_status"] == "permission_unverified"
+    assert result["upload_status"] == "upload_unverified"
+    saved = StudioConnectorStore(config).load(now=start)["channels"]
+    assert saved[1]["identity_request_id"] == request["request_id"]
+    assert saved[1]["identity_evidence_url"] == f"https://studio.youtube.com/channel/{B}"
+    assert saved[1]["identity_name_observed"] == "Studio B"
+    assert store.selection_request(now=start)["status"] == "confirmed"
+    assert PublisherStore(config).data["jobs"] == []
+    assert "identity_request_id" not in handle(json.dumps({"type":"catalog_get", "schema":1}).encode(), config)["records"][1]
+    assert handle(json.dumps({"type":"selection_get", "schema":1}).encode(), config)["request"]["status"] == "confirmed"
+
+
+def test_selection_manual_id_mismatch_expiry_replacement_and_resync(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    candidate = {**catalog_record(A, "Manual"), "key": "candidate:one", "id": "",
+                 "id_source": "missing", "source_url": "https://studio.youtube.com/"}
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[candidate]})
+    store.link_manual_id("candidate:one", A)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    old = store.create_selection_request("candidate:one", now=start)
+    with pytest.raises(ValueError, match="khác ID"):
+        store.confirm_selection(old["request_id"], page(B), page(B), now=start)
+    with pytest.raises(ValueError, match="URL Studio"):
+        store.confirm_selection(old["request_id"], page(A), page(B), now=start)
+    with pytest.raises(ValueError, match="hết hạn"):
+        store.confirm_selection(old["request_id"], page(A), page(A), now=start + timedelta(minutes=3))
+    newer = store.create_selection_request("candidate:one")
+    with pytest.raises(ValueError, match="không khớp"):
+        store.confirm_selection(old["request_id"], page(A), page(A), now=start)
+    reply = handle(json.dumps({"type":"selection_confirm", "schema":1,
+        "request_id":newer["request_id"], "page_url":page(A), "page_url_after":page(A),
+        "observed_name":""}).encode(), store.path.parent.parent / "settings.json")
+    assert reply["channel_id"] == A and reply["id_source"] == "studio_url_user_confirmed"
+    stale_chrome = {**candidate, "id":A, "id_source":"user_supplied"}
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[stale_chrome]})
+    saved = StudioConnectorStore(store.path.parent.parent / "settings.json").load()["channels"][0]
+    assert saved["id_source"] == "studio_url_user_confirmed"
+    assert saved["identity_verified_at"]
+
+
+def test_selection_request_rejects_changed_record_and_verified_wrong_id(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[catalog_record(A, "Verified")]})
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    request = store.create_selection_request(f"id:{A}", now=start)
+    with pytest.raises(ValueError, match="khác ID"):
+        store.confirm_selection(request["request_id"], page(B), page(B), now=start)
+    confirmed = store.confirm_selection(request["request_id"], page(A), page(A), "Verified", now=start)
+    assert confirmed["id"] == A and confirmed["id_source"] == "studio_url_user_confirmed"
+    assert confirmed["identity_evidence_url"] == f"https://studio.youtube.com/channel/{A}"
+    with pytest.raises(ValueError, match="chứng cứ Studio"):
+        store.link_manual_id(f"id:{A}", B)
+    candidate = {**catalog_record(B, "Candidate"), "key":"candidate:second", "id":"",
+                 "id_source":"missing", "source_url":"https://studio.youtube.com/"}
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[catalog_record(A, "Verified"), candidate]})
+    second_request = store.create_selection_request("candidate:second", now=start)
+    store.link_manual_id("candidate:second", B)
+    with pytest.raises(ValueError, match="đã thay đổi"):
+        store.confirm_selection(second_request["request_id"], page(B), page(B), now=start)
+    assert store.catalog_records()[0]["id"] == A
+
+
+def test_stale_catalog_requires_fresh_explicit_url_confirmation(tmp_path):
+    store = StudioConnectorStore(tmp_path / "settings.json")
+    store.save_catalog({"type":"catalog_sync", "schema":1, "records":[catalog_record(A, "Stale")]})
+    future = datetime.now(timezone.utc) + timedelta(days=3)
+    assert store.load(now=future)["channels"][0]["status"] == "unavailable"
+    request = store.create_selection_request(f"id:{A}", now=future)
+    assert store.catalog_records()[0]["status"] == "identity_verified"
+    assert request["status"] == "pending"
+    confirmed = store.confirm_selection(request["request_id"], page(A), page(A), now=future)
+    assert confirmed["status"] == "identity_user_confirmed"
+    assert store.load(now=future)["channels"][0]["status"] == "identity_user_confirmed"
+
+
 def test_bulk_sync_missing_name_keeps_previous_name(tmp_path):
     store = StudioConnectorStore(tmp_path / "settings.json")
     store.save_catalog({"type":"catalog_sync", "schema":1,

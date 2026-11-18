@@ -129,23 +129,36 @@ function fakeElement(tag="div") {
   assert(accumulated.some(row=>!row.id));
 
   global.document={createElement:fakeElement};
-  const state={}; let failHost=true, teRecords=[];
+  const state={}; let failHost=true, teRecords=[], teRequest=null, activeUrl=url(A), opened=[];
   const messages=event();
   const chromeMock={storage:{local:{async get(keys){return {...state};},async set(value){Object.assign(state,value);}}},
     runtime:{onMessage:messages,connectNative(){const onMessage=event(),onDisconnect=event();
       return {onMessage,onDisconnect,postMessage(payload){
         if (payload.type==="catalog_sync" && !failHost) teRecords=payload.records;
-        setTimeout(()=>failHost?onDisconnect.emit():onMessage.emit(payload.type==="catalog_get" ?
-          {ok:true,count:teRecords.length,records:teRecords} :
-          {ok:true,count:payload.records.length}),0);
+        if (payload.type==="selection_confirm" && !failHost) {
+          const confirmedId=(payload.page_url.match(/\/channel\/(UC[A-Za-z0-9_-]{22})/) || [])[1];
+          teRecords=teRecords.map(row=>row.key===teRequest.key ? {...row,
+            id:confirmedId,id_source:"studio_url_user_confirmed",status:"identity_user_confirmed",
+            source_url:url(confirmedId)} : row);
+          teRequest={...teRequest,pending:false,status:"confirmed"};
+        }
+        const response=payload.type==="catalog_get" ? {ok:true,count:teRecords.length,records:teRecords} :
+          payload.type==="selection_get" ? {ok:true,request:teRequest || {pending:false}} :
+          payload.type==="selection_confirm" ? {ok:true,key:payload.request_id===teRequest.request_id ?
+            teRequest.key:"",channel_id:(payload.page_url.match(/\/channel\/(UC[A-Za-z0-9_-]{22})/) || [])[1]} :
+          {ok:true,count:payload.records.length};
+        setTimeout(()=>failHost?onDisconnect.emit():onMessage.emit(response),0);
       },disconnect(){}};}},
-    tabs:{async query(){return [{id:1,url:url(A)}]},async sendMessage(id,message){
+    tabs:{async query(){return [{id:1,url:activeUrl}]},async create(options){opened.push(options.url);return {id:2,url:options.url};},
+      async sendMessage(id,message){
+      if (message.type==="scan_visible_studio") return {page_url:activeUrl,page_url_after:activeUrl,
+        channels:[{id:activeUrl.includes(B)?B:A,id_source:"studio_url",name:"Studio name"}]};
       return message.type==="diagnose_channel_menu" ? {first:diagnostic,last:diagnostic,dynamics:{}} :
         message.type==="begin_region_targeting" ? {ok:true} :
         message.type==="confirm_region" ? {ok:true,diagnostic:confirmed.diagnostic} :
         message.type==="cancel_region_targeting" ? {ok:true} :
         {session:"s",channels:[observation(A,"A")]};}}};
-  const ui=()=>({status:fakeElement(),counts:fakeElement(),rows:fakeElement(),
+  const ui=()=>({status:fakeElement(),counts:fakeElement(),rows:fakeElement(),selectionRequest:fakeElement(),
     regionChoices:fakeElement(),diagnostic:fakeElement()});
   const firstUi=ui();
   const first=await createPanel(chromeMock,firstUi,{duration:1000,hostTimeout:50});
@@ -177,10 +190,29 @@ function fakeElement(tag="div") {
   assert.equal(state.studioUnsynced,false);
   assert.equal(teRecords.length,1);
   teRecords.push({...remoteCandidate,key:"candidate:from-te"});
-  const afterTeEdit=await createPanel(chromeMock,ui(),{duration:1000,hostTimeout:50});
+  const afterTeEdit=await createPanel(chromeMock,ui(),{duration:1000,hostTimeout:50,confirm:()=>true});
   assert.equal(afterTeEdit.getRows().find(row=>row.key==="candidate:from-te").id,B);
   assert.equal(afterTeEdit.getRows().find(row=>row.key==="candidate:from-te").id_source,"user_supplied");
   await afterTeEdit.save();
   assert.equal(teRecords.find(row=>row.key==="candidate:from-te").id,B);
   assert.equal(teRecords.length,2);
+  teRequest={schema:1,request_id:"a".repeat(32),key:"candidate:from-te",id:B,
+    id_source:"user_supplied",name:"編集した名前",handle:"@candidate",pending:true,status:"pending"};
+  await afterTeEdit.receiveSelection();
+  assert.equal(opened.length,0); // Manual IDs never trigger automatic navigation.
+  await assert.rejects(afterTeEdit.confirmSelection(),/khác ID/);
+  activeUrl=url(B);
+  await afterTeEdit.confirmSelection();
+  assert.equal(teRecords.find(row=>row.key==="candidate:from-te").id_source,"studio_url_user_confirmed");
+  teRequest={schema:1,request_id:"b".repeat(32),key:"id:"+A,id:A,
+    id_source:"studio_link",name:"Edited in panel",handle:"",pending:true,status:"pending"};
+  failHost=true;
+  await assert.rejects(afterTeEdit.receiveSelection(),/Native Host/);
+  assert.equal(opened.length,0);
+  failHost=false;
+  await afterTeEdit.receiveSelection();
+  assert.equal(opened.at(-1),`https://studio.youtube.com/channel/${A}`);
+  activeUrl=url(A);
+  await afterTeEdit.confirmSelection();
+  assert.equal(teRecords.find(row=>row.id===A).id_source,"studio_url_user_confirmed");
 })().catch(error=>{console.error(error);process.exitCode=1;});

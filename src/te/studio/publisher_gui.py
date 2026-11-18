@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import time
 from queue import Empty, Queue
 from threading import Thread
 import tkinter as tk
@@ -28,6 +29,8 @@ class PublisherController:
         self.oauth_status = tk.StringVar(value="Owner OAuth: chưa kết nối kênh API trên máy này.")
         self.studio_status = tk.StringVar(value="Studio Connector: chưa nhận bản quét từ extension.")
         self.manual_channel_id = tk.StringVar()
+        self._verify_request_id = ""
+        self._verify_next_check = 0.0
         app.root.after(300, self.poll)
 
     def build(self):
@@ -81,6 +84,8 @@ class PublisherController:
         ttk.Label(box, text="ID nhập tay cho bản ghi Studio").grid(row=8, column=0, sticky="w")
         ttk.Entry(box, textvariable=self.manual_channel_id, width=32).grid(row=8, column=1, sticky="ew")
         ttk.Button(box, text="Gắn / sửa ID", command=self.link_manual_id).grid(row=8, column=2, sticky="w")
+        ttk.Button(box, text="Mở và xác minh kênh trong Studio", command=self.open_studio_verification).grid(
+            row=8, column=3, columnspan=2, sticky="w")
         row = 9
         for key, label in (("video_path", "Video Full HD MP4"), ("thumbnail_path", "Thumbnail")):
             ttk.Label(box, text=label).grid(row=row, column=0, sticky="w")
@@ -131,7 +136,8 @@ class PublisherController:
             scan = self.studio_store.load()
             channels.extend(scan["channels"])
             if scan["scanned_at"]:
-                verified = sum(c["status"] == "identity_verified" for c in scan["channels"])
+                verified = sum(c.get("id_source") in {"studio_url", "studio_link",
+                                                   "studio_url_user_confirmed"} for c in scan["channels"])
                 manual = sum(c["status"] == "identity_user_named" for c in scan["channels"])
                 self.studio_status.set(f"Studio Connector: {scan['scanned_at']} • {verified} ID có chứng cứ • "
                                        f"{manual} tên nhập tay • {len(scan['channels'])} bản ghi • " +
@@ -145,7 +151,8 @@ class PublisherController:
         for index, channel in enumerate(channels):
             studio = channel["connection_type"] == "studio_connector"
             iid = f"studio:{channel.get('key') or index}" if studio else f"api:{channel['id']}"
-            identity = ("ID nhập tay" if channel.get("id_source") == "user_supplied" else
+            identity = ("Đã xác minh URL Studio" if channel.get("id_source") == "studio_url_user_confirmed" else
+                        "ID nhập tay" if channel.get("id_source") == "user_supplied" else
                         "ID từ Studio" if studio and channel.get("id") else
                         "Chưa có ID" if studio else "OAuth API")
             if studio and channel.get("status") == "unavailable":
@@ -212,6 +219,21 @@ class PublisherController:
         self._focus_record(updated)
         self._select_channel()
         self.status.set("Đã lưu ID nhập tay; chưa xác minh bằng Studio và chưa có quyền upload. Mở Side Panel để đồng bộ sang Chrome.")
+
+    def open_studio_verification(self):
+        selected = self._selected_row()
+        if not selected or selected.get("connection_type") != "studio_connector" or not selected.get("key"):
+            self.status.set("Chọn một kênh Studio Connector trong bảng trước.")
+            return
+        try:
+            request = self.studio_store.create_selection_request(selected["key"])
+        except (ValueError, OSError) as exc:
+            self.status.set(str(exc))
+            return
+        self._verify_request_id = request["request_id"]
+        self._verify_next_check = 0.0
+        self.status.set("Đã gửi yêu cầu cục bộ. Trong Chrome Side Panel bấm ‘Nhận yêu cầu từ TE’, "
+                        "đối chiếu kênh đang mở rồi xác nhận trong 2 phút. Chưa upload.")
 
     def scan_studio(self):
         """Refresh the latest user-triggered Chrome scan; TE never drives Chrome."""
@@ -427,6 +449,28 @@ class PublisherController:
         self._start("upload", work)
 
     def poll(self):
+        if self._verify_request_id and time.monotonic() >= self._verify_next_check:
+            self._verify_next_check = time.monotonic() + 2.0
+            try:
+                request = self.studio_store.selection_request()
+                if request.get("request_id") == self._verify_request_id and request.get("status") == "confirmed":
+                    key = request["key"]
+                    self._verify_request_id = ""
+                    selected_before = self._selected_row()
+                    self.refresh_channels()
+                    if selected_before and selected_before.get("key") == key:
+                        updated = next((item for item in self.channel_records if item.get("key") == key), None)
+                        if updated:
+                            self._focus_record(updated)
+                        self._select_channel()
+                    self.status.set(f"Đã xác minh URL Studio: {request.get('name') or '(chưa có tên)'} — "
+                                    f"{request['confirmed_id']}. Quyền upload chưa xác minh.")
+                elif request.get("request_id") != self._verify_request_id or not request.get("pending"):
+                    self._verify_request_id = ""
+                    self.status.set("Yêu cầu xác minh đã hết hạn hoặc được thay thế; hãy chọn lại kênh.")
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self._verify_request_id = ""
+                self.status.set(f"Không đọc được kết quả xác minh: {exc}")
         while True:
             try:
                 action, result, error = self.events.get_nowait()

@@ -40,7 +40,7 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   let rows = [], scanSession = "", tabId = null, dirty = false, revision = 0,
       storageWrite = Promise.resolve(),
       candidateKey = "", lastSnapshot = "", syncedCount = 0, diagnosticReport = "",
-      targetTabId = null, proposals = [];
+      targetTabId = null, proposals = [], selectionRequest = null;
   const observedThisScan = new Set();
   const saved = await chromeApi.storage.local.get(["studioCatalog", "studioDraft", "studioUnsynced",
     "studioLastSyncedCount"]);
@@ -242,6 +242,68 @@ async function createPanel(chromeApi, ui, defaults = {}) {
     candidateKey = ""; revision++; dirty = true; scheduleDraft(); render();
     status("Đã liên kết ID từ URL theo xác nhận của bạn. Bấm Lưu để đồng bộ TE.");
   }
+  async function receiveSelection() {
+    const reply = await nativeRequest(chromeApi, {type:"selection_get",schema:1},
+      defaults.hostTimeout || 15000);
+    const request = reply.request;
+    if (!request?.pending || !/^[a-f0-9]{32}$/.test(request.request_id || "")) {
+      selectionRequest = null;
+      ui.selectionRequest.textContent = "Không có yêu cầu còn hiệu lực từ TE. Chọn kênh trong TE rồi bấm Mở và xác minh.";
+      return;
+    }
+    await pullCatalog();
+    if (!rows.some(row => row.key === request.key && row.id === request.id))
+      throw new Error("Catalog trong Chrome và yêu cầu TE không khớp; hãy chọn lại kênh trong TE.");
+    selectionRequest = request;
+    ui.selectionRequest.textContent = `TE chọn: ${request.name || "(chưa có tên)"} ` +
+      `${request.handle || ""} • ID: ${request.id || "chưa có"} • nguồn: ${request.id_source}. ` +
+      "Đối chiếu URL Studio đang mở trước khi xác nhận. Quyền upload chưa xác minh.";
+    if (request.id && ["studio_url", "studio_link", "studio_url_user_confirmed"].includes(request.id_source)) {
+      const current = await activeTab().catch(() => null);
+      if (!current?.url?.startsWith(`https://studio.youtube.com/channel/${request.id}`)) {
+        await withTimeout(chromeApi.tabs.create({url:`https://studio.youtube.com/channel/${request.id}`}),
+          5000, "Không mở được tab Studio trong 5 giây.");
+        status("Đã mở tab Studio theo ID có chứng cứ. Chờ trang tải, kiểm tra kênh và bấm Đối chiếu.");
+      } else status("Tab Studio đang mở có ID dự kiến. Kiểm tra kênh rồi bấm Đối chiếu.");
+    } else {
+      status("ID chưa xác minh hoặc còn thiếu. Hãy tự mở đúng kênh trong Studio, rồi bấm Đối chiếu.");
+    }
+  }
+  async function confirmSelection() {
+    const request = selectionRequest;
+    if (!request) throw new Error("Bấm Nhận yêu cầu từ TE trước.");
+    const tab = await activeTab();
+    const reply = await withTimeout(chromeApi.tabs.sendMessage(tab.id, {type:"scan_visible_studio"}),
+      8000, "Content script không phản hồi; tải lại tab Studio.");
+    if (!reply || reply.error || reply.page_url !== reply.page_url_after)
+      throw new Error(reply?.error || "Trang Studio đã đổi trong lúc đối chiếu; thử lại.");
+    let observedId = "";
+    try {
+      const url = new URL(reply.page_url);
+      observedId = url.protocol === "https:" && url.hostname === "studio.youtube.com" ?
+        (url.pathname.match(/^\/channel\/(UC[A-Za-z0-9_-]{22})(?:\/|$)/) || [])[1] || "" : "";
+    } catch (_) { /* invalid URL */ }
+    if (!observedId) throw new Error("Tab Studio đang mở không có Channel ID UC hợp lệ.");
+    if (request.id && request.id !== observedId)
+      throw new Error(`ID URL ${observedId} khác ID ${request.id} đã chọn trong TE. Không liên kết.`);
+    if (rows.some(row => row.key !== request.key && row.id === observedId))
+      throw new Error("ID URL đã thuộc bản ghi khác trong catalog; không tự gộp theo tên.");
+    const observedName = reply.channels?.find(row => row.id === observedId && row.id_source === "studio_url")?.name || "";
+    const approved = (defaults.confirm || window.confirm)(
+      `TE chọn: ${request.name || "(chưa có tên)"} ${request.handle || ""}\n` +
+      `Studio đang mở: ${observedName || "(không đọc được tên)"} — ${observedId}\n` +
+      "Bạn đã tự đối chiếu đúng kênh và đồng ý liên kết ID URL này? Quyền upload vẫn chưa xác minh.");
+    if (!approved) return;
+    const confirmed = await nativeRequest(chromeApi, {type:"selection_confirm",schema:1,
+      request_id:request.request_id,page_url:reply.page_url,page_url_after:reply.page_url_after,
+      observed_name:observedName}, defaults.hostTimeout || 15000);
+    if (confirmed.key !== request.key || confirmed.channel_id !== observedId)
+      throw new Error("Native Host trả về danh tính không khớp yêu cầu.");
+    selectionRequest = null;
+    await pullCatalog();
+    ui.selectionRequest.textContent = `Đã xác minh URL Studio cho ${request.name || "(chưa có tên)"} — ${observedId}.`;
+    status("Đã lưu chứng cứ URL trong TE và đồng bộ về Side Panel. Chưa xác minh quyền upload.");
+  }
   async function diagnose() {
     const tab = await activeTab();
     status("Đang đọc cấu trúc menu trong 3 giây; hãy cuộn menu nếu có thể…");
@@ -262,7 +324,7 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   render();
   try { await pullCatalog(); }
   catch (error) { status(`Chưa đọc được catalog từ TE: ${error.message}. Dữ liệu Chrome vẫn được giữ.`); }
-  return {start, stop, save, verify, diagnose, copyDiagnostic,
+  return {start, stop, save, verify, receiveSelection, confirmSelection, diagnose, copyDiagnostic,
     target, cancelTarget, propose, confirmTarget, pullCatalog,
     getRows:()=>rows, merge, render};
 }
@@ -270,10 +332,13 @@ async function createPanel(chromeApi, ui, defaults = {}) {
 if (typeof document !== "undefined") {
   const ui = {status:document.getElementById("status"), counts:document.getElementById("counts"),
     rows:document.getElementById("rows"), diagnostic:document.getElementById("diagnostic"),
+    selectionRequest:document.getElementById("selectionRequest"),
     regionChoices:document.getElementById("regionChoices")};
   createPanel(chrome,ui).then(panel => {
     for (const [id, action] of [["start",panel.start],["stop",panel.stop],["save",panel.save],
-      ["verify",panel.verify],["diagnose",panel.diagnose],["copyDiagnostic",panel.copyDiagnostic],
+      ["verify",panel.verify],["receiveSelection",panel.receiveSelection],
+      ["confirmSelection",panel.confirmSelection],
+      ["diagnose",panel.diagnose],["copyDiagnostic",panel.copyDiagnostic],
       ["target",panel.target],["cancelTarget",panel.cancelTarget],
       ["confirmTarget",panel.confirmTarget],["pullCatalog",panel.pullCatalog]]) {
       document.getElementById(id).addEventListener("click", () => action().catch(error => {

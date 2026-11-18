@@ -15,6 +15,16 @@ def handle(payload: bytes, config_path: Path) -> dict:
     if len(payload) > MAX_MESSAGE_BYTES:
         raise ValueError("Thông điệp quá lớn.")
     message = json.loads(payload.decode("utf-8"))
+    if isinstance(message, dict) and message == {"type": "selection_get", "schema": 1}:
+        return {"ok": True, "request": StudioConnectorStore(config_path).selection_request()}
+    if (isinstance(message, dict) and message.get("type") == "selection_confirm" and
+            set(message) == {"type", "schema", "request_id", "page_url", "page_url_after", "observed_name"} and
+            message.get("schema") == 1):
+        record = StudioConnectorStore(config_path).confirm_selection(
+            message["request_id"], message["page_url"], message["page_url_after"],
+            message["observed_name"])
+        return {"ok": True, "key": record["key"], "channel_id": record["id"],
+                "id_source": record["id_source"]}
     if isinstance(message, dict) and message == {"type": "catalog_get", "schema": 1}:
         records = StudioConnectorStore(config_path).catalog_records()
         return {"ok": True, "records": records, "count": len(records)}

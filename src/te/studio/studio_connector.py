@@ -4,11 +4,12 @@ Studio DOM observations are not OAuth authorization or upload permission.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from te.project.manager import _write_json
 from .channel_probe import channel_id_from_url
@@ -120,6 +121,71 @@ def validate_scan(message: object) -> dict:
 class StudioConnectorStore:
     def __init__(self, config_path: Path):
         self.path = Path(config_path).parent / "studio-connector" / "scan.json"
+        self.selection_path = self.path.with_name("selection.json")
+
+    def create_selection_request(self, key: str, *, now: datetime | None = None) -> dict:
+        record = next((item for item in self.catalog_records() if item["key"] == key), None)
+        if record is None:
+            raise ValueError("Kênh Studio không còn trong catalog; hãy tải lại danh sách.")
+        now = now or datetime.now(timezone.utc)
+        request = {"schema": 1, "request_id": uuid4().hex, "key": key,
+                   "id": record.get("id", ""), "id_source": record.get("id_source", "missing"),
+                   "name": record.get("name") or record.get("display_name") or "",
+                   "handle": record.get("handle", ""), "status": "pending",
+                   "created_at": now.isoformat(),
+                   "expires_at": (now + timedelta(minutes=2)).isoformat()}
+        _write_json(self.selection_path, request)
+        return request
+
+    def selection_request(self, *, now: datetime | None = None) -> dict:
+        if not self.selection_path.exists():
+            return {"pending": False}
+        request = json.loads(self.selection_path.read_text(encoding="utf-8"))
+        if not isinstance(request, dict) or request.get("schema") != 1:
+            raise ValueError("Yêu cầu xác minh Studio không hợp lệ.")
+        now = now or datetime.now(timezone.utc)
+        if request.get("status") == "pending" and now >= datetime.fromisoformat(request["expires_at"]):
+            return {"pending": False, "status": "expired", "request_id": request["request_id"]}
+        return dict(request, pending=request.get("status") == "pending")
+
+    def confirm_selection(self, request_id: str, page_url: str, page_url_after: str,
+                          observed_name: str = "", *, now: datetime | None = None) -> dict:
+        request = self.selection_request(now=now)
+        if not request.get("pending") or request.get("request_id") != request_id:
+            raise ValueError("Yêu cầu xác minh đã hết hạn hoặc không khớp; hãy chọn lại trong TE.")
+        if not _studio_url(page_url) or page_url != page_url_after:
+            raise ValueError("URL Studio không hợp lệ hoặc đã thay đổi khi xác minh.")
+        active_id = channel_id_from_url(page_url)
+        if not active_id:
+            raise ValueError("URL Studio đang mở không có Channel ID UC hợp lệ.")
+        if not isinstance(observed_name, str) or len(observed_name) > 160 or any(ord(c) < 32 for c in observed_name):
+            raise ValueError("Tên kênh quan sát được không hợp lệ.")
+        data = self._raw_data()
+        rows = [item for item in data["channels"] if item.get("key") == request["key"]]
+        if len(rows) != 1:
+            raise ValueError("Bản ghi kênh đã thay đổi; hãy chọn lại trong TE.")
+        record = rows[0]
+        if (record.get("id", "") != request["id"] or
+                record.get("id_source", "missing") != request["id_source"]):
+            raise ValueError("Channel ID đã thay đổi sau khi tạo yêu cầu; hãy chọn lại trong TE.")
+        if record.get("id") and record["id"] != active_id:
+            raise ValueError("Channel ID trong URL Studio khác ID của kênh đã chọn; không xác minh.")
+        if any(item is not record and item.get("id") == active_id for item in data["channels"]):
+            raise ValueError("Channel ID trong URL Studio đã thuộc bản ghi kênh khác.")
+        now = now or datetime.now(timezone.utc)
+        evidence_url = f"https://studio.youtube.com/channel/{active_id}"
+        record.update(id=active_id, id_source="studio_url_user_confirmed",
+                      status="identity_user_confirmed", source_url=evidence_url,
+                      last_seen_at=now.isoformat(), identity_verified_at=now.isoformat(),
+                      identity_request_id=request_id,
+                      identity_evidence_url=evidence_url,
+                      identity_name_observed=observed_name.strip(),
+                      permission_status="permission_unverified", upload_status="upload_unverified")
+        _write_json(self.path, data)
+        _write_json(self.selection_path, dict(request, status="confirmed", confirmed_id=active_id,
+                                              confirmed_name=observed_name.strip(),
+                                              confirmed_at=now.isoformat()))
+        return dict(record)
 
     def _raw_data(self) -> dict:
         if not self.path.exists():
@@ -131,7 +197,10 @@ class StudioConnectorStore:
 
     def catalog_records(self) -> list[dict]:
         """Return stored catalog rows without converting old observations to stale UI status."""
-        return [dict(item) for item in self._raw_data()["channels"]
+        private_evidence = {"identity_verified_at", "identity_request_id", "identity_evidence_url",
+                            "identity_name_observed"}
+        return [{key: value for key, value in item.items() if key not in private_evidence}
+                for item in self._raw_data()["channels"]
                 if isinstance(item, dict) and item.get("key")]
 
     def link_manual_id(self, key: str, channel_id: str) -> dict:
@@ -165,6 +234,9 @@ class StudioConnectorStore:
             by_id = {item["id"]: index for index, item in enumerate(result["channels"]) if item["id"]}
             for item in old["channels"]:
                 index = by_id.get(item.get("id"))
+                if index is not None and item.get("identity_verified_at"):
+                    result["channels"][index] = item
+                    continue
                 if index is not None and result["channels"][index]["status"] in \
                         {"identity_incomplete", "identity_user_named"} and item.get("name") and \
                         (item.get("status") == "identity_verified" or
@@ -250,6 +322,11 @@ class StudioConnectorStore:
         previous_by_key = {item.get("key"): item for item in previous if item.get("key")}
         for item in incoming:
             old = previous_by_key.get(item["key"])
+            if old:
+                for field in ("identity_verified_at", "identity_request_id", "identity_evidence_url",
+                              "identity_name_observed"):
+                    if field in old:
+                        item[field] = old[field]
             if old and old.get("id_source") == "user_supplied" and item["id_source"] != "studio_url_user_confirmed":
                 item.update(id=old["id"], id_source="user_supplied", status="identity_user_supplied",
                             source_url=old["source_url"])
@@ -258,7 +335,9 @@ class StudioConnectorStore:
             elif old and old.get("id_source") in {"studio_url", "studio_link", "studio_url_user_confirmed"}:
                 if item["id"] and item["id"] != old["id"]:
                     raise ValueError("ID mới xung đột với ID có chứng cứ Studio.")
-                if not item["id"] or item["id_source"] == "user_supplied":
+                if (not item["id"] or item["id_source"] == "user_supplied" or
+                        old["id_source"] == "studio_url_user_confirmed" and
+                        item["id_source"] != "studio_url_user_confirmed"):
                     item.update(id=old["id"], id_source=old["id_source"], status=old["status"],
                                 source_url=old["source_url"])
         all_ids = [item["id"] for item in incoming if item["id"]]
