@@ -269,6 +269,56 @@ def test_publisher_selection_request_updates_only_selected_studio_channel(tmp_pa
     assert controller.studio_store.catalog_records()[1]["id"] == channel_id
 
 
+def test_studio_private_preparation_button_and_confirmation(tmp_path, monkeypatch):
+    repo = service(tmp_path)
+    state = repo.create_project("Private plan")
+    controller = publisher_harness(repo, state)
+    row = {"key":"candidate:one", "id":"", "handle":"@studio", "discovered_name":"日本語",
+           "display_name":"日本語", "name_source":"studio_switcher_dom",
+           "handle_source":"studio_switcher_dom", "id_source":"missing", "status":"discovered",
+           "permission_status":"permission_unverified", "upload_status":"upload_unverified",
+           "source_url":"https://studio.youtube.com/", "evidence":"visible_switcher_item",
+           "user_edited":False}
+    controller.studio_store.save_catalog({"type":"catalog_sync", "schema":1, "records":[row]})
+    controller.refresh_channels()
+    controller.channel_tree.selection_set("studio:candidate:one")
+    controller._select_channel()
+    controller.busy = False
+    controller.app.state = state
+    assert not controller._studio_preparation_ready()
+    request = controller.studio_store.create_selection_request("candidate:one")
+    channel_id = "UC" + "b" * 22
+    url = f"https://studio.youtube.com/channel/{channel_id}"
+    controller.studio_store.confirm_selection(request["request_id"], url, url, "日本語")
+    controller.refresh_channels()
+    controller.channel_tree.selection_set("studio:candidate:one")
+    controller._select_channel()
+    video = tmp_path / "full.mp4"
+    video.write_bytes(b"\0\0\0\x18ftypisomdata")
+    thumb = tmp_path / "thumb.png"
+    thumb.write_bytes(b"\x89PNG\r\n\x1a\ndata")
+    controller.values["video_path"].set(str(video))
+    controller.values["thumbnail_path"].set(str(thumb))
+    controller.values["title"].set("日本語の題名")
+    controller.values["audience"].set("not_made_for_kids")
+    assert controller._studio_preparation_ready()
+    controller.values["title"].set("")
+    assert not controller._studio_preparation_ready()
+    controller.values["title"].set("日本語の題名")
+    controller.app._details = {"publisher":None}
+    controller.app._save = lambda: (repo.save_project(state) or True)
+    monkeypatch.setattr("te.studio.publisher_gui.messagebox.askyesno", lambda *args, **kwargs: False)
+    controller.prepare_studio_private()
+    assert PublisherStore(repo.config_path).data["jobs"] == []
+    monkeypatch.setattr("te.studio.publisher_gui.messagebox.askyesno", lambda *args, **kwargs: True)
+    completed = []
+    controller._start = lambda action, work: completed.append((action, work()))
+    controller.prepare_studio_private()
+    assert completed[0][0] == "studio_prepared"
+    assert completed[0][1]["visibility"] == "private"
+    assert completed[0][1]["status"] == "prepared"
+
+
 @pytest.mark.skipif(os.environ.get("TE_STUDIO_GUI_SMOKE") != "1", reason="requires a desktop display")
 @pytest.mark.parametrize("scaling", [1.25, 1.5])
 def test_publisher_channel_table_scrolls_at_display_scaling(tmp_path, scaling):

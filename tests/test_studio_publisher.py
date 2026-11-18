@@ -1,5 +1,6 @@
 """Publisher foundation tests; no browser login or real YouTube upload."""
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pytest
 from te.studio.publisher import PublisherStore, file_identity, normalize_metadata, validate_schedule
 from te.studio.youtube_api import SCOPES
 from te.studio.publisher_gui import PublisherController
+from te.studio.studio_connector import StudioConnectorStore
 from te.studio.service import StudioService
 from te.studio.youtube_studio import YouTubeStudioBrowser, StudioVerificationError
 
@@ -28,6 +30,94 @@ def service(tmp_path):
     svc = StudioService(tmp_path / "settings.json")
     svc.set_directories(tmp_path / "projects", tmp_path / "output")
     return svc
+
+
+def verified_studio(tmp_path, *, channel_id=CID):
+    config = tmp_path / "settings.json"
+    catalog = StudioConnectorStore(config)
+    row = {"key":"candidate:one", "id":"", "handle":"@studio",
+           "discovered_name":"同じ名前", "display_name":"編集した名前", "name_source":"user_edited",
+           "handle_source":"studio_switcher_dom", "id_source":"missing", "status":"discovered",
+           "permission_status":"permission_unverified", "upload_status":"upload_unverified",
+           "source_url":"https://studio.youtube.com/", "evidence":"visible_switcher_item",
+           "user_edited":True}
+    catalog.save_catalog({"type":"catalog_sync", "schema":1, "records":[row]})
+    request = catalog.create_selection_request(row["key"])
+    url = f"https://studio.youtube.com/channel/{channel_id}"
+    catalog.confirm_selection(request["request_id"], url, url, "同じ名前")
+    return config, catalog
+
+
+def studio_private_files(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"\x00\x00\x00\x18ftypisom" + b"video data")
+    thumbnail = tmp_path / "thumbnail.png"
+    thumbnail.write_bytes(b"\x89PNG\r\n\x1a\n" + b"image data")
+    return video, thumbnail
+
+
+def test_studio_private_preparation_is_local_idempotent_and_private(tmp_path):
+    config, catalog = verified_studio(tmp_path)
+    video, thumbnail = studio_private_files(tmp_path)
+    metadata = {"connection_type":"studio_connector", "studio_catalog_key":"candidate:one",
+                "video_path":str(video), "thumbnail_path":str(thumbnail), "title":"日本語の題名",
+                "description":"日本語の説明", "tags":"野球,大谷",
+                "audience":"not_made_for_kids"}
+    store = PublisherStore(config)
+    first = store.prepare_studio_private("project", metadata)
+    second = store.prepare_studio_private("project", {**metadata, "title":"修正した題名"})
+    assert first["id"] == second["id"] and first["status"] == "prepared"
+    assert first["visibility"] == "private" and first["channel_id"] == CID
+    assert first["metadata"]["title"] == "日本語の題名"
+    assert second["metadata"]["title"] == "修正した題名"
+    assert first["credential_ref"] == "" and first["video_id"] == ""
+    restarted = PublisherStore(config)
+    assert restarted.latest("project")["id"] == first["id"]
+    assert len(restarted.data["jobs"]) == 1
+    with pytest.raises(ValueError, match="sẵn sàng"):
+        restarted.begin_attempt(first["id"])
+    restarted.update(first["id"], status="needs_attention")
+    with pytest.raises(ValueError, match="không tạo lại"):
+        restarted.prepare_studio_private("project", metadata)
+    assert catalog.load()["channels"][0]["name"] == "編集した名前"
+
+
+def test_studio_private_preparation_rejects_identity_and_bad_files(tmp_path):
+    config, catalog = verified_studio(tmp_path)
+    video, thumbnail = studio_private_files(tmp_path)
+    metadata = {"connection_type":"studio_connector", "studio_catalog_key":"candidate:one",
+                "video_path":str(video), "thumbnail_path":str(thumbnail), "title":"題名",
+                "audience":"made_for_kids"}
+    store = PublisherStore(config)
+    for change in ({"video_path":str(tmp_path / "missing.mp4")},
+                   {"thumbnail_path":str(tmp_path / "missing.png")},
+                   {"title":""}):
+        with pytest.raises(ValueError):
+            store.prepare_studio_private("project", {**metadata, **change})
+    video.write_bytes(b"invalid mp4")
+    with pytest.raises(ValueError, match="ftyp"):
+        store.prepare_studio_private("project", metadata)
+    video, thumbnail = studio_private_files(tmp_path)
+    thumbnail.write_bytes(b"invalid thumbnail")
+    with pytest.raises(ValueError, match="Nội dung thumbnail"):
+        store.prepare_studio_private("project", metadata)
+    _, thumbnail = studio_private_files(tmp_path)
+    with pytest.raises(ValueError, match="Studio"):
+        store.prepare_studio_private("project", {**metadata, "studio_catalog_key":"wrong"})
+    with pytest.raises(ValueError, match="Studio"):
+        store.prepare_studio_private("project", {**metadata, "connection_type":"youtube_api"})
+    with pytest.raises(ValueError, match="khác kênh Studio"):
+        store.prepare_studio_private("project", {**metadata, "channel_id":OTHER})
+    stale = datetime.now(timezone.utc) + timedelta(days=2)
+    with pytest.raises(ValueError, match="24 giờ"):
+        store.prepare_studio_private("project", metadata, now=stale)
+    data = catalog._raw_data()
+    data["channels"][0]["id_source"] = "user_supplied"
+    from te.project.manager import _write_json
+    _write_json(catalog.path, data)
+    with pytest.raises(ValueError, match="ID đã xác minh"):
+        store.prepare_studio_private("project", metadata)
+    assert PublisherStore(config).data["jobs"] == []
 
 
 def test_project_metadata_unicode_and_legacy_preservation(tmp_path):

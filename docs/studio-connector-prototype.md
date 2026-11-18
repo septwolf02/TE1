@@ -1,5 +1,11 @@
 # TE Studio Phase 4A.3 — Studio Connector Side Panel
 
+## Phase 4B.2 — Chuẩn bị thử tải Riêng tư
+
+Nút **Chuẩn bị tải thử Riêng tư qua Studio (không upload)** chỉ hoạt động khi kênh Studio đã được đối chiếu với URL `UC…` trong 24 giờ gần đây, có MP4, thumbnail JPG/PNG và tiêu đề. Sau khi người dùng xác nhận tên kênh, tên file và `PRIVATE`, TE kiểm tra header và kích thước file, tính hash MP4 trong luồng nền, rồi lưu một tác vụ `prepared` cục bộ. Cùng dự án, Channel ID và hash MP4 dùng lại tác vụ; nếu tác vụ có kết quả chưa rõ, TE từ chối tạo lại. Kế hoạch gồm mô tả, tags, audience và `visibility=private`. Không gửi file hoặc metadata qua Native Messaging, không mở form upload, không upload video và không tạo Video ID.
+
+Giới hạn kỹ thuật: Chrome content script không đọc được tệp theo đường dẫn Windows của TE. Native Host hiện chỉ chuyển thông điệp nhỏ; chưa có luồng chuyển MP4 lớn được kiểm chứng. Các phần tử của form upload YouTube Studio cũng chưa được xác minh trên Chrome Windows thật. Vì vậy chưa thể bảo đảm một MP4 được tải đúng kênh và giữ Private; không nên gọi tác vụ `prepared` là upload thành công. Bước thử trên Windows hiện chỉ là chuẩn bị: xác minh kênh theo mục 4B.1, chọn MP4/thumbnail thử, nhập tiêu đề, mô tả, tags và audience, bấm nút chuẩn bị, rồi xác nhận tác vụ hiển thị `prepared` và Studio không có video mới. Upload thử đầu tiên phải đợi cơ chế chọn tệp và giao diện Studio được kiểm chứng riêng.
+
 ## Phase 4B.1 — Xác minh kênh đã chọn
 
 Trong **7. Xuất bản YouTube**, chọn đúng một hàng Studio Connector rồi bấm **Mở và xác minh kênh trong Studio**. TE ghi yêu cầu cục bộ có `request_id` ngẫu nhiên và thời hạn hai phút; Native Messaging hiện chỉ nhận kết nối từ extension nên TE không thể tự đẩy lệnh sang Chrome. Trong Side Panel bấm **Nhận yêu cầu từ TE**. Nếu ID đã có chứng cứ Studio, extension mở tab theo ID đó; nếu ID nhập tay hoặc còn thiếu, hãy tự mở đúng kênh trong YouTube Studio. Bấm **Đối chiếu và xác nhận URL đang mở**, xem tên kênh TE, tên đọc được trong Studio và ID URL, rồi xác nhận rõ ràng. Nếu ID nhập tay không khớp URL, sửa ID trong TE và tạo yêu cầu mới. Không ghép theo tên, kể cả tên trùng.

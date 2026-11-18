@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 import json
 import time
 from queue import Empty, Queue
@@ -31,6 +32,8 @@ class PublisherController:
         self.manual_channel_id = tk.StringVar()
         self._verify_request_id = ""
         self._verify_next_check = 0.0
+        for key in ("video_path", "thumbnail_path", "title"):
+            self.values[key].trace_add("write", lambda *_: self._refresh_upload_button())
         app.root.after(300, self.poll)
 
     def build(self):
@@ -119,8 +122,12 @@ class PublisherController:
         ttk.Button(box, text="Lưu thông tin xuất bản", command=self.save).grid(row=row, column=0, sticky="w")
         ttk.Button(box, text="Lưu bản nháp Studio (không upload)", command=self.save_studio_draft).grid(
             row=row, column=2, sticky="w")
+        self.studio_prepare_button = ttk.Button(box, text="Chuẩn bị tải thử Riêng tư qua Studio (không upload)",
+            command=self.prepare_studio_private, state="disabled")
         self.upload_button = ttk.Button(box, text="Tải thử Riêng tư (Owner)", command=self.upload, state="disabled")
         self.upload_button.grid(row=row, column=1, sticky="w")
+        row += 1
+        self.studio_prepare_button.grid(row=row, column=0, columnspan=3, sticky="w")
         row += 1
         ttk.Label(box, textvariable=self.values["status"]).grid(row=row, column=0, sticky="w")
         ttk.Entry(box, textvariable=self.values["video_id"], state="readonly", width=16).grid(row=row, column=1, sticky="w")
@@ -189,6 +196,43 @@ class PublisherController:
     def _refresh_upload_button(self):
         if hasattr(self, "upload_button"):
             self.upload_button.configure(state="normal" if self._selected_connection() else "disabled")
+        if hasattr(self, "studio_prepare_button"):
+            self.studio_prepare_button.configure(state="normal" if self._studio_preparation_ready() else "disabled")
+
+    def _studio_preparation_ready(self):
+        selected = self._selected_row()
+        if not selected or selected.get("connection_type") != "studio_connector" or \
+                selected.get("id_source") != "studio_url_user_confirmed" or not selected.get("id"):
+            return False
+        try:
+            verified = datetime.fromisoformat(selected["identity_verified_at"])
+            if verified.tzinfo is None or not timedelta(0) <= datetime.now(timezone.utc) - verified <= timedelta(hours=24):
+                return False
+            video = Path(self.values["video_path"].get())
+            thumbnail = Path(self.values["thumbnail_path"].get())
+            if not 1 <= len(self.values["title"].get().strip()) <= 100 or not video.is_file() or \
+                    video.suffix.lower() != ".mp4" or not 0 < video.stat().st_size <= 256 * 1024**3 or \
+                    not thumbnail.is_file() or thumbnail.suffix.lower() not in {".png", ".jpg", ".jpeg"} or \
+                    not 0 < thumbnail.stat().st_size <= 2 * 1024**2:
+                return False
+            with video.open("rb") as stream:
+                if stream.read(8)[4:] != b"ftyp":
+                    return False
+            with thumbnail.open("rb") as stream:
+                signature = stream.read(8)
+            if not (thumbnail.suffix.lower() == ".png" and signature == b"\x89PNG\r\n\x1a\n" or
+                    thumbnail.suffix.lower() in {".jpg", ".jpeg"} and signature.startswith(b"\xff\xd8\xff")):
+                return False
+            if self.busy:
+                return False
+            project_id = self.app.state.project.id if self.app.state else ""
+            return not any(job.get("project_id") == project_id and job.get("channel_id") == selected["id"]
+                           and job.get("source", {}).get("path") == str(video.resolve()) and
+                           job.get("status") in {"waiting_for_browser", "channel_verified", "uploading",
+                                                 "processing", "awaiting_user_confirmation", "needs_attention"}
+                           for job in self.store.data["jobs"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     def _select_channel(self, _event=None):
         selected = self._selected_row()
@@ -315,12 +359,31 @@ class PublisherController:
         self.values["status"].set(job["status"])
         self.status.set("Đã lưu bản nháp Studio trên máy; chưa upload hoặc thay đổi cài đặt YouTube.")
 
+    def prepare_studio_private(self):
+        selected = self._selected_row()
+        if not self._studio_preparation_ready() or not selected:
+            self.status.set("Cần kênh Studio đã xác minh gần đây, MP4, thumbnail và tiêu đề hợp lệ.")
+            return
+        filename = Path(self.values["video_path"].get()).name
+        if not messagebox.askyesno("Chuẩn bị tải thử Riêng tư",
+                f"Kênh: {selected.get('name') or selected.get('display_name')} — {selected['id']}\n"
+                f"Video: {filename}\nHiển thị: PRIVATE\n\n"
+                "Chỉ lưu tác vụ chuẩn bị cục bộ; chưa chọn file trong Chrome và chưa upload. Tiếp tục?",
+                parent=self.app._details["publisher"]):
+            return
+        self.capture()
+        if not self.app.state or not self.app._save():
+            return
+        project_id = self.app.state.project.id
+        metadata = dict(self.app.state.publisher)
+        self._start("studio_prepared", lambda: self.store.prepare_studio_private(project_id, metadata))
+
     def _start(self, action, worker):
         if self.busy:
             self.status.set("Đang xử lý yêu cầu YouTube; vui lòng chờ.")
             return
         self.busy = True
-        self.status.set("Đang xử lý YouTube OAuth/API trong nền…")
+        self.status.set("Đang xử lý yêu cầu xuất bản trong nền…")
         def run():
             try:
                 result = worker()
@@ -508,5 +571,10 @@ class PublisherController:
                         self.values[key].set(result[key])
                     self.capture()
                     self.app._save()
+            elif action == "studio_prepared":
+                self.status.set("Đã kiểm tra file và lưu kế hoạch PRIVATE trên máy. "
+                                "Chưa chuyển file sang Chrome, chưa upload video.")
+                if self.app.state and self.app.state.project.id == result["project_id"]:
+                    self.values["status"].set("prepared")
         if self.app.root.winfo_exists():
             self.app.root.after(300, self.poll)

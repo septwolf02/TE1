@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -15,7 +15,7 @@ from te.project.manager import _write_json
 CHANNEL_ID = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 MODES = {"immediate", "scheduled"}
-STATUSES = {"draft", "ready", "uploading", "processing", "configuring",
+STATUSES = {"draft", "prepared", "ready", "uploading", "processing", "configuring",
             "scheduled", "published", "failed", "needs_attention", "private_test"}
 # Legacy project metadata has no connection_type; retain its API-era meaning.
 DEFAULTS = {"channel_id": "", "studio_catalog_key": "", "connection_type": "youtube_api", "video_path": "", "thumbnail_path": "", "title": "",
@@ -78,6 +78,7 @@ class PublisherStore:
     """One local store per installation. Jobs survive project switches and restarts."""
 
     def __init__(self, config_path: Path):
+        self.config_path = Path(config_path)
         self.root = Path(config_path).parent / "youtube-publisher"
         self.path = self.root / "jobs.json"
         if self.path.exists():
@@ -223,6 +224,72 @@ class PublisherStore:
                    metadata=meta, status="draft", video_id="", video_url="", error="",
                    last_confirmed_operation="metadata_saved",
                    updated_at=datetime.now().astimezone().isoformat())
+        self._save()
+        return deepcopy(job)
+
+    def prepare_studio_private(self, project_id: str, metadata: dict, *, now: datetime | None = None) -> dict:
+        """Validate and persist a PRIVATE plan; never starts Chrome or an upload."""
+        from .studio_connector import StudioConnectorStore
+
+        meta = normalize_metadata(metadata)
+        if meta["connection_type"] != "studio_connector" or not meta["studio_catalog_key"]:
+            raise ValueError("Chọn một kênh Studio Connector trước.")
+        record = next((row for row in StudioConnectorStore(self.config_path).load()["channels"]
+                       if row.get("key") == meta["studio_catalog_key"]), None)
+        now = now or datetime.now(timezone.utc)
+        try:
+            verified_at = datetime.fromisoformat(record["identity_verified_at"])
+        except (KeyError, TypeError, ValueError):
+            verified_at = None
+        if (not record or record.get("id_source") != "studio_url_user_confirmed" or
+                not CHANNEL_ID.fullmatch(record.get("id", "")) or
+                not verified_at or verified_at.tzinfo is None or
+                not timedelta(0) <= now - verified_at <= timedelta(hours=24) or
+                record.get("status") == "unavailable"):
+            raise ValueError("Kênh Studio cần ID đã xác minh bằng URL trong 24 giờ gần đây.")
+        if meta["channel_id"] and meta["channel_id"] != record["id"]:
+            raise ValueError("Channel ID trong dự án khác kênh Studio đã xác minh.")
+        video = Path(meta["video_path"])
+        if not video.is_file() or video.suffix.lower() != ".mp4" or not 0 < video.stat().st_size <= 256 * 1024**3:
+            raise ValueError("Chọn file MP4 hợp lệ, không rỗng và không quá 256 GiB.")
+        with video.open("rb") as stream:
+            if stream.read(8)[4:] != b"ftyp":
+                raise ValueError("File đã chọn không có header MP4 ftyp.")
+        thumbnail = Path(meta["thumbnail_path"])
+        if not thumbnail.is_file() or thumbnail.suffix.lower() not in {".jpg", ".jpeg", ".png"} or \
+                not 0 < thumbnail.stat().st_size <= 2 * 1024**2:
+            raise ValueError("Chọn thumbnail JPG/PNG hợp lệ, không rỗng và không quá 2 MiB.")
+        with thumbnail.open("rb") as stream:
+            signature = stream.read(8)
+        if (thumbnail.suffix.lower() == ".png" and signature != b"\x89PNG\r\n\x1a\n" or
+                thumbnail.suffix.lower() in {".jpg", ".jpeg"} and not signature.startswith(b"\xff\xd8\xff")):
+            raise ValueError("Nội dung thumbnail không khớp định dạng JPG/PNG.")
+        if not meta["title"].strip() or len(meta["title"]) > 100:
+            raise ValueError("Tiêu đề tiếng Nhật phải có 1–100 ký tự.")
+        if (metadata if isinstance(metadata, dict) else {}).get("audience") not in \
+                {"made_for_kids", "not_made_for_kids"}:
+            raise ValueError("Chọn đối tượng video trước khi chuẩn bị.")
+        source = file_identity(video)
+        meta["channel_id"] = record["id"]
+        fingerprint = "studio-private:" + sha256(json.dumps(
+            [project_id, record["id"], source["sha256"]]).encode()).hexdigest()
+        prior = next((job for job in self.data["jobs"] if job.get("fingerprint") == fingerprint), None)
+        if prior:
+            if prior["status"] != "prepared":
+                raise ValueError("Tác vụ đã được bắt đầu hoặc cần kiểm tra trong Studio; không tạo lại.")
+            prior.update(metadata=meta, thumbnail_path=str(thumbnail.resolve()),
+                         updated_at=now.isoformat())
+            self._save()
+            return deepcopy(prior)
+        job = {"id": uuid4().hex, "fingerprint": fingerprint, "project_id": project_id,
+               "channel_id": record["id"], "channel_key": record["key"],
+               "channel_name": record.get("name") or record.get("display_name") or "",
+               "credential_ref": "", "source": source, "thumbnail_path": str(thumbnail.resolve()),
+               "metadata": meta, "visibility": "private", "status": "prepared",
+               "video_id": "", "video_url": "", "error": "",
+               "last_confirmed_operation": "local_files_validated_only",
+               "created_at": now.isoformat()}
+        self.data["jobs"].append(job)
         self._save()
         return deepcopy(job)
 
