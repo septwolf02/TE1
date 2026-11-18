@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "TE Local File Input Probe (test only)",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "description": "Isolated localhost file-input test; no YouTube access or upload.",
+  "permissions": ["debugger", "tabs"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html", "default_title": "TE file input test"}
+}

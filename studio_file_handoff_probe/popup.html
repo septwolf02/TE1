@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>TE file input test</title>
+<style>body{font:13px system-ui;width:340px;padding:10px}input{width:100%;box-sizing:border-box;margin:5px 0}#result{white-space:pre-wrap}</style>
+<h3>Local MP4 handoff test</h3>
+<p>Chỉ thử trên trang 127.0.0.1 do script TE mở. Không dùng trên YouTube.</p>
+<label>Đường dẫn MP4 tuyệt đối<input id="path" autocomplete="off" placeholder="C:\test\video.mp4"></label>
+<label>Kích thước file (byte)<input id="size" type="number" min="12" step="1"></label>
+<button id="run">Đưa MP4 vào file input thử nghiệm</button>
+<pre id="result" role="status"></pre>
+<script src="popup.js"></script>
