@@ -317,7 +317,7 @@ def test_bulk_sync_rejects_forged_source_labels(tmp_path):
 def test_extension_scope_and_native_launcher_origin_guard():
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "studio_connector_extension" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["permissions"] == ["activeTab", "nativeMessaging", "sidePanel", "storage"]
+    assert manifest["permissions"] == ["activeTab", "nativeMessaging", "sidePanel", "storage", "debugger", "tabs", "alarms"]
     assert manifest["side_panel"]["default_path"] == "sidepanel.html"
     assert "default_popup" not in manifest["action"]
     assert manifest["content_scripts"][0]["matches"] == ["https://studio.youtube.com/*"]

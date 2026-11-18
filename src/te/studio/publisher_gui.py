@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .publisher import PublisherStore, file_identity, normalize_metadata
 from .studio_connector import StudioConnectorStore
+from .studio_upload_bridge import StudioUploadBridge
 from .youtube_api import (CredentialVault, OwnerOAuth, YouTubeAPIClient,
                           YouTubeAPIError, validate_client_config)
 from te.project.manager import _write_json
@@ -32,6 +33,8 @@ class PublisherController:
         self.manual_channel_id = tk.StringVar()
         self._verify_request_id = ""
         self._verify_next_check = 0.0
+        self._studio_upload_job_id = ""
+        self._studio_upload_next_check = 0.0
         for key in ("video_path", "thumbnail_path", "title"):
             self.values[key].trace_add("write", lambda *_: self._refresh_upload_button())
         app.root.after(300, self.poll)
@@ -122,7 +125,7 @@ class PublisherController:
         ttk.Button(box, text="Lưu thông tin xuất bản", command=self.save).grid(row=row, column=0, sticky="w")
         ttk.Button(box, text="Lưu bản nháp Studio (không upload)", command=self.save_studio_draft).grid(
             row=row, column=2, sticky="w")
-        self.studio_prepare_button = ttk.Button(box, text="Chuẩn bị tải thử Riêng tư qua Studio (không upload)",
+        self.studio_prepare_button = ttk.Button(box, text="Tải thử Riêng tư qua Studio Connector",
             command=self.prepare_studio_private, state="disabled")
         self.upload_button = ttk.Button(box, text="Tải thử Riêng tư (Owner)", command=self.upload, state="disabled")
         self.upload_button.grid(row=row, column=1, sticky="w")
@@ -230,7 +233,7 @@ class PublisherController:
                            and job.get("source", {}).get("path") == str(video.resolve()) and
                            job.get("status") in {"waiting_for_browser", "channel_verified", "uploading",
                                                  "processing", "awaiting_user_confirmation", "needs_attention"}
-                           for job in self.store.data["jobs"])
+                           for job in PublisherStore(self.store.config_path, recover_studio=False).data["jobs"])
         except (OSError, ValueError, KeyError, TypeError):
             return False
 
@@ -365,10 +368,10 @@ class PublisherController:
             self.status.set("Cần kênh Studio đã xác minh gần đây, MP4, thumbnail và tiêu đề hợp lệ.")
             return
         filename = Path(self.values["video_path"].get()).name
-        if not messagebox.askyesno("Chuẩn bị tải thử Riêng tư",
+        if not messagebox.askyesno("Tải thử Riêng tư qua Studio",
                 f"Kênh: {selected.get('name') or selected.get('display_name')} — {selected['id']}\n"
                 f"Video: {filename}\nHiển thị: PRIVATE\n\n"
-                "Chỉ lưu tác vụ chuẩn bị cục bộ; chưa chọn file trong Chrome và chưa upload. Tiếp tục?",
+                "Connector sẽ chọn tệp trong Chrome. Chỉ tiếp tục nếu đúng kênh và video thử.",
                 parent=self.app._details["publisher"]):
             return
         self.capture()
@@ -376,7 +379,12 @@ class PublisherController:
             return
         project_id = self.app.state.project.id
         metadata = dict(self.app.state.publisher)
-        self._start("studio_prepared", lambda: self.store.prepare_studio_private(project_id, metadata))
+        def work():
+            job = PublisherStore(self.store.config_path, recover_studio=False).prepare_studio_private(
+                project_id, metadata)
+            request = StudioUploadBridge(self.store.config_path).queue(job["id"])
+            return {"job_id":job["id"], "project_id":project_id, "attempt_id":request["attempt_id"]}
+        self._start("studio_upload_queued", work)
 
     def _start(self, action, worker):
         if self.busy:
@@ -512,6 +520,20 @@ class PublisherController:
         self._start("upload", work)
 
     def poll(self):
+        if self._studio_upload_job_id and time.monotonic() >= self._studio_upload_next_check:
+            self._studio_upload_next_check = time.monotonic() + 2.0
+            try:
+                job = next((item for item in PublisherStore(self.store.config_path, recover_studio=False).data["jobs"]
+                            if item.get("id") == self._studio_upload_job_id), None)
+                if job:
+                    self.values["status"].set(job["status"])
+                    self.status.set(f"Studio Connector: {job['status']} • {job.get('last_confirmed_operation', '')}. "
+                                    "Chỉ xác nhận hoàn tất sau khi kiểm tra video Private trong Studio.")
+                    if job["status"] in {"failed_before_upload", "needs_attention", "completed_private"}:
+                        self._studio_upload_job_id = ""
+                        self._refresh_upload_button()
+            except (OSError, ValueError, KeyError, TypeError):
+                self.status.set("Không đọc được trạng thái upload Connector; kiểm tra Studio trước khi thử lại.")
         if self._verify_request_id and time.monotonic() >= self._verify_next_check:
             self._verify_next_check = time.monotonic() + 2.0
             try:
@@ -571,10 +593,13 @@ class PublisherController:
                         self.values[key].set(result[key])
                     self.capture()
                     self.app._save()
-            elif action == "studio_prepared":
-                self.status.set("Đã kiểm tra file và lưu kế hoạch PRIVATE trên máy. "
-                                "Chưa chuyển file sang Chrome, chưa upload video.")
+            elif action == "studio_upload_queued":
+                self._studio_upload_job_id = result["job_id"]
+                self._studio_upload_next_check = 0.0
+                self.status.set("Đã gửi tác vụ tới Connector. Chrome kiểm tra yêu cầu định kỳ khoảng 30 giây; "
+                                "Channel ID phải khớp trước khi chọn MP4.")
                 if self.app.state and self.app.state.project.id == result["project_id"]:
-                    self.values["status"].set("prepared")
+                    self.values["status"].set("waiting_for_browser")
+                self._refresh_upload_button()
         if self.app.root.winfo_exists():
             self.app.root.after(300, self.poll)

@@ -26,7 +26,7 @@ function nativeRequest(chromeApi, payload, timeoutMs = 15000) {
       port.onDisconnect.addListener(() => {
         if (!done) finish(new Error("Native Host ngắt kết nối. Bản catalog vẫn được giữ trong Chrome; kiểm tra installer rồi bấm Lưu lại."));
       });
-      timer = setTimeout(() => finish(new Error("Native Host quá hạn 15 giây. Catalog vẫn ở Chrome; thử Lưu lại.")), timeoutMs);
+      timer = setTimeout(() => finish(new Error(`Native Host quá hạn ${Math.ceil(timeoutMs / 1000)} giây; kiểm tra trạng thái trong TE trước khi thử lại.`)), timeoutMs);
       port.postMessage(payload);
     } catch (error) { finish(new Error("Không mở được Native Host. Catalog vẫn ở Chrome; kiểm tra cài đặt và Extension ID.")); }
   });
@@ -34,6 +34,63 @@ function nativeRequest(chromeApi, payload, timeoutMs = 15000) {
 
 function nativeSync(chromeApi, records, timeoutMs = 15000) {
   return nativeRequest(chromeApi, {type:"catalog_sync", schema:1, records}, timeoutMs);
+}
+
+async function processUploadRequest(chromeApi, request, report, options = {}) {
+  if (!request?.pending || !/^[a-f0-9]{32}$/.test(request.request_id || "") ||
+      !/^UC[A-Za-z0-9_-]{22}$/.test(request.channel_id || ""))
+    throw new Error("Yêu cầu upload từ TE không hợp lệ.");
+  const timeout = options.hostTimeout || 15000;
+  const native = payload => nativeRequest(chromeApi, {schema:1,...payload},
+    payload.type === "upload_claim" ? 300000 : timeout);
+  let selected = false;
+  try {
+    const channelId = request.channel_id;
+    const uploadUrl = `https://studio.youtube.com/channel/${channelId}/videos/upload`;
+    const tabs = await chromeApi.tabs.query({url:"https://studio.youtube.com/*"});
+    let tab = tabs.find(item => channelFromStudioUrl(item.url) === channelId);
+    if (tab) tab = await chromeApi.tabs.update(tab.id,{url:uploadUrl,active:true});
+    else tab = await chromeApi.tabs.create({url:uploadUrl,active:true});
+    report(`Đang mở Studio cho Channel ID ${channelId}…`);
+    let evidence;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      try {
+        evidence = await chromeApi.tabs.sendMessage(tab.id,{type:"scan_visible_studio"});
+        if (evidence?.page_url === evidence?.page_url_after &&
+            channelFromStudioUrl(evidence.page_url) === channelId) break;
+        if (evidence?.page_url && channelFromStudioUrl(evidence.page_url) &&
+            channelFromStudioUrl(evidence.page_url) !== channelId)
+          throw new Error("Channel ID trong Studio khác kênh TE đã chọn.");
+      } catch (error) {
+        if (/khác kênh TE/.test(error.message)) throw error;
+      }
+      evidence = null;
+      await new Promise(resolve=>setTimeout(resolve,500));
+    }
+    if (!evidence) throw new Error("Studio không mở đúng Channel ID trong 20 giây.");
+    const claimed = await native({type:"upload_claim",request_id:request.request_id,
+      page_url:evidence.page_url,page_url_after:evidence.page_url_after});
+    const file = {...claimed.file,channel_id:channelId};
+    if (file.request_id !== request.request_id || file.channel_id !== channelId)
+      throw new Error("Native Host trả về tệp cho sai yêu cầu hoặc kênh.");
+    report("Đã đối chiếu Channel ID; đang tìm ô chọn MP4 Studio…");
+    const receipt = await selectStudioFile(chromeApi,tab.id,file,async()=>{
+      await native({type:"upload_started",request_id:request.request_id});
+      selected = true;
+    });
+    await native({type:"upload_selected",request_id:request.request_id,
+      filename:receipt.filename,bytes:receipt.bytes});
+    report(`Chrome đã nhận ${receipt.filename} (${receipt.bytes} byte). ` +
+      "Kiểm tra tiến trình trong Studio; chưa xác nhận video được tạo hoặc ở chế độ Private.");
+    return {...receipt,tabId:tab.id};
+  } catch (error) {
+    const reason = selected ? "chrome_disconnected" :
+      /Channel ID|sai yêu cầu|sai.*kênh/.test(error.message) ? "channel_mismatch" :
+      /ô chọn/.test(error.message) ? "missing_input" : "debugger_failure";
+    try { await native({type:"upload_failed",request_id:request.request_id,reason}); }
+    catch (_) { /* TE recovery conservatively marks an uncertain attempt. */ }
+    throw error;
+  }
 }
 
 async function createPanel(chromeApi, ui, defaults = {}) {
@@ -351,4 +408,5 @@ if (typeof document !== "undefined") {
     window.addEventListener("pagehide", () => panel.cancelTarget().catch(() => {}));
   }).catch(error => { ui.status.textContent = `Không mở được catalog: ${error.message}`; });
 }
-if (typeof module !== "undefined") module.exports = {withTimeout, nativeRequest, nativeSync, createPanel};
+if (typeof module !== "undefined") module.exports = {withTimeout, nativeRequest, nativeSync,
+  processUploadRequest, createPanel};

@@ -15,7 +15,8 @@ from te.project.manager import _write_json
 CHANNEL_ID = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 MODES = {"immediate", "scheduled"}
-STATUSES = {"draft", "prepared", "ready", "uploading", "processing", "configuring",
+STATUSES = {"draft", "prepared", "waiting_for_browser", "channel_verified", "uploading",
+            "processing", "completed_private", "failed_before_upload", "ready", "configuring",
             "scheduled", "published", "failed", "needs_attention", "private_test"}
 # Legacy project metadata has no connection_type; retain its API-era meaning.
 DEFAULTS = {"channel_id": "", "studio_catalog_key": "", "connection_type": "youtube_api", "video_path": "", "thumbnail_path": "", "title": "",
@@ -77,7 +78,7 @@ def file_identity(path: Path) -> dict:
 class PublisherStore:
     """One local store per installation. Jobs survive project switches and restarts."""
 
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, *, recover_studio: bool = True):
         self.config_path = Path(config_path)
         self.root = Path(config_path).parent / "youtube-publisher"
         self.path = self.root / "jobs.json"
@@ -91,9 +92,16 @@ class PublisherStore:
         self.data.setdefault("channels", [])
         recovered = False
         for job in self.data["jobs"]:
-            if job.get("status") in {"uploading", "processing", "configuring"}:
+            studio = job.get("fingerprint", "").startswith("studio-private:")
+            if job.get("status") in {"uploading", "processing", "configuring"} and \
+                    (recover_studio or not studio):
                 job["status"] = "needs_attention"
                 job["error"] = "TE Studio dừng khi tác vụ chưa xác nhận; kiểm tra video trong YouTube Studio trước khi thử lại."
+                recovered = True
+            elif recover_studio and studio and \
+                    job.get("status") in {"waiting_for_browser", "channel_verified"}:
+                job["status"] = "needs_attention"
+                job["error"] = "TE Studio khởi động lại khi tác vụ Connector chưa rõ kết quả; kiểm tra Studio trước."
                 recovered = True
         if recovered:
             self._save()

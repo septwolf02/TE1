@@ -14,6 +14,7 @@ $source = @"
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 public static class TEStudioNativeHost {
     private static byte[] ReadExact(Stream input, int length) {
@@ -77,7 +78,9 @@ public static class TEStudioNativeHost {
                 child.StandardInput.BaseStream.Flush();
                 child.StandardInput.Close();
                 var output = Task.Run(() => ForwardFrames(child.StandardOutput.BaseStream, Console.OpenStandardOutput()));
-                if (!output.Wait(10000)) { child.Kill(); throw new TimeoutException(); }
+                // Rechecking a large MP4 hash can take longer than a catalog read.
+                int responseTimeout = Encoding.UTF8.GetString(payload).Contains("\"upload_claim\"") ? 300000 : 10000;
+                if (!output.Wait(responseTimeout)) { child.Kill(); throw new TimeoutException(); }
                 if (!child.WaitForExit(1000)) { child.Kill(); throw new TimeoutException(); }
                 if (child.ExitCode != 0) Log("python", "nonzero_exit");
                 return child.ExitCode;

@@ -9,12 +9,39 @@ import sys
 from datetime import datetime, timezone
 
 from .studio_connector import MAX_MESSAGE_BYTES, StudioConnectorStore
+from .studio_upload_bridge import StudioUploadBridge
 
 
 def handle(payload: bytes, config_path: Path) -> dict:
     if len(payload) > MAX_MESSAGE_BYTES:
         raise ValueError("Thông điệp quá lớn.")
     message = json.loads(payload.decode("utf-8"))
+    if isinstance(message, dict) and message == {"type":"upload_get", "schema":1}:
+        return {"ok":True, "request":StudioUploadBridge(config_path).pending()}
+    if isinstance(message, dict) and message.get("schema") == 1 and message.get("type") in {
+            "upload_claim", "upload_started", "upload_selected", "upload_failed"}:
+        kind = message["type"]
+        required = {"upload_claim":{"type", "schema", "request_id", "page_url", "page_url_after"},
+                    "upload_started":{"type", "schema", "request_id"},
+                    "upload_selected":{"type", "schema", "request_id", "filename", "bytes"},
+                    "upload_failed":{"type", "schema", "request_id", "reason"}}[kind]
+        if set(message) != required or not isinstance(message.get("request_id"), str):
+            raise ValueError("Yêu cầu upload Connector có trường không hợp lệ.")
+        bridge = StudioUploadBridge(config_path)
+        if kind == "upload_claim":
+            return {"ok":True, "file":bridge.claim(message["request_id"], message["page_url"],
+                                                     message["page_url_after"])}
+        if kind == "upload_started":
+            bridge.started(message["request_id"])
+        elif kind == "upload_selected":
+            bridge.file_selected(message["request_id"], message["filename"], message["bytes"])
+        else:
+            if message["reason"] not in {"missing_input", "debugger_failure", "tab_closed",
+                                         "channel_mismatch", "chrome_disconnected", "receipt_mismatch",
+                                         "private_unverified"}:
+                raise ValueError("Mã lỗi upload không hợp lệ.")
+            bridge.fail(message["request_id"], message["reason"])
+        return {"ok":True}
     if isinstance(message, dict) and message == {"type": "selection_get", "schema": 1}:
         return {"ok": True, "request": StudioConnectorStore(config_path).selection_request()}
     if (isinstance(message, dict) and message.get("type") == "selection_confirm" and

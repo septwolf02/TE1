@@ -84,6 +84,8 @@ def publisher_harness(repo, state):
     controller.channel_name = Var()
     controller.oauth_status = Var()
     controller.status = Var()
+    controller._studio_upload_job_id = ""
+    controller._studio_upload_next_check = 0.0
     controller.load(state)
     return controller
 
@@ -314,9 +316,11 @@ def test_studio_private_preparation_button_and_confirmation(tmp_path, monkeypatc
     completed = []
     controller._start = lambda action, work: completed.append((action, work()))
     controller.prepare_studio_private()
-    assert completed[0][0] == "studio_prepared"
-    assert completed[0][1]["visibility"] == "private"
-    assert completed[0][1]["status"] == "prepared"
+    assert completed[0][0] == "studio_upload_queued"
+    assert completed[0][1]["attempt_id"]
+    job = PublisherStore(repo.config_path, recover_studio=False).latest(state.project.id)
+    assert job["visibility"] == "private"
+    assert job["status"] == "waiting_for_browser"
 
 
 @pytest.mark.skipif(os.environ.get("TE_STUDIO_GUI_SMOKE") != "1", reason="requires a desktop display")
