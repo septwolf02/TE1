@@ -289,8 +289,26 @@ def test_missing_intro_is_actionable(tmp_path):
     workflow.generate_narration(state)
     intro_id = state.project.section_intros["P1"]
     Path(next(item for item in state.project.media if item.id == intro_id).path).unlink()
-    with pytest.raises(ValueError, match="Intro P1 bị thiếu"):
+    with pytest.raises(ValueError, match="Thiếu video Intro P1"):
         workflow.prepare_timeline(state)
+
+
+def test_cached_timeline_rebuild_uses_replacement_intro(tmp_path):
+    studio, state = studio_project(tmp_path, intro=True, key=False)
+    workflow = StudioRenderService(studio)
+    workflow.generate_narration(state)
+    first = workflow.prepare_timeline(state)
+    old_id = first.intros[0].media_id
+    old_path = Path(next(item.path for item in state.project.media if item.id == old_id))
+    replacement = tmp_path / "新しい-mở đầu.mp4"
+    replacement.write_bytes(old_path.read_bytes())
+    studio.set_intro(state, SectionName.P1, replacement)
+    old_path.unlink()
+    reopened = studio.open_project(state.directory)
+    rebuilt = workflow.prepare_timeline(reopened)
+    assert rebuilt.intros[0].media_id == reopened.project.section_intros["P1"]
+    assert rebuilt.intros[0].media_id != old_id
+    assert studio.intro_path(reopened, SectionName.P1) == str(replacement)
 
 
 def test_shuffle_bag_never_repeats_with_two_images():

@@ -12,12 +12,14 @@ import wave
 from PIL import Image
 import pytest
 
-from te.project.models import SectionName
+from te.project.models import KeyPlacement, MediaKind, SectionName
+from te.project.manager import ProjectManager
 from te.render.service import RenderError, RenderService
 from te.studio.ai_speakers import resolve_japanese_references, segment_passages
 from te.studio.multi_voice import confirmed_speaker_data
 from te.studio.multi_voice import MultiVoiceService
 from te.studio.render_queue import RenderQueue
+from te.studio.render_queue import _asset_fingerprints, _manifest_digest, _hash_file
 from te.studio.gui import StudioApp
 from te.studio.rendering import StudioRenderService, project_job_lock
 from te.studio.service import StudioService
@@ -92,6 +94,109 @@ def fake_factory(seen, *, entered=None, release=None, fail=None, actual_encoder=
                         active["count"] -= 1
         return Renderer()
     return factory, active
+
+
+def test_replaced_intro_ignores_old_media_after_reopen_and_keeps_old_snapshot(tmp_path, monkeypatch):
+    service, create, _ = fixture(tmp_path)
+    state = create("KL335")
+    service.set_section(state, SectionName.P2, japanese="続き。", vietnamese="Tiếp theo.")
+    monkeypatch.setattr("te.studio.service._video_metadata", lambda _path: (320, 180, 1.0))
+    old = tmp_path / "SNAGIT.mp4"
+    new = tmp_path / "2026-日本語-Tiếng Việt.mp4"
+    old.write_bytes(b"old intro")
+    new.write_bytes(b"new intro")
+    service.set_intro(state, SectionName.P2, old)
+    queue = RenderQueue(service, renderer_factory=fake_factory([])[0])
+    old_job = queue.enqueue(state)
+    service.set_intro(state, SectionName.P2, new)
+    old.unlink()
+    reopened = service.open_project(state.directory)
+    assert service.intro_path(reopened, SectionName.P2) == str(new)
+    assert any(item.path == str(old) for item in reopened.project.media)  # Legacy catalog is preserved.
+    assert str(old) not in _asset_fingerprints(reopened)
+    fresh = queue.enqueue(reopened)
+    manifest = json.loads((Path(fresh["snapshot_path"]) / "snapshot-manifest.json").read_text(encoding="utf-8"))
+    assert str(new) in manifest["assets"]
+    with pytest.raises(ValueError, match="Tác vụ Render Queue đang dùng video Intro P2 cũ"):
+        queue._validate_snapshot(old_job, service.open_project(Path(old_job["snapshot_path"])))
+    queue.update_from_project(old_job["id"], reopened)
+    updated = next(job for job in queue.jobs() if job["id"] == old_job["id"])
+    queue._validate_snapshot(updated, service.open_project(Path(updated["snapshot_path"])))
+
+
+def test_disabled_intros_and_missing_font_have_precise_dependencies(tmp_path, monkeypatch):
+    service, create, _ = fixture(tmp_path)
+    state = create("KL335")
+    monkeypatch.setattr("te.studio.service._video_metadata", lambda _path: (320, 180, 1.0))
+    intro = tmp_path / "mở đầu-日本語.mp4"
+    intro.write_bytes(b"intro")
+    service.set_intro(state, SectionName.P1, intro)
+    intro.unlink()
+    state.intro_preferences["P1"] = False
+    service.save_project(state)
+    _asset_fingerprints(state)
+    state.intro_preferences["P1"] = True
+    with pytest.raises(ValueError, match="Thiếu video Intro P1.*snapshot"):
+        _asset_fingerprints(state, origin="snapshot Render Queue")
+    state.intro_preferences["P1"] = False
+    state.font_path = str(tmp_path / "font-missing.otf")
+    with pytest.raises(ValueError, match="Không tìm thấy font phụ đề Nhật"):
+        _asset_fingerprints(state)
+
+
+@pytest.mark.parametrize("section", list(SectionName))
+def test_each_intro_replacement_ignores_unreferenced_old_video(tmp_path, monkeypatch, section):
+    service, create, _ = fixture(tmp_path)
+    state = create("KL335")
+    if section != SectionName.P1:
+        service.set_section(state, section, japanese="続き。", vietnamese="Tiếp theo.")
+    monkeypatch.setattr("te.studio.service._video_metadata", lambda _path: (320, 180, 1.0))
+    old, new = tmp_path / "old.mp4", tmp_path / "new.mp4"
+    old.write_bytes(b"old")
+    new.write_bytes(b"new")
+    service.set_intro(state, section, old)
+    service.set_intro(state, section, new)
+    old.unlink()
+    reopened = service.open_project(state.directory)
+    assert service.intro_path(reopened, section) == str(new)
+    assert str(old) not in _asset_fingerprints(reopened)
+
+
+def test_replaced_key_preserves_catalog_but_checks_only_active_placement(tmp_path):
+    service, create, _ = fixture(tmp_path)
+    state = create("KL335")
+    old, new = tmp_path / "old-key.png", tmp_path / "new-key.png"
+    Image.new("RGB", (20, 20), "red").save(old)
+    Image.new("RGB", (20, 20), "green").save(new)
+    manager = ProjectManager()
+    previous = manager.add_media(state.project, MediaKind.KEY_IMAGE, old)
+    replacement = manager.add_media(state.project, MediaKind.KEY_IMAGE, new)
+    state.project.key_placements.append(KeyPlacement("key-test", previous.id,
+        state.project.sentence_units[0].id, ""))
+    old.unlink()
+    with pytest.raises(ValueError, match="Thiếu media KEY P1, mục số 1"):
+        _asset_fingerprints(state)
+    state.project.key_placements[0].media_id = replacement.id
+    assert str(old) not in _asset_fingerprints(state)
+
+
+def test_legacy_queue_manifest_retains_its_frozen_media_dependencies(tmp_path):
+    service, create, _ = fixture(tmp_path)
+    state = create("KL335")
+    queue = RenderQueue(service, renderer_factory=fake_factory([])[0])
+    job = queue.enqueue(state)
+    old = tmp_path / "historical.mp4"
+    old.write_bytes(b"old catalog entry")
+    manifest_path = Path(job["snapshot_path"]) / "snapshot-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["assets"][str(old)] = {"size": old.stat().st_size, "sha256": _hash_file(old)}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    job["configuration"]["source_fingerprint"] = _manifest_digest(manifest)
+    snapshot = service.open_project(Path(job["snapshot_path"]))
+    queue._validate_snapshot(job, snapshot)
+    old.unlink()
+    with pytest.raises(ValueError, match="Snapshot Render Queue cũ còn tham chiếu media"):
+        queue._validate_snapshot(job, snapshot)
 
 
 def test_fifo_single_worker_editor_remains_usable_and_outputs_are_unique(tmp_path):

@@ -15,11 +15,12 @@ from typing import Callable
 from uuid import uuid4
 
 from te.project.manager import _write_json
-from te.project.models import Project, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_VIDEO_EXTENSIONS
+from te.project.models import MediaCategory, Project, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_VIDEO_EXTENSIONS
 from te.render import RenderService, RenderSettings
 from te.timeline.models import Timeline
 from .multi_voice import speech_plan
 from .rendering import StudioRenderService, project_job_lock
+from .media_references import active_media_references, missing_media
 from .service import StudioProject, StudioService
 
 
@@ -71,14 +72,22 @@ def _manifest_digest(manifest: dict) -> str:
     return sha256(json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _asset_paths(state: StudioProject) -> list[Path]:
+def _asset_paths(state: StudioProject, *, origin: str = "project hiện tại") -> list[Path]:
     project = state.project
-    paths = {Path(asset.path).resolve() for asset in project.media}
+    paths = set(active_media_references(state))
     if state.font_path:
-        paths.add(Path(state.font_path).resolve())
+        font = Path(state.font_path).resolve()
+        if not font.is_file():
+            raise ValueError(f"Không tìm thấy font phụ đề Nhật ({origin}): {font}. "
+                             "Hãy chọn lại font trong project rồi cập nhật tác vụ nếu cần.")
+        paths.add(font)
     font_settings = RenderSettings(font_family=StudioRenderService._font_family(state),
                                    font_path=state.font_path)
-    _, resolved_font = RenderService._resolve_font(font_settings)
+    try:
+        _, resolved_font = RenderService._resolve_font(font_settings)
+    except ValueError as exc:
+        raise ValueError(f"Không tìm thấy font phụ đề Nhật ({origin}): {exc}. "
+                         "Hãy chọn lại font trong project rồi cập nhật tác vụ nếu cần.") from exc
     if resolved_font:
         paths.add(resolved_font.resolve())
     root = Path(project.media_library_path) if project.media_library_path else None
@@ -88,18 +97,26 @@ def _asset_paths(state: StudioProject) -> list[Path]:
                 path.suffix.lower() in extensions}
         indexed = {Path(asset.path).resolve() for asset in project.media
                    if Path(asset.path).resolve().is_relative_to(root.resolve()) and
-                   Path(asset.path).suffix.lower() in extensions}
+                   Path(asset.path).suffix.lower() in extensions and Path(asset.path).is_file()}
         if disk != indexed:
             raise ValueError("Thư mục ảnh thay đổi so với danh sách project; hãy tải lại ảnh trước khi xếp hàng.")
-        paths.update(disk)
+        paths.update(Path(asset.path).resolve() for asset in project.media
+                     if asset.category == MediaCategory.NORMAL and Path(asset.path).resolve() in disk)
     return sorted(paths, key=str)
 
 
-def _asset_fingerprints(state: StudioProject) -> dict[str, dict]:
+def _asset_fingerprints(state: StudioProject, *, origin: str = "project hiện tại") -> dict[str, dict]:
+    missing = missing_media(state, origin=origin)
+    if state.font_path and not Path(state.font_path).is_file():
+        missing.append(f"Không tìm thấy font phụ đề Nhật ({origin}): {state.font_path}. "
+                       "Hãy chọn lại font trong project rồi cập nhật tác vụ nếu cần.")
+    if missing:
+        raise ValueError("\n".join(missing))
     result = {}
-    for path in _asset_paths(state):
+    for path in _asset_paths(state, origin=origin):
         if not path.is_file():
-            raise ValueError(f"Media hoặc font đã thiếu: {path}")
+            raise ValueError(f"Thiếu media trong snapshot Render Queue: {path}. "
+                             "Hãy cập nhật tác vụ từ project hiện tại.")
         before = path.stat()
         digest = _hash_file(path)
         after = path.stat()
@@ -309,8 +326,46 @@ class RenderQueue:
         for relative, digest in manifest["files"].items():
             if _hash_file(root / relative) != digest:
                 raise ValueError(f"Snapshot đã thay đổi: {relative}. Hãy cập nhật tác vụ từ project.")
-        if _asset_fingerprints(state) != manifest["assets"]:
+        try:
+            actual = self._snapshot_fingerprints(state, manifest)
+        except ValueError as exc:
+            raise ValueError(self._snapshot_asset_error(state, manifest, exc)) from exc
+        if actual != manifest["assets"]:
             raise ValueError("Media hoặc font đã thay đổi sau khi xếp hàng; hãy cập nhật tác vụ từ project.")
+
+    @staticmethod
+    def _snapshot_fingerprints(state: StudioProject, manifest: dict) -> dict[str, dict]:
+        actual = _asset_fingerprints(state, origin="snapshot Render Queue")
+        # Older queue manifests included every catalog entry. Keep those frozen
+        # dependencies intact without imposing them on a newly created job.
+        for name in manifest["assets"].keys() - actual.keys():
+            path = Path(name)
+            if not path.is_file():
+                raise ValueError(f"Snapshot Render Queue cũ còn tham chiếu media đã thiếu: {path}. "
+                                 "Hãy cập nhật tác vụ từ project hiện tại.")
+            before = path.stat()
+            digest = _hash_file(path)
+            after = path.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise ValueError(f"Media snapshot thay đổi khi kiểm tra: {path}")
+            actual[name] = {"size": after.st_size, "sha256": digest}
+        return actual
+
+    def _snapshot_asset_error(self, state: StudioProject, manifest: dict, error: ValueError) -> str:
+        details = str(error)
+        try:
+            current = self.studio.open_project(Path(manifest["source_project"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            return details
+        for section, media_id in state.project.section_intros.items():
+            if not media_id or not state.intro_preferences.get(section, True):
+                continue
+            old_path = self.studio.intro_path(state, section)
+            new_path = self.studio.intro_path(current, section)
+            if old_path and not Path(old_path).is_file() and new_path and new_path != old_path:
+                details += (f"\nTác vụ Render Queue đang dùng video Intro {section} cũ: {old_path}. "
+                            f"Project hiện đã chọn: {new_path}. Hãy cập nhật tác vụ từ project hiện tại.")
+        return details
 
     def _set(self, identifier: str, **fields) -> None:
         self._change(lambda jobs: self._job(jobs, identifier).update(**fields))
@@ -407,7 +462,11 @@ class RenderQueue:
         manifest = json.loads((Path(job["snapshot_path"]) / "snapshot-manifest.json").read_text(encoding="utf-8"))
         if _manifest_digest(manifest) != job["configuration"]["source_fingerprint"]:
             raise ValueError("Snapshot manifest thay đổi trong khi render; MP4 chưa được công bố.")
-        if _asset_fingerprints(state) != manifest["assets"]:
+        try:
+            actual = self._snapshot_fingerprints(state, manifest)
+        except ValueError as exc:
+            raise ValueError(self._snapshot_asset_error(state, manifest, exc)) from exc
+        if actual != manifest["assets"]:
             raise ValueError("Media hoặc font thay đổi trong khi render; MP4 chưa được công bố.")
 
     @staticmethod

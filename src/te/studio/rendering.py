@@ -24,6 +24,7 @@ from te.tts import SentenceSpeechService, TTSService, VoicevoxProvider
 from .service import MOTION_PRESETS, StudioProject, StudioService, _safe_name
 from .multi_voice import MultiVoiceService, configuration_signature, speech_plan
 from .performance import PerformanceReport
+from .media_references import missing_media
 
 
 Progress = Callable[[str], None]
@@ -107,6 +108,12 @@ class StudioRenderService:
         if not any(item.category == MediaCategory.NORMAL and item.media_type == MediaType.IMAGE
                    and Path(item.path).is_file() for item in project.media):
             raise ValueError("Thư mục ảnh thường không có ảnh JPG, PNG hoặc WebP khả dụng.")
+        missing = missing_media(state)
+        if state.font_path and not Path(state.font_path).is_file():
+            missing.append(f"Không tìm thấy font phụ đề Nhật (project hiện tại): {state.font_path}. "
+                           "Hãy chọn lại font hoặc dùng font mặc định.")
+        if missing:
+            raise ValueError("\n".join(missing))
         for section, media_id in project.section_intros.items():
             if media_id and state.intro_preferences.get(section, True):
                 asset = next((item for item in project.media if item.id == media_id), None)
