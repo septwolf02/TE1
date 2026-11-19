@@ -43,7 +43,7 @@ def handle(payload: bytes, config_path: Path) -> dict:
         else:
             if message["reason"] not in {"missing_input", "debugger_failure", "tab_closed",
                                          "channel_mismatch", "chrome_disconnected", "receipt_mismatch",
-                                         "private_unverified"}:
+                                         "studio_no_reaction", "private_unverified"}:
                 raise ValueError("Mã lỗi upload không hợp lệ.")
             diagnostics = message.get("diagnostics", {})
             if not isinstance(diagnostics, dict) or set(diagnostics) - {

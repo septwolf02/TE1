@@ -1,5 +1,5 @@
 const assert=require("node:assert/strict");
-const {channelFromStudioUrl,fileInputs,inspectFileInputs,uploadAction,selectStudioFile}=require("../studio_connector_extension/upload.js");
+const {channelFromStudioUrl,fileInputs,inspectFileInputs,studioReaction,uploadAction,selectStudioFile}=require("../studio_connector_extension/upload.js");
 Object.assign(globalThis,{channelFromStudioUrl,fileInputs,selectStudioFile});
 const {processUploadRequest}=require("../studio_connector_extension/sidepanel.js");
 
@@ -11,9 +11,17 @@ const file={request_id:request.request_id,channel_id:A,path:"C:\\TE\\video.mp4",
 const tree={nodeId:1,nodeName:"#document",children:[{nodeId:2,nodeName:"YTCP-UPLOADS-DIALOG",
   shadowRoots:[{nodeId:3,nodeName:"#shadow-root",children:[{nodeId:4,nodeName:"INPUT",
     attributes:["type","file","accept","video/mp4"]}]}]}]};
+const reactedTree=structuredClone(tree);
+reactedTree.children[0].shadowRoots[0].children.push({nodeName:"#text",nodeValue:file.filename});
 const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){listener?.(value)}}};
 
 (async()=>{
+  assert.equal(studioReaction(tree,file.filename).filenameShown,false);
+  assert.equal(studioReaction(reactedTree,file.filename).filenameShown,true);
+  const progressTree=structuredClone(tree);
+  progressTree.children[0].shadowRoots[0].children.push({nodeName:"DIV",
+    attributes:["role","progressbar"]});
+  assert.equal(studioReaction(progressTree,file.filename).progressCount,1);
   assert.equal(channelFromStudioUrl(url(A)),A);
   assert.equal(channelFromStudioUrl("https://evil.test/channel/"+A),"");
   assert.deepEqual(fileInputs(tree),[4]);
@@ -21,6 +29,25 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
   const emptyAccept=structuredClone(tree);
   emptyAccept.children[0].shadowRoots[0].children[0].attributes=["type","file"];
   assert.deepEqual(fileInputs(emptyAccept),[4]);
+  const headedDialog={nodeId:30,nodeName:"YTCP-DIALOG",children:[
+    {nodeId:31,nodeName:"DIV",attributes:["id","dialog-title"],
+      children:[{nodeName:"#text",nodeValue:"Tải video lên"}]},
+    {nodeId:32,nodeName:"INPUT",attributes:["type","file","hidden",""]},
+    {nodeId:33,nodeName:"INPUT",attributes:["type","file","accept","image/png","hidden",""]}]};
+  const headed=inspectFileInputs(headedDialog);
+  assert.equal(headed.dialogOpen,true);
+  assert.deepEqual(headed.eligible.map(item=>item.nodeId),[32]);
+  assert.equal(headed.eligible[0].hidden,true);
+  assert(headed.rejected.includes("non_video_accept"));
+  const plainHeading=structuredClone(headedDialog);
+  plainHeading.children[0].attributes=[];
+  assert.equal(inspectFileInputs(plainHeading).dialogOpen,true);
+  const noHeading=structuredClone(headedDialog);
+  noHeading.children[0].children[0].nodeValue="Đổi hình thu nhỏ";
+  assert.deepEqual(fileInputs(noHeading),[]);
+  const inactive=structuredClone(headedDialog);
+  inactive.attributes=["style","display:none"];
+  assert.deepEqual(fileInputs(inactive),[]);
   const unrelatedDialog=structuredClone(emptyAccept);
   unrelatedDialog.children[0].nodeName="YTCP-THUMBNAIL-DIALOG";
   assert.deepEqual(fileInputs(unrelatedDialog),[]);
@@ -36,19 +63,20 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
   imageOnly.children[0].shadowRoots[0].children[0].attributes=["type","file","accept","image/png"];
   assert.equal(inspectFileInputs(imageOnly).rejected[0],"non_video_accept");
   const calls=[];
-  let tabUrl=url(A), receipt={name:file.filename,size:file.bytes}, attached=false, attachFails=false;
+  let tabUrl=url(A), receipt={name:file.filename,size:file.bytes}, attached=false, attachFails=false,
+      fileWasSet=false;
   const chromeApi={tabs:{async get(){return {id:7,url:tabUrl}},
       async query(){return [{id:7,url:tabUrl}]},async update(){return {id:7,url:tabUrl}},
       async create(){return {id:7,url:tabUrl}},
       async sendMessage(){return {page_url:tabUrl,page_url_after:tabUrl}}},
     debugger:{async attach(){if(attachFails) throw new Error("debugger busy");
-      attached=true;calls.push("attach")},
+      attached=true;fileWasSet=false;calls.push("attach")},
       async detach(){attached=false;calls.push("detach")},
       async sendCommand(target,method,params){calls.push(method);
-        if(method==="DOM.getDocument") return {root:tree};
+        if(method==="DOM.getDocument") return {root:fileWasSet?reactedTree:tree};
         if(method==="DOM.resolveNode") return {object:{objectId:"input"}};
         if(method==="Runtime.callFunctionOn") return {result:{value:receipt}};
-        if(method==="DOM.setFileInputFiles") assert.deepEqual(params.files,[file.path]);
+        if(method==="DOM.setFileInputFiles") {assert.deepEqual(params.files,[file.path]);fileWasSet=true;}
         return {};
       }}};
   let started=0;
@@ -88,12 +116,13 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
   let reads=0;
   const original=chromeApi.debugger.sendCommand;
   chromeApi.debugger.sendCommand=async(target,method,params)=>{
-    if(method==="DOM.getDocument") return {root:++reads<3?{nodeId:1,nodeName:"#document"}:emptyAccept};
+    if(method==="DOM.getDocument") return {root:++reads<3?{nodeId:1,nodeName:"#document"}:
+      fileWasSet?reactedTree:emptyAccept};
     return original(target,method,params);
   };
   await selectStudioFile(chromeApi,7,file,async()=>{},
     {waitMs:1000,pollMs:0,pause:async()=>{}});
-  assert.equal(reads,3); // A dialog that appears later is accepted.
+  assert.equal(reads,4); // A dialog that appears later is accepted, then Studio reacts.
   chromeApi.debugger.sendCommand=async(target,method,params)=>
     method==="DOM.getDocument"?{root:{nodeId:1,nodeName:"#document"}}:original(target,method,params);
   await assert.rejects(selectStudioFile(chromeApi,7,file,async()=>{},
@@ -110,7 +139,7 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
   let opened=false, clicks=0;
   const openButton={nodeId:9,nodeName:"BUTTON",attributes:["aria-label","Upload videos"]};
   chromeApi.debugger.sendCommand=async(target,method,params)=>{
-    if(method==="DOM.getDocument") return {root:opened?emptyAccept:
+    if(method==="DOM.getDocument") return {root:opened?(fileWasSet?reactedTree:emptyAccept):
       {nodeId:1,nodeName:"#document",children:[openButton]}};
     if(method==="Runtime.callFunctionOn" && params.functionDeclaration.includes("this.click()")) {
       opened=true;clicks++;return {result:{value:true}};
@@ -130,7 +159,7 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
   chromeApi.debugger.sendCommand=async(target,method,params)=>{
     if(method==="DOM.getDocument") return {root:stage==="create"?
       {nodeId:1,nodeName:"#document",children:[createButton]}:stage==="menu"?
-      {nodeId:1,nodeName:"#document",children:[uploadMenu]}:emptyAccept};
+      {nodeId:1,nodeName:"#document",children:[uploadMenu]}:fileWasSet?reactedTree:emptyAccept};
     if(method==="Runtime.callFunctionOn" && params.functionDeclaration.includes("this.click()")) {
       if(stage==="create") {stage="menu";createClicks++;}
       else {stage="dialog";uploadClicks++;}
@@ -142,4 +171,11 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
     {waitMs:1000,pause:async()=>{}});
   assert.equal(createClicks,1);assert.equal(uploadClicks,1);
   // The Create label came from a custom element's nested visible text.
+  chromeApi.debugger.sendCommand=async(target,method,params)=>
+    method==="DOM.getDocument"?{root:tree}:original(target,method,params);
+  let uncertain=0;
+  await assert.rejects(selectStudioFile(chromeApi,7,file,async()=>{uncertain++},
+    {reactionMs:0,pause:async()=>{}}),error=>error.code==="studio_no_reaction" &&
+      error.diagnostics.browser_step==="waiting_for_studio_reaction");
+  assert.equal(uncertain,1); // A populated input without a Studio UI reaction is uncertain.
 })().catch(error=>{console.error(error);process.exitCode=1});

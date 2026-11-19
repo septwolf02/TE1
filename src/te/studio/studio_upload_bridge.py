@@ -162,6 +162,7 @@ class StudioUploadBridge:
         messages = {"missing_input": "YouTube Studio đã mở nhưng chưa tìm được ô chọn video. Kiểm tra giao diện upload hoặc thử lại sau khi khắc phục.",
                     "debugger_failure": "Chrome không cho Connector đọc giao diện upload; kiểm tra quyền debugger hoặc extension khác đang dùng debugger.",
                     "channel_mismatch": "Channel ID của tab Studio không khớp kênh đã chọn trong TE.",
+                    "studio_no_reaction": "Chrome đã nhận MP4 nhưng YouTube Studio chưa hiển thị tên tệp hoặc tiến trình; kiểm tra Studio trước khi thử lại.",
                     "chrome_disconnected": "Chrome ngắt kết nối khi xử lý tệp; kiểm tra Studio trước khi thử lại."}
         detail = messages.get(reason, str(reason))
         diagnostics = diagnostics or {}

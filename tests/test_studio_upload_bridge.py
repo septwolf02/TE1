@@ -123,6 +123,23 @@ def test_wrong_file_receipt_marks_uncertain_without_video_id(tmp_path):
     assert stored["status"] == "needs_attention" and stored["video_id"] == ""
 
 
+def test_studio_ui_does_not_react_after_file_selection_is_uncertain(tmp_path):
+    config, _, job = setup_job(tmp_path)
+    bridge = StudioUploadBridge(config)
+    request = bridge.queue(job["id"])
+    bridge.claim(request["request_id"], studio_url(), studio_url())
+    bridge.started(request["request_id"])
+    handle(json.dumps({"type":"upload_failed","schema":1,"request_id":request["request_id"],
+        "reason":"studio_no_reaction","diagnostics":{"browser_step":"waiting_for_studio_reaction",
+        "dialog_open":True,"candidate_count":1,"rejected":["studio_reaction_unconfirmed"],
+        "cdp_attached":True}}).encode(), config)
+    stored = PublisherStore(config, recover_studio=False).latest("project")
+    assert stored["status"] == "needs_attention" and "chưa hiển thị" in stored["error"]
+    assert bridge.pending() == {"pending":False}
+    with pytest.raises(ValueError, match="không tạo lại"):
+        PublisherStore(config, recover_studio=False).prepare_studio_private("project", job["metadata"])
+
+
 def test_pre_upload_failure_can_retry_same_mp4_with_new_job_and_attempt(tmp_path):
     config, video, first = setup_job(tmp_path)
     bridge = StudioUploadBridge(config)

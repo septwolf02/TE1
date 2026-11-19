@@ -27,33 +27,71 @@ function isDialog(node) {
     /(?:^|-)DIALOG$/.test(node.nodeName?.toUpperCase()||"");
 }
 
-function isUploadDialog(node) {
-  if(!isDialog(node)) return false;
-  const a=attrs(node);
-  const identity=(node.nodeName||"")+" "+(a["aria-label"]||a.title||"");
-  return /upload|アップロード|tải video/i.test(identity);
+const UPLOAD_HEADINGS=new Set(["tải video lên","upload videos","upload video",
+  "動画をアップロード","動画のアップロード"]);
+
+function normalizedText(value) {
+  return String(value||"").normalize("NFKC").replace(/\s+/g," ").trim().toLocaleLowerCase();
 }
 
-function inspectFileInputs(root) {
+function isUploadDialog(node,axNames=new Map()) {
+  if(!isDialog(node)) return false;
+  const a=attrs(node);
+  if("hidden" in a || a["aria-hidden"]==="true" ||
+      /display\s*:\s*none|visibility\s*:\s*hidden/i.test(a.style||"")) return false;
+  const identity=(node.nodeName||"")+" "+(a["aria-label"]||a.title||"")+
+    " "+(axNames.get(node.backendNodeId)||"");
+  if(/upload|アップロード|tải video/i.test(identity)) return true;
+  const labelledBy=(a["aria-labelledby"]||"").split(/\s+/);
+  return walk(node).slice(1).some(({node:child,chain})=>{
+    if(chain.slice(1,-1).some(isDialog)) return false;
+    const info=attrs(child),tag=child.nodeName?.toUpperCase()||"";
+    const heading=/^H[1-6]$/.test(tag) || info.role==="heading" ||
+      /(?:title|heading)/i.test(`${info.id||""} ${info.class||""}`) ||
+      labelledBy.includes(info.id) && !!info.id;
+    if(heading && UPLOAD_HEADINGS.has(normalizedText(controlText(child)))) return true;
+    return child.nodeName==="#text" && UPLOAD_HEADINGS.has(normalizedText(child.nodeValue)) &&
+      !chain.some(item=>{
+        const role=attrs(item).role,tagName=item.nodeName?.toUpperCase()||"";
+        return role==="button" || role==="menuitem" || tagName==="BUTTON" ||
+          tagName.endsWith("-BUTTON");
+      });
+  });
+}
+
+function inspectFileInputs(root,axNames=new Map()) {
   const candidates=[],rejected=[];
   for(const {node,chain} of walk(root)) {
     if(node.nodeName?.toUpperCase()==="IFRAME" && !node.contentDocument)
       rejected.push("inaccessible_iframe");
     const a=attrs(node);
     if(node.nodeName?.toUpperCase()!=="INPUT" || a.type?.toLowerCase()!=="file") continue;
-    const dialog=chain.some(isUploadDialog), accept=(a.accept||"").toLowerCase();
+    const dialog=chain.some(item=>isUploadDialog(item,axNames)), accept=(a.accept||"").toLowerCase();
     const video=/video|\.mp4|\.mov|\.mkv|\.webm/.test(accept);
     const hidden=chain.some(item=>"hidden" in attrs(item)||attrs(item)["aria-hidden"]==="true");
-    const reason=hidden?"hidden":/image|audio/.test(accept)&&!video?"non_video_accept":
+    const reason=/image|audio/.test(accept)&&!video?"non_video_accept":
       !dialog?"outside_upload_dialog":"";
     if(reason) rejected.push(reason);
-    candidates.push({nodeId:node.nodeId,reason});
+    candidates.push({nodeId:node.nodeId,reason,video,hidden});
   }
   return {candidates,eligible:candidates.filter(item=>!item.reason),
-    rejected:[...new Set(rejected)],dialogOpen:walk(root).some(({node})=>isUploadDialog(node))};
+    rejected:[...new Set(rejected)],dialogOpen:walk(root).some(({node})=>isUploadDialog(node,axNames))};
 }
 
 function fileInputs(node) {return inspectFileInputs(node).eligible.map(item=>item.nodeId);}
+
+function studioReaction(root, filename, axNames=new Map()) {
+  let filenameShown=false, progressCount=0;
+  for(const {node:dialog} of walk(root).filter(({node})=>isUploadDialog(node,axNames))) {
+    for(const {node,chain} of walk(dialog)) {
+      const a=attrs(node);
+      if(node.nodeName==="#text" && node.nodeValue?.includes(filename) &&
+          !chain.some(item=>item.nodeName?.toUpperCase()==="INPUT")) filenameShown=true;
+      if(node.nodeName?.toUpperCase()==="PROGRESS" || a.role==="progressbar") progressCount++;
+    }
+  }
+  return {filenameShown,progressCount};
+}
 
 function controlText(node) {
   const pieces=[];
@@ -70,14 +108,14 @@ function controlNames(node,axNames) {
     .map(value=>value.normalize("NFKC").replace(/\s+/g," ").trim().toLocaleLowerCase());
 }
 
-function uploadAction(root,clicked,axNames=new Map()) {
+function uploadAction(root,clicked,axNames=new Map(),axControls=axNames) {
   const create=new Set(["create","作成","tạo"]);
   const upload=new Set(["upload videos","upload video","動画をアップロード",
     "動画のアップロード","tải video lên"]);
   const candidates=walk(root).filter(({node,chain})=>{
     const a=attrs(node),tag=node.nodeName?.toUpperCase()||"";
     return !!node.nodeId && (tag==="BUTTON" || tag.endsWith("-BUTTON") ||
-      a.role==="button" || a.role==="menuitem" || axNames.has(node.backendNodeId)) && !a.disabled &&
+      a.role==="button" || a.role==="menuitem" || axControls.has(node.backendNodeId)) && !a.disabled &&
       !chain.some(item=>"hidden" in attrs(item)||attrs(item)["aria-hidden"]==="true");
   }).map(item=>({...item,names:controlNames(item.node,axNames)}));
   const choose=(names,requireMenu,kind)=>{
@@ -117,26 +155,36 @@ async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options
     };
     const clicked=new Set(), deadline=Date.now()+(options.waitMs??20000);
     const pause=options.pause||((ms)=>new Promise(resolve=>setTimeout(resolve,ms)));
-    let nodeId;
+    let nodeId, beforeReaction, dialogAxNames=new Map();
     do {
       diagnostics.browser_step=clicked.has("create")?"waiting_for_create_menu":
         "waiting_for_upload_dialog";
       const tree=await send("DOM.getDocument",{depth:-1,pierce:true});
-      const found=inspectFileInputs(tree.root);
+      let axNames=new Map(),axControls=new Map();
+      try {
+        const accessibility=await send("Accessibility.getFullAXTree");
+        axNames=new Map((accessibility.nodes||[]).filter(item=>!item.ignored &&
+          item.backendDOMNodeId && typeof item.name?.value==="string")
+          .map(item=>[item.backendDOMNodeId,item.name.value]));
+        axControls=new Map((accessibility.nodes||[]).filter(item=>!item.ignored &&
+          item.backendDOMNodeId && ["button","menuitem"].includes(item.role?.value))
+          .map(item=>[item.backendDOMNodeId,true]));
+      } catch (_) { /* DOM heading and attributes remain available. */ }
+      const found=inspectFileInputs(tree.root,axNames);
       diagnostics.dialog_open=found.dialogOpen;
       diagnostics.candidate_count=found.candidates.length;
       diagnostics.rejected=found.rejected;
-      if(found.eligible.length===1) {nodeId=found.eligible[0].nodeId;break;}
+      const strongest=found.eligible.filter(item=>item.video);
+      const eligible=strongest.length===1 ? strongest : found.eligible;
+      if(eligible.length===1) {
+        nodeId=eligible[0].nodeId;
+        dialogAxNames=axNames;
+        beforeReaction=studioReaction(tree.root,file.filename,dialogAxNames);
+        break;
+      }
       if(found.eligible.length>1) diagnostics.rejected=[...found.rejected,"ambiguous_inputs"];
       if(!found.dialogOpen) {
-        let axNames=new Map();
-        try {
-          const accessibility=await send("Accessibility.getFullAXTree");
-          axNames=new Map((accessibility.nodes||[]).filter(item=>!item.ignored &&
-            item.backendDOMNodeId && ["button","menuitem"].includes(item.role?.value) &&
-            typeof item.name?.value==="string").map(item=>[item.backendDOMNodeId,item.name.value]));
-        } catch (_) { /* DOM text and attributes remain available. */ }
-        const action=uploadAction(tree.root,clicked,axNames);
+        const action=uploadAction(tree.root,clicked,axNames,axControls);
         if(action) {
           const beforeClick=await chromeApi.tabs.get(tabId);
           if(channelFromStudioUrl(beforeClick.url)!==file.channel_id)
@@ -184,6 +232,22 @@ async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options
     const value = receipt?.result?.value;
     if (value?.name !== file.filename || value?.size !== file.bytes)
       throw new Error("Chrome nhận sai MP4 hoặc file input không cập nhật.");
+    diagnostics.browser_step="waiting_for_studio_reaction";
+    const reactionDeadline=Date.now()+(options.reactionMs??30000);
+    let reacted=false;
+    do {
+      const latest=await send("DOM.getDocument",{depth:-1,pierce:true});
+      const reaction=studioReaction(latest.root,file.filename,dialogAxNames);
+      if(reaction.filenameShown&&!beforeReaction.filenameShown ||
+          reaction.progressCount>beforeReaction.progressCount) {reacted=true;break;}
+      if(Date.now()>=reactionDeadline) break;
+      await pause(options.pollMs??500);
+    } while(true);
+    if(!reacted) {
+      diagnostics.rejected=[...new Set([...diagnostics.rejected,"studio_reaction_unconfirmed"])];
+      const error=new Error("Chrome đã nhận MP4 nhưng chưa thấy YouTube Studio hiển thị tên tệp hoặc tiến trình. Kiểm tra Studio trước khi thử lại.");
+      error.code="studio_no_reaction";throw error;
+    }
     return {filename:value.name, bytes:value.size};
   } catch(error) {
     error.diagnostics=diagnostics;
@@ -194,4 +258,4 @@ async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options
 }
 
 if (typeof module !== "undefined") module.exports = {channelFromStudioUrl, fileInputs,
-  inspectFileInputs, uploadAction, selectStudioFile};
+  inspectFileInputs, studioReaction, uploadAction, selectStudioFile};

@@ -88,7 +88,7 @@ async function processUploadRequest(chromeApi, request, report, options = {}) {
       "Kiểm tra tiến trình trong Studio; chưa xác nhận video được tạo hoặc ở chế độ Private.");
     return {...receipt,tabId:tab.id};
   } catch (error) {
-    const reason = selected ? "chrome_disconnected" :
+    const reason = selected ? (error.code || "chrome_disconnected") :
       /Channel ID|sai yêu cầu|sai.*kênh/.test(error.message) ? "channel_mismatch" :
       error.code || (/ô chọn/.test(error.message) ? "missing_input" : "debugger_failure");
     const diagnostics=error.diagnostics || {browser_step:browserStep,dialog_open:false,
