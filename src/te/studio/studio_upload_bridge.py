@@ -8,11 +8,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
+from hashlib import sha256
 from uuid import uuid4
 
 from te.project.manager import _write_json
 from .channel_probe import channel_id_from_url
 from .publisher import PublisherStore, file_identity
+from .publisher import VIDEO_ID
 from .studio_connector import StudioConnectorStore, _studio_url
 
 
@@ -47,6 +49,7 @@ class StudioUploadBridge:
         if request and (request.get("request_id") == request_id or
                         request.get("previous_failed_request_id") == request_id):
             safe = (request.get("previous_failed_request_id") == request_id or
+                    request.get("status") == "completed_private" or
                     request.get("status") == "failed" and not request.get("file_selection_started"))
             return {"safe_to_clear": bool(safe)}
         return {"safe_to_clear": False}
@@ -54,7 +57,7 @@ class StudioUploadBridge:
     def queue(self, job_id: str, *, now: datetime | None = None) -> dict:
         now = now or datetime.now(timezone.utc)
         existing = self._read()
-        if existing and existing.get("status") in {"waiting_for_browser", "claimed", "started", "file_selected"}:
+        if existing and existing.get("status") in {"waiting_for_browser", "claimed", "started", "file_selected", "saving"}:
             raise ValueError("Đã có yêu cầu Connector đang chờ hoặc chưa rõ kết quả; không gửi lại.")
         if existing and existing.get("status") == "failed" and not existing.get("file_selection_started") and \
                 self.lock_path.exists() and \
@@ -128,6 +131,10 @@ class StudioUploadBridge:
         if not record or record.get("id") != job["channel_id"] or \
                 record.get("id_source") != "studio_url_user_confirmed":
             raise ValueError("Danh tính kênh đã đổi sau khi gửi yêu cầu.")
+        thumbnail = Path(job["thumbnail_path"]).resolve(strict=True)
+        if not thumbnail.is_file() or not 0 < thumbnail.stat().st_size <= 2 * 1024**2 or \
+                job.get("thumbnail_sha256") and sha256(thumbnail.read_bytes()).hexdigest() != job["thumbnail_sha256"]:
+            raise ValueError("Thumbnail đã thay đổi sau khi chuẩn bị; upload bị chặn.")
         store.update(job["id"], status="channel_verified", last_confirmed_operation="studio_url_matched")
         _write_json(self.path, dict(request, status="claimed"))
         return {"request_id": request_id, "attempt_id": request["attempt_id"],
@@ -154,16 +161,101 @@ class StudioUploadBridge:
         store.update(job["id"], status="uploading", last_confirmed_operation="browser_file_input_received")
         _write_json(self.path, dict(request, status="file_selected"))
 
+    def resume(self, request_id: str) -> dict:
+        request = self._read()
+        if not request or request.get("request_id") != request_id or \
+                request.get("status") not in {"file_selected", "saving"}:
+            raise ValueError("Lượt Studio chưa chọn xong MP4 hoặc cần đối chiếu thủ công.")
+        store = PublisherStore(self.config_path, recover_studio=False)
+        job = next((item for item in store.data["jobs"] if item.get("id") == request["job_id"]), None)
+        if not job or job.get("attempt_id") != request["attempt_id"] or \
+                job.get("channel_id") != request["channel_id"] or \
+                job.get("status") not in {"uploading", "processing"}:
+            raise ValueError("Trạng thái tác vụ Studio không còn khớp lượt upload.")
+        thumbnail = Path(job["thumbnail_path"])
+        if request["status"] == "file_selected":
+            thumbnail = thumbnail.resolve(strict=True)
+            if not thumbnail.is_file() or job.get("thumbnail_sha256") and \
+                    sha256(thumbnail.read_bytes()).hexdigest() != job["thumbnail_sha256"]:
+                raise ValueError("Thumbnail đã đổi sau khi chọn MP4; kiểm tra Studio.")
+        meta = job["metadata"]
+        return {"request_id": request_id, "channel_id": request["channel_id"],
+                "stage": request["status"], "title": meta["title"],
+                "description": meta["description"], "tags": meta["tags"],
+                "audience": meta["audience"], "thumbnail_path": str(thumbnail),
+                "thumbnail_name": thumbnail.name,
+                "thumbnail_bytes": thumbnail.stat().st_size if request["status"] == "file_selected" else 0}
+
+    def progress(self, request_id: str, step: str) -> None:
+        allowed = {"entering_details", "thumbnail_selected", "audience_selected", "setting_private",
+                   "saving_private", "verifying_video"}
+        if step not in allowed:
+            raise ValueError("Bước Studio không hợp lệ.")
+        request = self._read()
+        if not request or request.get("request_id") != request_id or \
+                request.get("status") not in {"file_selected", "saving"}:
+            raise ValueError("Lượt Studio không còn ở bước cấu hình video.")
+        if request["status"] == "saving" and step not in {"saving_private", "verifying_video"}:
+            raise ValueError("Không được cấu hình lại sau khi đã bắt đầu lưu.")
+        if step == "saving_private":
+            _write_json(self.path, dict(request, status="saving"))
+        PublisherStore(self.config_path, recover_studio=False).update(request["job_id"],
+            status="processing" if step in {"saving_private", "verifying_video"} else "uploading",
+            last_confirmed_operation=step)
+
+    def complete(self, request_id: str, page_url: str, video_id: str, visibility: str) -> dict:
+        return self._record_completed(request_id, page_url, video_id, visibility, reconcile=False)
+
+    def reconcile_candidate(self) -> dict:
+        request = self._read()
+        if not request or request.get("status") != "failed" or not request.get("file_selection_started"):
+            return {"pending": False}
+        store = PublisherStore(self.config_path, recover_studio=False)
+        job = next((item for item in store.data["jobs"] if item.get("id") == request["job_id"]), None)
+        if not job or job.get("status") != "needs_attention" or \
+                job.get("attempt_id") != request.get("attempt_id"):
+            return {"pending": False}
+        return {"pending": True, "request_id": request["request_id"],
+                "channel_id": request["channel_id"], "title": job["metadata"]["title"]}
+
+    def reconcile(self, request_id: str, page_url: str, video_id: str, visibility: str) -> dict:
+        return self._record_completed(request_id, page_url, video_id, visibility, reconcile=True)
+
+    def _record_completed(self, request_id: str, page_url: str, video_id: str,
+                          visibility: str, *, reconcile: bool) -> dict:
+        request = self._read()
+        accepted = (request and request.get("status") == "failed" and
+                    request.get("file_selection_started")) if reconcile else request and request.get("status") == "saving"
+        if not request or request.get("request_id") != request_id or not accepted or \
+                not VIDEO_ID.fullmatch(video_id) or visibility != "private" or \
+                not _studio_url(page_url) or channel_id_from_url(page_url) != request["channel_id"]:
+            raise ValueError("Thiếu chứng cứ video Private trong đúng kênh Studio.")
+        store = PublisherStore(self.config_path, recover_studio=False)
+        current = next((item for item in store.data["jobs"] if item.get("id") == request["job_id"]), None)
+        if not current or current.get("attempt_id") != request.get("attempt_id") or \
+                current.get("status") != ("needs_attention" if reconcile else "processing"):
+            raise ValueError("Trạng thái tác vụ không khớp lượt lưu Studio.")
+        job = store.update(request["job_id"], status="completed_private", video_id=video_id,
+            video_url=f"https://www.youtube.com/watch?v={video_id}", error="",
+            tags_status="not_applied" if current.get("metadata", {}).get("tags", "").strip() else "not_requested",
+            last_confirmed_operation="studio_private_content_row_verified")
+        _write_json(self.path, dict(request, status="completed_private", video_id=video_id,
+                                    reconciled=bool(reconcile)))
+        self.lock_path.unlink(missing_ok=True)
+        return {"video_id": job["video_id"], "video_url": job["video_url"]}
+
     def fail(self, request_id: str, reason: str, diagnostics: dict | None = None) -> None:
         request = self._read()
-        if not request or request.get("request_id") != request_id or request.get("status") == "failed":
+        if not request or request.get("request_id") != request_id or \
+                request.get("status") in {"failed", "completed_private"}:
             return
-        uncertain = request["status"] in {"started", "file_selected"}
+        uncertain = request["status"] in {"started", "file_selected", "saving"}
         messages = {"missing_input": "YouTube Studio đã mở nhưng chưa tìm được ô chọn video. Kiểm tra giao diện upload hoặc thử lại sau khi khắc phục.",
                     "debugger_failure": "Chrome không cho Connector đọc giao diện upload; kiểm tra quyền debugger hoặc extension khác đang dùng debugger.",
                     "channel_mismatch": "Channel ID của tab Studio không khớp kênh đã chọn trong TE.",
                     "studio_no_reaction": "Chrome đã nhận MP4 nhưng YouTube Studio chưa hiển thị tên tệp hoặc tiến trình; kiểm tra Studio trước khi thử lại.",
                     "chrome_disconnected": "Chrome ngắt kết nối khi xử lý tệp; kiểm tra Studio trước khi thử lại."}
+        messages["private_unverified"] = "Chưa xác minh được video Private trong đúng kênh Studio; kiểm tra bản nháp hoặc video đã đăng trước khi thử lại."
         detail = messages.get(reason, str(reason))
         diagnostics = diagnostics or {}
         summary = (f" Bước: {diagnostics.get('browser_step', 'chưa rõ')}; "

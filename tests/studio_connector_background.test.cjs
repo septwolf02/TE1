@@ -2,61 +2,60 @@ const assert=require("node:assert/strict");
 const fs=require("node:fs");
 const vm=require("node:vm");
 const path=require("node:path");
-
 const channel="UC"+"a".repeat(22);
 const url=`https://studio.youtube.com/channel/${channel}/videos/upload`;
-const active={request_id:"a".repeat(32),channel_id:channel,tab_id:7};
-let tab={id:7,url}, marker=active;
-const sent=[];
-const chrome={storage:{local:{async get(){return {studioActiveUpload:marker}},
-  async set(value){marker=value.studioActiveUpload},async remove(){marker=undefined}}},
-  tabs:{async get(){if(!tab) throw new Error("closed");return tab},onRemoved:{addListener(){}}},
-  alarms:{create(){},onAlarm:{addListener(){}}},
-  runtime:{onInstalled:{addListener(){}},onStartup:{addListener(){}}},
-  sidePanel:{setPanelBehavior(){}}};
-const context=vm.createContext({chrome,importScripts(){},
-  channelFromStudioUrl(value){return value.match(/\/channel\/(UC[A-Za-z0-9_-]{22})/)?.[1]||""},
-  async nativeRequest(_chrome,message){sent.push(message.type);return {ok:true,request:{pending:false}}},
-  async processUploadRequest(){throw new Error("not expected")}});
-vm.runInContext(fs.readFileSync(path.join(__dirname,"../studio_connector_extension/background.js"),"utf8"),context);
+const requestId="a".repeat(32);
+const source=fs.readFileSync(path.join(__dirname,"../studio_connector_extension/background.js"),"utf8");
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+function worker(initialMarker,initialTab) {
+  let marker=initialMarker,tab=initialTab,alarmCreated=0;
+  const sent=[];
+  const chrome={storage:{local:{async get(){return {studioActiveUpload:marker}},
+    async set(value){marker=value.studioActiveUpload},async remove(){marker=undefined}}},
+    tabs:{async get(){if(!tab) throw new Error("closed");return tab},onRemoved:{addListener(){}}},
+    alarms:{create(){alarmCreated++},onAlarm:{addListener(){}}},
+    runtime:{onInstalled:{addListener(){}},onStartup:{addListener(){}}},
+    sidePanel:{setPanelBehavior(){}}};
+  const context=vm.createContext({chrome,importScripts(){},
+    channelFromStudioUrl(value){return value.match(/\/channel\/(UC[A-Za-z0-9_-]{22})/)?.[1]||""},
+    async nativeRequest(_chrome,message){sent.push(message.type);
+      if(message.type==="upload_state") return {ok:true,safe_to_clear:false};
+      if(message.type==="upload_resume") return {ok:true,task:{stage:"file_selected"}};
+      return {ok:true,request:{pending:false}}},
+    async completePrivateUpload(_chrome,id,task,progress){
+      assert.equal(id,7);assert.equal(task.stage,"file_selected");
+      await progress("saving_private");
+      return {video_id:"a".repeat(11),page_url:url,visibility:"private"}},
+    async processUploadRequest(){throw new Error("unexpected")}});
+  vm.runInContext(source,context);
+  return {context,sent,get marker(){return marker},set marker(value){marker=value},
+    set tab(value){tab=value},get alarmCreated(){return alarmCreated}};
+}
 (async()=>{
-  await new Promise(resolve=>setImmediate(resolve)); // Initial worker evaluation polls automatically.
-  assert(sent.includes("upload_state"));
-  sent.length=0;
-  await vm.runInContext("checkUpload()",context);
-  assert.deepEqual(sent,["upload_state"]); // A live tab is not treated as a disconnect.
-  tab=null;
-  await vm.runInContext("checkUpload()",context);
-  assert.deepEqual(sent,["upload_state","upload_state","upload_failed","upload_get"]);
-  assert.equal(marker,undefined);
-  marker=active;
-  context.nativeRequest=async()=>{throw new Error("TE offline")};
-  await vm.runInContext("checkUpload()",context);
-  assert.equal(marker,active); // Retry reporting an uncertain outcome after TE returns.
-  const next={pending:true,request_id:"b".repeat(32),channel_id:channel};
+  const live=worker({request_id:requestId,channel_id:channel,tab_id:7},{id:7,url});
+  await tick();
+  assert.deepEqual(live.sent,["upload_state","upload_resume","upload_progress","upload_complete"]);
+  assert.equal(live.marker,undefined);
+  assert.equal(live.alarmCreated,1);
+  const closed=worker({request_id:requestId,channel_id:channel,tab_id:7},null);
+  await tick();
+  assert.deepEqual(closed.sent,["upload_state","upload_failed","upload_get"]);
+  assert.equal(closed.marker,undefined);
+  const offline=worker({request_id:requestId,channel_id:channel,tab_id:7},{id:7,url});
+  offline.context.nativeRequest=async()=>{throw new Error("TE offline")};
+  await tick();
+  assert.equal(offline.marker.request_id,requestId);
   let processed=0;
-  context.nativeRequest=async(_chrome,message)=>message.type==="upload_state"?
-    {ok:true,safe_to_clear:true}:{ok:true,request:next};
-  context.processUploadRequest=async()=>{processed++;return {tabId:8}};
-  await vm.runInContext("checkUpload()",context);
+  const fresh=worker(undefined,{id:7,url});
+  fresh.context.nativeRequest=async(_chrome,message)=>{
+    fresh.sent.push(message.type);
+    if(message.type==="upload_get") return {ok:true,request:{pending:true,request_id:requestId,channel_id:channel}};
+    if(message.type==="upload_resume") return {ok:true,task:{stage:"file_selected"}};
+    return {ok:true};
+  };
+  fresh.context.processUploadRequest=async()=>{processed++;return {tabId:7}};
+  await tick();
   assert.equal(processed,1);
-  assert.equal(marker.request_id,next.request_id);
-  assert.equal(marker.tab_id,8); // New request runs without opening the Side Panel.
-  let freshMarker, freshProcessed=0, alarmCreated=0;
-  const freshChrome={storage:{local:{async get(){return {studioActiveUpload:freshMarker}},
-    async set(value){freshMarker=value.studioActiveUpload},async remove(){freshMarker=undefined}}},
-    tabs:{onRemoved:{addListener(){}}},alarms:{create(){alarmCreated++},
-      onAlarm:{addListener(){}}},runtime:{onInstalled:{addListener(){}},
-      onStartup:{addListener(){}}},sidePanel:{setPanelBehavior(){}}};
-  const fresh=vm.createContext({chrome:freshChrome,importScripts(){},
-    async nativeRequest(_chrome,message){assert.equal(message.type,"upload_get");
-      return {ok:true,request:next}},
-    async processUploadRequest(){freshProcessed++;return {tabId:4}},
-    channelFromStudioUrl(){return channel}});
-  vm.runInContext(fs.readFileSync(path.join(__dirname,
-    "../studio_connector_extension/background.js"),"utf8"),fresh);
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(alarmCreated,1);
-  assert.equal(freshProcessed,1);
-  assert.equal(freshMarker.request_id,next.request_id);
+  assert(fresh.sent.includes("upload_complete"));
+  assert.equal(fresh.marker,undefined);
 })().catch(error=>{console.error(error);process.exitCode=1});

@@ -258,4 +258,5 @@ async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options
 }
 
 if (typeof module !== "undefined") module.exports = {channelFromStudioUrl, fileInputs,
-  inspectFileInputs, studioReaction, uploadAction, selectStudioFile};
+  inspectFileInputs, studioReaction, uploadAction, selectStudioFile,
+  attrs, walk, isUploadDialog, normalizedText, controlText};

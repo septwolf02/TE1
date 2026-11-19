@@ -294,6 +294,7 @@ class PublisherController:
             self.values[key].set(path)
 
     def load(self, state):
+        self._studio_upload_job_id = ""
         meta = normalize_metadata(state.publisher)
         if not meta["video_path"]:
             meta["video_path"] = self.default_video(state)
@@ -319,11 +320,13 @@ class PublisherController:
         self._refresh_upload_button()
         self.status.set("Kênh có OAuth API authorization; có thể tải thử Riêng tư trên máy Owner."
                         if self._selected_connection() else "Kênh chưa có OAuth API authorization; upload đã bị chặn.")
-        job = self.store.latest(state.project.id)
+        job = PublisherStore(self.store.config_path, recover_studio=False).latest(state.project.id)
         if job:
             self.values["status"].set(job["status"])
             if job["status"] == "needs_attention":
                 self.status.set("Cần kiểm tra tác vụ trong YouTube Studio trước khi thử lại: " + job.get("error", ""))
+                self._studio_upload_job_id = job["id"]
+                self._studio_upload_next_check = 0.0
             self.values["video_id"].set(job.get("video_id", ""))
             self.values["video_url"].set(job.get("video_url", ""))
 
@@ -366,13 +369,6 @@ class PublisherController:
         selected = self._selected_row()
         if not self._studio_preparation_ready() or not selected:
             self.status.set("Cần kênh Studio đã xác minh gần đây, MP4, thumbnail và tiêu đề hợp lệ.")
-            return
-        filename = Path(self.values["video_path"].get()).name
-        if not messagebox.askyesno("Tải thử Riêng tư qua Studio",
-                f"Kênh: {selected.get('name') or selected.get('display_name')} — {selected['id']}\n"
-                f"Video: {filename}\nHiển thị: PRIVATE\n\n"
-                "Connector sẽ chọn tệp trong Chrome. Chỉ tiếp tục nếu đúng kênh và video thử.",
-                parent=self.app._details["publisher"]):
             return
         self.capture()
         if not self.app.state or not self.app._save():
@@ -527,10 +523,28 @@ class PublisherController:
                             if item.get("id") == self._studio_upload_job_id), None)
                 if job:
                     self.values["status"].set(job["status"])
-                    detail = job.get("error") or ("Chỉ xác nhận hoàn tất sau khi kiểm tra video Private trong Studio.")
-                    self.status.set(f"Studio Connector: {job['status']} • "
-                                    f"{job.get('last_confirmed_operation', '')}. {detail}")
-                    if job["status"] in {"failed_before_upload", "needs_attention", "completed_private"}:
+                    stages = {"queued_for_connector":"Đang kết nối Studio",
+                              "studio_url_matched":"Đã xác minh kênh",
+                              "browser_file_input_received":"Studio đã nhận MP4",
+                              "entering_details":"Đang nhập thông tin video",
+                              "thumbnail_selected":"Đã chọn thumbnail",
+                              "audience_selected":"Đã đặt đối tượng video",
+                              "setting_private":"Đang đặt Riêng tư",
+                              "saving_private":"Đang lưu video",
+                              "verifying_video":"Đang xác minh Video ID",
+                              "studio_private_content_row_verified":"Đã xác minh video Riêng tư"}
+                    operation=job.get("last_confirmed_operation", "")
+                    detail=job.get("error") or ""
+                    if job.get("status") == "completed_private" and job.get("tags_status") == "not_applied":
+                        detail = "Tags chưa được tự động nhập; kiểm tra trong Studio."
+                    self.status.set(f"Studio Connector: {stages.get(operation, operation)}. {detail}")
+                    if job["status"] == "completed_private" and self.app.state and \
+                            self.app.state.project.id == job["project_id"]:
+                        self.values["video_id"].set(job["video_id"])
+                        self.values["video_url"].set(job["video_url"])
+                        self.capture()
+                        self.app._save()
+                    if job["status"] in {"failed_before_upload", "completed_private"}:
                         self._studio_upload_job_id = ""
                         self._refresh_upload_button()
             except (OSError, ValueError, KeyError, TypeError):

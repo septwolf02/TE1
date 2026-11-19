@@ -52,6 +52,7 @@ async function processUploadRequest(chromeApi, request, report, options = {}) {
     let tab = tabs.find(item => channelFromStudioUrl(item.url) === channelId);
     if (tab) tab = await chromeApi.tabs.update(tab.id,{active:true});
     else tab = await chromeApi.tabs.create({url:studioUrl,active:true});
+    if(options.onTab) await options.onTab(tab.id);
     report(`Đang mở Studio cho Channel ID ${channelId}…`);
     let evidence;
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -111,6 +112,26 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   rows = Array.isArray(saved.studioDraft) ? saved.studioDraft : Array.isArray(saved.studioCatalog) ? saved.studioCatalog : [];
   dirty = !!saved.studioUnsynced || JSON.stringify(saved.studioCatalog || []) !== JSON.stringify(rows);
   const status = message => { ui.status.textContent = message; };
+  const reconcilePrivate = async () => {
+    const reply=await nativeRequest(chromeApi,{type:"upload_reconcile_get",schema:1});
+    const request=reply.request;
+    if(!request?.pending) throw new Error("Không có tác vụ chưa rõ cần đối chiếu.");
+    const tabs=await chromeApi.tabs.query({active:true,currentWindow:true});
+    const tab=tabs.find(item=>channelFromStudioUrl(item.url)===request.channel_id);
+    if(!tab) throw new Error(`Mở đúng kênh ${request.channel_id} trong Studio trước khi đối chiếu.`);
+    status("Đang đọc danh sách video Private của đúng kênh Studio…");
+    const evidence=await completePrivateUpload(chromeApi,tab.id,{...request,stage:"saving"},
+      async()=>{}, {verifyWaitMs:30000});
+    if(!window.confirm(`Studio hiển thị video Private ${evidence.video_id} với tiêu đề "${request.title}" `+
+        `trong kênh ${request.channel_id}. Bạn đã đối chiếu đây là video của lượt upload chưa rõ?`)) {
+      status("Đã hủy đối chiếu; tác vụ vẫn cần kiểm tra.");
+      return;
+    }
+    const saved=await nativeRequest(chromeApi,{type:"upload_reconcile",schema:1,
+      request_id:request.request_id,page_url:evidence.page_url,
+      video_id:evidence.video_id,visibility:evidence.visibility});
+    status(`Đã đối chiếu video Private ${saved.video_id} trong đúng kênh; TE sẽ cập nhật trạng thái.`);
+  };
   const pullCatalog = async () => {
     const reply = await nativeRequest(chromeApi, {type:"catalog_get",schema:1}, defaults.hostTimeout || 15000);
     if (!Array.isArray(reply.records)) throw new Error("Native Host không trả về catalog hợp lệ.");
@@ -388,6 +409,7 @@ async function createPanel(chromeApi, ui, defaults = {}) {
   try { await pullCatalog(); }
   catch (error) { status(`Chưa đọc được catalog từ TE: ${error.message}. Dữ liệu Chrome vẫn được giữ.`); }
   return {start, stop, save, verify, receiveSelection, confirmSelection, diagnose, copyDiagnostic,
+    reconcilePrivate,
     target, cancelTarget, propose, confirmTarget, pullCatalog,
     getRows:()=>rows, merge, render};
 }
@@ -403,7 +425,8 @@ if (typeof document !== "undefined") {
       ["confirmSelection",panel.confirmSelection],
       ["diagnose",panel.diagnose],["copyDiagnostic",panel.copyDiagnostic],
       ["target",panel.target],["cancelTarget",panel.cancelTarget],
-      ["confirmTarget",panel.confirmTarget],["pullCatalog",panel.pullCatalog]]) {
+      ["confirmTarget",panel.confirmTarget],["pullCatalog",panel.pullCatalog],
+      ["reconcilePrivate",panel.reconcilePrivate]]) {
       document.getElementById(id).addEventListener("click", () => action().catch(error => {
         ui.status.textContent = `Lỗi: ${error.message || error}`;
       }));

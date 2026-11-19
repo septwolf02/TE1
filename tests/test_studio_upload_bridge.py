@@ -75,6 +75,16 @@ def test_host_handoff_checks_channel_and_is_one_shot(tmp_path):
         PublisherStore(config,recover_studio=False).begin_attempt(job["id"])
 
 
+def test_changed_thumbnail_is_blocked_before_file_selection(tmp_path):
+    config, _, job = setup_job(tmp_path)
+    bridge = StudioUploadBridge(config)
+    request = bridge.queue(job["id"])
+    (tmp_path / "thumb.png").write_bytes(b"\x89PNG\r\n\x1a\nchanged")
+    with pytest.raises(ValueError, match="Thumbnail đã thay đổi"):
+        bridge.claim(request["request_id"], studio_url(), studio_url())
+    assert PublisherStore(config, recover_studio=False).latest("project")["status"] == "waiting_for_browser"
+
+
 def test_missing_or_changed_mp4_and_expired_request_never_claim(tmp_path):
     config, video, job = setup_job(tmp_path)
     bridge = StudioUploadBridge(config)
@@ -185,3 +195,68 @@ def test_host_rejects_malformed_upload_diagnostics(tmp_path):
                "reason":"missing_input","diagnostics":{"browser_step":"x","secret":"never"}}
     with pytest.raises(ValueError, match="Chẩn đoán"):
         handle(json.dumps(payload).encode(), config)
+
+
+def test_private_completion_requires_verified_video_and_preserves_duplicate_lock(tmp_path):
+    config, video, job = setup_job(tmp_path)
+    bridge = StudioUploadBridge(config)
+    request = bridge.queue(job["id"])
+    bridge.claim(request["request_id"], studio_url(), studio_url())
+    bridge.started(request["request_id"])
+    bridge.file_selected(request["request_id"], video.name, video.stat().st_size)
+    task = handle(json.dumps({"type":"upload_resume", "schema":1,
+        "request_id":request["request_id"]}).encode(), config)["task"]
+    assert task["title"] == "日本語の題名"
+    assert task["thumbnail_name"] == "thumb.png" and task["audience"] == "not_made_for_kids"
+    with pytest.raises(ValueError, match="chứng cứ"):
+        bridge.complete(request["request_id"], studio_url(), "v" * 11, "private")
+    for step in ("entering_details", "thumbnail_selected", "audience_selected",
+                 "setting_private", "saving_private", "verifying_video"):
+        handle(json.dumps({"type":"upload_progress", "schema":1,
+            "request_id":request["request_id"], "step":step}).encode(), config)
+    for page, video_id, visibility in ((studio_url(B), "v" * 11, "private"),
+                                       (studio_url(), "bad", "private"),
+                                       (studio_url(), "v" * 11, "public")):
+        with pytest.raises(ValueError, match="chứng cứ"):
+            bridge.complete(request["request_id"], page, video_id, visibility)
+    result = handle(json.dumps({"type":"upload_complete", "schema":1,
+        "request_id":request["request_id"], "page_url":studio_url(),
+        "video_id":"v" * 11, "visibility":"private"}).encode(), config)
+    assert result["video_url"] == "https://www.youtube.com/watch?v=" + "v" * 11
+    assert PublisherStore(config, recover_studio=False).latest("project")["status"] == "completed_private"
+    assert bridge.request_state(request["request_id"])["safe_to_clear"]
+    with pytest.raises(ValueError, match="không tạo lại"):
+        PublisherStore(config, recover_studio=False).prepare_studio_private("project", job["metadata"])
+
+
+def test_uncertain_failure_after_save_never_allows_automatic_retry(tmp_path):
+    config, video, job = setup_job(tmp_path)
+    bridge = StudioUploadBridge(config)
+    request = bridge.queue(job["id"])
+    bridge.claim(request["request_id"], studio_url(), studio_url())
+    bridge.started(request["request_id"])
+    bridge.file_selected(request["request_id"], video.name, video.stat().st_size)
+    bridge.progress(request["request_id"], "saving_private")
+    assert bridge.resume(request["request_id"])["stage"] == "saving"
+    with pytest.raises(ValueError, match="chờ"):
+        bridge.queue(job["id"])
+    with pytest.raises(ValueError, match="cấu hình lại"):
+        bridge.progress(request["request_id"], "entering_details")
+    bridge.fail(request["request_id"], "private_unverified", {"browser_step":"verifying_video"})
+    stored = PublisherStore(config, recover_studio=False).latest("project")
+    assert stored["status"] == "needs_attention" and stored["video_id"] == ""
+    assert "verifying_video" in stored["error"]
+    with pytest.raises(ValueError, match="không tạo lại"):
+        PublisherStore(config, recover_studio=False).prepare_studio_private("project", job["metadata"])
+    candidate = handle(b'{"type":"upload_reconcile_get","schema":1}', config)["request"]
+    assert candidate["pending"] and candidate["title"] == "日本語の題名"
+    payload = {"type":"upload_reconcile", "schema":1, "request_id":request["request_id"],
+               "page_url":studio_url(), "video_id":"v" * 11, "visibility":"private"}
+    with pytest.raises(ValueError, match="chứng cứ"):
+        handle(json.dumps(dict(payload, page_url=studio_url(B))).encode(), config)
+    with pytest.raises(ValueError, match="chứng cứ"):
+        handle(json.dumps(dict(payload, visibility="public")).encode(), config)
+    result = handle(json.dumps(payload).encode(), config)
+    assert result["video_id"] == "v" * 11
+    assert PublisherStore(config, recover_studio=False).latest("project")["status"] == "completed_private"
+    assert bridge.reconcile_candidate() == {"pending":False}

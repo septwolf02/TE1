@@ -309,10 +309,8 @@ def test_studio_private_preparation_button_and_confirmation(tmp_path, monkeypatc
     controller.values["title"].set("日本語の題名")
     controller.app._details = {"publisher":None}
     controller.app._save = lambda: (repo.save_project(state) or True)
-    monkeypatch.setattr("te.studio.publisher_gui.messagebox.askyesno", lambda *args, **kwargs: False)
-    controller.prepare_studio_private()
-    assert PublisherStore(repo.config_path).data["jobs"] == []
-    monkeypatch.setattr("te.studio.publisher_gui.messagebox.askyesno", lambda *args, **kwargs: True)
+    monkeypatch.setattr("te.studio.publisher_gui.messagebox.askyesno",
+                        lambda *args, **kwargs: pytest.fail("Upload click must not require another confirmation"))
     completed = []
     controller._start = lambda action, work: completed.append((action, work()))
     controller.prepare_studio_private()

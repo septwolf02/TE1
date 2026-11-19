@@ -22,6 +22,29 @@ def handle(payload: bytes, config_path: Path) -> dict:
             message.get("type") == "upload_state" and message.get("schema") == 1 and \
             isinstance(message.get("request_id"), str):
         return {"ok":True, **StudioUploadBridge(config_path).request_state(message["request_id"])}
+    if isinstance(message, dict) and set(message) == {"type", "schema", "request_id"} and \
+            message.get("type") == "upload_resume" and message.get("schema") == 1 and \
+            isinstance(message.get("request_id"), str):
+        return {"ok":True, "task":StudioUploadBridge(config_path).resume(message["request_id"])}
+    if message == {"type":"upload_reconcile_get", "schema":1}:
+        return {"ok":True, "request":StudioUploadBridge(config_path).reconcile_candidate()}
+    if isinstance(message, dict) and set(message) == {"type", "schema", "request_id", "page_url",
+            "video_id", "visibility"} and message.get("type") == "upload_reconcile" and \
+            message.get("schema") == 1 and all(isinstance(message.get(key), str) for key in
+            ("request_id", "page_url", "video_id", "visibility")):
+        return {"ok":True, **StudioUploadBridge(config_path).reconcile(message["request_id"],
+            message["page_url"], message["video_id"], message["visibility"])}
+    if isinstance(message, dict) and set(message) == {"type", "schema", "request_id", "step"} and \
+            message.get("type") == "upload_progress" and message.get("schema") == 1 and \
+            isinstance(message.get("request_id"), str) and isinstance(message.get("step"), str):
+        StudioUploadBridge(config_path).progress(message["request_id"], message["step"])
+        return {"ok":True}
+    if isinstance(message, dict) and set(message) == {"type", "schema", "request_id", "page_url",
+            "video_id", "visibility"} and message.get("type") == "upload_complete" and \
+            message.get("schema") == 1 and all(isinstance(message.get(key), str) for key in
+            ("request_id", "page_url", "video_id", "visibility")):
+        return {"ok":True, **StudioUploadBridge(config_path).complete(message["request_id"],
+            message["page_url"], message["video_id"], message["visibility"])}
     if isinstance(message, dict) and message.get("schema") == 1 and message.get("type") in {
             "upload_claim", "upload_started", "upload_selected", "upload_failed"}:
         kind = message["type"]

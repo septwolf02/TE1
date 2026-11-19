@@ -295,6 +295,7 @@ class PublisherStore:
                 raise ValueError("Tác vụ đã được bắt đầu hoặc cần kiểm tra trong Studio; không tạo lại.")
         if prior:
             prior.update(metadata=meta, thumbnail_path=str(thumbnail.resolve()),
+                         thumbnail_sha256=sha256(thumbnail.read_bytes()).hexdigest(),
                          updated_at=now.isoformat())
             self._save()
             return deepcopy(prior)
@@ -302,6 +303,7 @@ class PublisherStore:
                "channel_id": record["id"], "channel_key": record["key"],
                "channel_name": record.get("name") or record.get("display_name") or "",
                "credential_ref": "", "source": source, "thumbnail_path": str(thumbnail.resolve()),
+               "thumbnail_sha256": sha256(thumbnail.read_bytes()).hexdigest(),
                "metadata": meta, "visibility": "private", "status": "prepared",
                "video_id": "", "video_url": "", "error": "",
                "last_confirmed_operation": "local_files_validated_only",

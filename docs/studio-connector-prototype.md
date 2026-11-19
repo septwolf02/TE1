@@ -1,6 +1,20 @@
 # TE Studio Phase 4A.3 — Studio Connector Side Panel
 
+## Phase 4B.2C — tự hoàn tất video Private (cần thử trên Windows)
+
+Người dùng Windows đã xác nhận Connector mở đúng kênh, mở hộp upload và chọn MP4 bằng CDP; Studio bắt đầu hiển thị tiến trình. Bản này tiếp tục đọc form trong đúng hộp upload, nhập tiêu đề tiếng Nhật và mô tả giữ nguyên dòng, chọn thumbnail, đặt audience, đi qua các bước và chọn **Private**. Connector ghi trạng thái trước khi bấm **Lưu**, rồi chỉ ghi `completed_private` sau khi tìm được hàng video có **tiêu đề chính xác, Video ID hợp lệ và nhãn Private** trong danh sách video của đúng Channel ID. Nếu thiếu field, control mơ hồ, có cảnh báo hoặc không tìm được bằng chứng, tác vụ thành `needs_attention` và không tự thử lại. Tags tùy chọn **chưa được tự động nhập**; TE báo rõ điều này sau khi hoàn tất.
+
+Trong TE chọn kênh đã xác minh gần đây, MP4, thumbnail, title, description và audience rồi bấm **Tải thử Riêng tư qua Studio Connector** một lần. Không cần mở Side Panel hay xác nhận lặp lại. TE hiển thị từng bước xử lý. Khi kết quả là `needs_attention`, mở Studio để kiểm tra draft/video trước khi thực hiện hành động khác; không xóa tệp JSON hay đổi tên MP4 để ép thử lại. Luồng Owner OAuth giữ nguyên. Không có hành động Public, Scheduled hay monetization.
+
+**Chứng cứ kiểm thử:** Python và JavaScript dùng fixture/mock; môi trường Cloud chưa xem được DOM upload thực trên Windows. Vì vậy việc tự điền form, bấm Lưu và xác minh hàng video vẫn cần thử trên Windows Chrome trước khi coi là vận hành thực tế. Bản này cần **Reload** extension tại `chrome://extensions` và khởi động lại TE sau cập nhật. **Không cần cài lại Native Host** nếu bản 4B.2B đã kết nối được: launcher C# và manifest Native Messaging không đổi, Host Python dùng mã mới trong checkout sau `pip install -e '.[gui]'`.
+
+Kiểm tra lần đầu với MP4 nhỏ và kênh thử: quan sát Channel ID trên tab Studio, tiêu đề/mô tả/thumbnail/audience trong form, nhãn Private trước Lưu và hàng video Private/Video ID sau Lưu. Nếu TE báo `needs_attention`, đối chiếu draft và danh sách video; không bấm Upload lại vì kết quả cũ có thể đã tạo video. Ghi lại bước lỗi TE hiển thị và ảnh giao diện không chứa thông tin đăng nhập để chỉnh bộ nhận diện DOM.
+
+Nếu tác vụ ở `needs_attention` sau khi Chrome có thể đã chọn MP4, Side Panel có nút **Đối chiếu video Private khi tác vụ chưa rõ**. Đóng hộp upload cũ, mở đúng kênh Studio rồi bấm nút. Connector chỉ tìm **một** Video ID có hàng mang tiêu đề chính xác và nhãn Private trong danh sách của đúng kênh; nếu mơ hồ, nó dừng. Kiểm tra thủ công nội dung video và xác nhận chỉ khi đây đúng là video từ lượt upload đó. Không có phép tự thử lại nào từ hành động này.
+
 ## Phase 4B.2B — MP4 handoff trong Connector hiện có (cần kiểm chứng Windows)
+
+Các đoạn bên dưới ghi lại trạng thái ở các bản 4B.2A/4B.2B; với bản hiện tại, làm theo mục **Phase 4B.2C** phía trên.
 
 ### Sửa lỗi `missing_input` và thử lại sau lỗi trước upload
 
