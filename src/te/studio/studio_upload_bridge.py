@@ -42,6 +42,15 @@ class StudioUploadBridge:
             self.lock_path.unlink()  # Only this completed pre-upload attempt owns the lock.
         return True
 
+    def request_state(self, request_id: str) -> dict:
+        request = self._read()
+        if request and (request.get("request_id") == request_id or
+                        request.get("previous_failed_request_id") == request_id):
+            safe = (request.get("previous_failed_request_id") == request_id or
+                    request.get("status") == "failed" and not request.get("file_selection_started"))
+            return {"safe_to_clear": bool(safe)}
+        return {"safe_to_clear": False}
+
     def queue(self, job_id: str, *, now: datetime | None = None) -> dict:
         now = now or datetime.now(timezone.utc)
         existing = self._read()
@@ -70,6 +79,8 @@ class StudioUploadBridge:
         request = {"schema": 1, "request_id": uuid4().hex, "attempt_id": uuid4().hex,
                    "job_id": job_id, "channel_id": job["channel_id"], "status": "waiting_for_browser",
                    "created_at": now.isoformat(), "expires_at": (now + timedelta(minutes=5)).isoformat()}
+        if existing and existing.get("status") == "failed" and not existing.get("file_selection_started"):
+            request["previous_failed_request_id"] = existing["request_id"]
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with self.lock_path.open("x", encoding="utf-8") as lock:

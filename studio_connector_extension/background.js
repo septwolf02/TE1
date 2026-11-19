@@ -10,11 +10,17 @@ async function checkUpload() {
     const saved = await chrome.storage.local.get("studioActiveUpload");
     if (saved.studioActiveUpload) {
       const active = saved.studioActiveUpload;
-      let tab;
-      try { tab = await chrome.tabs.get(active.tab_id); } catch (_) { /* Chrome closed the tab. */ }
-      if (tab && channelFromStudioUrl(tab.url) === active.channel_id) return;
-      // Preserve the marker if TE is offline; retry the failure report later.
-      await markDisconnected("chrome_disconnected");
+      const state = await nativeRequest(chrome,{type:"upload_state",schema:1,
+        request_id:active.request_id});
+      if (state.safe_to_clear === true) {
+        await chrome.storage.local.remove("studioActiveUpload");
+      } else {
+        let tab;
+        try { tab = await chrome.tabs.get(active.tab_id); } catch (_) { /* Chrome closed the tab. */ }
+        if (tab && channelFromStudioUrl(tab.url) === active.channel_id) return;
+        // Preserve the marker if TE is offline; retry the failure report later.
+        await markDisconnected("chrome_disconnected");
+      }
     }
     const reply = await nativeRequest(chrome,{type:"upload_get",schema:1});
     if (reply.request?.pending) {
@@ -56,3 +62,5 @@ chrome.tabs.onRemoved.addListener(tabId => markDisconnected("tab_closed",tabId).
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === UPLOAD_ALARM) checkUpload();
 });
+// MV3 workers can be restarted independently of onInstalled/onStartup.
+scheduleUploadChecks();

@@ -133,10 +133,14 @@ def test_pre_upload_failure_can_retry_same_mp4_with_new_job_and_attempt(tmp_path
     store = PublisherStore(config, recover_studio=False)
     previous = next(job for job in store.data["jobs"] if job["id"] == first["id"])
     assert previous["status"] == "failed_before_upload" and "YouTube Studio" in previous["error"]
+    state_payload = json.dumps({"type":"upload_state","schema":1,
+                                "request_id":request["request_id"]}).encode()
+    assert handle(state_payload, config)["safe_to_clear"] is True
     new = store.prepare_studio_private("project", first["metadata"])
     assert new["id"] != first["id"] and new["fingerprint"] == first["fingerprint"]
     second = bridge.queue(new["id"])
     assert second["attempt_id"] != request["attempt_id"]
+    assert handle(state_payload, config)["safe_to_clear"] is True
     assert next(job for job in PublisherStore(config, recover_studio=False).data["jobs"]
                 if job["id"] == first["id"])["error"] == previous["error"]
 
@@ -148,6 +152,7 @@ def test_uncertain_or_unproven_pre_upload_failure_cannot_retry(tmp_path):
     bridge.claim(request["request_id"], studio_url(), studio_url())
     bridge.started(request["request_id"])
     bridge.fail(request["request_id"], "chrome_disconnected")
+    assert StudioUploadBridge(config).request_state(request["request_id"])["safe_to_clear"] is False
     with pytest.raises(ValueError, match="không tạo lại"):
         PublisherStore(config, recover_studio=False).prepare_studio_private("project", first["metadata"])
     config2, _, other = setup_job(tmp_path / "unproven")

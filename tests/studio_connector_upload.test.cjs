@@ -1,5 +1,5 @@
 const assert=require("node:assert/strict");
-const {channelFromStudioUrl,fileInputs,inspectFileInputs,selectStudioFile}=require("../studio_connector_extension/upload.js");
+const {channelFromStudioUrl,fileInputs,inspectFileInputs,uploadAction,selectStudioFile}=require("../studio_connector_extension/upload.js");
 Object.assign(globalThis,{channelFromStudioUrl,fileInputs,selectStudioFile});
 const {processUploadRequest}=require("../studio_connector_extension/sidepanel.js");
 
@@ -26,6 +26,12 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
   assert.deepEqual(fileInputs(unrelatedDialog),[]);
   assert.deepEqual(fileInputs({nodeName:"IFRAME",contentDocument:emptyAccept}),[4]);
   assert(inspectFileInputs({nodeName:"IFRAME"}).rejected.includes("inaccessible_iframe"));
+  const axOnly={nodeName:"#document",children:[{nodeId:21,backendNodeId:121,nodeName:"YTCP-VE"}]};
+  assert.equal(uploadAction(axOnly,new Set(),new Map([[121,"Tạo"]])).kind,"create");
+  assert.equal(uploadAction({nodeName:"#document",children:[
+    {nodeId:21,nodeName:"BUTTON",children:[{nodeName:"#text",nodeValue:"Tạo"}]},
+    {nodeId:22,nodeName:"BUTTON",children:[{nodeName:"#text",nodeValue:"Tạo"}]}]},
+    new Set()),null);
   const imageOnly=structuredClone(tree);
   imageOnly.children[0].shadowRoots[0].children[0].attributes=["type","file","accept","image/png"];
   assert.equal(inspectFileInputs(imageOnly).rejected[0],"non_video_accept");
@@ -107,11 +113,33 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
     if(method==="DOM.getDocument") return {root:opened?emptyAccept:
       {nodeId:1,nodeName:"#document",children:[openButton]}};
     if(method==="Runtime.callFunctionOn" && params.functionDeclaration.includes("this.click()")) {
-      opened=true;clicks++;return {result:{value:null}};
+      opened=true;clicks++;return {result:{value:true}};
     }
     return original(target,method,params);
   };
   await selectStudioFile(chromeApi,7,file,async()=>{},
     {waitMs:1000,pause:async()=>{}});
   assert.equal(clicks,1); // An unambiguous accessible upload action opens the dialog once.
+
+  let stage="create", createClicks=0, uploadClicks=0;
+  const createButton={nodeId:11,backendNodeId:111,nodeName:"YTCP-BUTTON",
+    children:[{nodeName:"#text",nodeValue:"Tạo"}]};
+  const uploadMenu={nodeId:12,nodeName:"DIV",attributes:["role","menu"],
+    children:[{nodeId:13,backendNodeId:113,nodeName:"YTCP-VE",attributes:["role","menuitem"],
+      children:[{nodeName:"#text",nodeValue:"Tải video lên"}]}]};
+  chromeApi.debugger.sendCommand=async(target,method,params)=>{
+    if(method==="DOM.getDocument") return {root:stage==="create"?
+      {nodeId:1,nodeName:"#document",children:[createButton]}:stage==="menu"?
+      {nodeId:1,nodeName:"#document",children:[uploadMenu]}:emptyAccept};
+    if(method==="Runtime.callFunctionOn" && params.functionDeclaration.includes("this.click()")) {
+      if(stage==="create") {stage="menu";createClicks++;}
+      else {stage="dialog";uploadClicks++;}
+      return {result:{value:true}};
+    }
+    return original(target,method,params);
+  };
+  await selectStudioFile(chromeApi,7,file,async()=>{},
+    {waitMs:1000,pause:async()=>{}});
+  assert.equal(createClicks,1);assert.equal(uploadClicks,1);
+  // The Create label came from a custom element's nested visible text.
 })().catch(error=>{console.error(error);process.exitCode=1});

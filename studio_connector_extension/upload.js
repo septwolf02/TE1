@@ -55,21 +55,45 @@ function inspectFileInputs(root) {
 
 function fileInputs(node) {return inspectFileInputs(node).eligible.map(item=>item.nodeId);}
 
-function uploadAction(root,clicked) {
-  // Use exact accessible control names; never search arbitrary page text.
-  for(const name of ["upload videos","upload video","動画をアップロード","動画のアップロード",
-      "tải video lên","create","作成","tạo"]) {
-    if(clicked.has(name)) continue;
-    const matches=walk(root).filter(({node})=>{
-      const a=attrs(node);
-      return (node.nodeName?.toUpperCase()==="BUTTON"||a.role==="button") &&
-        !a.disabled && a["aria-hidden"]!=="true" &&
-        (a["aria-label"]||a.title||"").trim().toLowerCase()===name;
-    });
-    if(matches.length===1) return {nodeId:matches[0].node.nodeId,name};
-    if(matches.length>1) return null;
+function controlText(node) {
+  const pieces=[];
+  for(const {node:child} of walk(node)) {
+    if(child.nodeName==="#text" && child.nodeValue) pieces.push(child.nodeValue);
   }
-  return null;
+  return pieces.join(" ").replace(/\s+/g," ").trim();
+}
+
+function controlNames(node,axNames) {
+  const a=attrs(node);
+  return [axNames.get(node.backendNodeId),a["aria-label"],a.title,controlText(node)]
+    .filter(value=>typeof value==="string" && value.trim())
+    .map(value=>value.normalize("NFKC").replace(/\s+/g," ").trim().toLocaleLowerCase());
+}
+
+function uploadAction(root,clicked,axNames=new Map()) {
+  const create=new Set(["create","作成","tạo"]);
+  const upload=new Set(["upload videos","upload video","動画をアップロード",
+    "動画のアップロード","tải video lên"]);
+  const candidates=walk(root).filter(({node,chain})=>{
+    const a=attrs(node),tag=node.nodeName?.toUpperCase()||"";
+    return !!node.nodeId && (tag==="BUTTON" || tag.endsWith("-BUTTON") ||
+      a.role==="button" || a.role==="menuitem" || axNames.has(node.backendNodeId)) && !a.disabled &&
+      !chain.some(item=>"hidden" in attrs(item)||attrs(item)["aria-hidden"]==="true");
+  }).map(item=>({...item,names:controlNames(item.node,axNames)}));
+  const choose=(names,requireMenu,kind)=>{
+    const matches=candidates.filter(item=>item.names.some(name=>names.has(name)) &&
+      (!requireMenu || item.chain.some(node=>{
+        const a=attrs(node);
+        return a.role==="menu" || a.role==="menuitem" ||
+          /(?:^|-)MENU(?:-|$)/.test(node.nodeName?.toUpperCase()||"");
+      })));
+    // A custom button may wrap one native button. Click the innermost match.
+    const independent=matches.filter(item=>!matches.some(other=>other!==item &&
+      other.chain.includes(item.node)));
+    return independent.length===1 ? {nodeId:independent[0].node.nodeId,kind} : null;
+  };
+  if(clicked.has("create")) return choose(upload,false,"upload");
+  return choose(create,false,"create") || choose(upload,false,"upload");
 }
 
 async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options={}) {
@@ -95,7 +119,8 @@ async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options
     const pause=options.pause||((ms)=>new Promise(resolve=>setTimeout(resolve,ms)));
     let nodeId;
     do {
-      diagnostics.browser_step="waiting_for_upload_dialog";
+      diagnostics.browser_step=clicked.has("create")?"waiting_for_create_menu":
+        "waiting_for_upload_dialog";
       const tree=await send("DOM.getDocument",{depth:-1,pierce:true});
       const found=inspectFileInputs(tree.root);
       diagnostics.dialog_open=found.dialogOpen;
@@ -104,13 +129,30 @@ async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options
       if(found.eligible.length===1) {nodeId=found.eligible[0].nodeId;break;}
       if(found.eligible.length>1) diagnostics.rejected=[...found.rejected,"ambiguous_inputs"];
       if(!found.dialogOpen) {
-        const action=uploadAction(tree.root,clicked);
+        let axNames=new Map();
+        try {
+          const accessibility=await send("Accessibility.getFullAXTree");
+          axNames=new Map((accessibility.nodes||[]).filter(item=>!item.ignored &&
+            item.backendDOMNodeId && ["button","menuitem"].includes(item.role?.value) &&
+            typeof item.name?.value==="string").map(item=>[item.backendDOMNodeId,item.name.value]));
+        } catch (_) { /* DOM text and attributes remain available. */ }
+        const action=uploadAction(tree.root,clicked,axNames);
         if(action) {
+          const beforeClick=await chromeApi.tabs.get(tabId);
+          if(channelFromStudioUrl(beforeClick.url)!==file.channel_id)
+            throw new Error("Channel ID đã đổi trước khi mở menu upload.");
           const resolved=await send("DOM.resolveNode",{nodeId:action.nodeId});
-          await send("Runtime.callFunctionOn",{objectId:resolved.object.objectId,
-            functionDeclaration:"function(){this.click()}",returnByValue:true});
-          clicked.add(action.name);
-          diagnostics.browser_step="opening_upload_dialog";
+          const result=await send("Runtime.callFunctionOn",{objectId:resolved.object.objectId,
+            functionDeclaration:"function(){const s=getComputedStyle(this);if(s.display==='none'||s.visibility==='hidden'||!this.getClientRects().length)return false;this.click();return true}",
+            returnByValue:true});
+          if(result?.result?.value===true) {
+            clicked.add(action.kind);
+            diagnostics.browser_step=action.kind==="create"?"opening_create_menu":
+              "opening_upload_dialog";
+          } else {
+            diagnostics.rejected=[...diagnostics.rejected,"control_not_visible"];
+            break;
+          }
         }
       }
       if(Date.now()>=deadline) break;
@@ -119,6 +161,10 @@ async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options
     if(!nodeId) {
       if(clicked.size && !diagnostics.dialog_open)
         diagnostics.browser_step="upload_dialog_action_sent_but_not_open";
+      diagnostics.rejected=[...new Set([...diagnostics.rejected,
+        diagnostics.dialog_open?"upload_input_missing":clicked.has("upload")?
+          "upload_dialog_missing":clicked.has("create")?
+          "upload_menu_item_missing":"create_control_missing"])].slice(0,10);
       const error=new Error("YouTube Studio đã mở nhưng chưa tìm được ô chọn video. Kiểm tra giao diện upload hoặc thử lại sau khi khắc phục.");
       error.code="missing_input";throw error;
     }
@@ -148,4 +194,4 @@ async function selectStudioFile(chromeApi, tabId, file, beforeSelection, options
 }
 
 if (typeof module !== "undefined") module.exports = {channelFromStudioUrl, fileInputs,
-  inspectFileInputs, selectStudioFile};
+  inspectFileInputs, uploadAction, selectStudioFile};

@@ -18,6 +18,10 @@ def handle(payload: bytes, config_path: Path) -> dict:
     message = json.loads(payload.decode("utf-8"))
     if isinstance(message, dict) and message == {"type":"upload_get", "schema":1}:
         return {"ok":True, "request":StudioUploadBridge(config_path).pending()}
+    if isinstance(message, dict) and set(message) == {"type", "schema", "request_id"} and \
+            message.get("type") == "upload_state" and message.get("schema") == 1 and \
+            isinstance(message.get("request_id"), str):
+        return {"ok":True, **StudioUploadBridge(config_path).request_state(message["request_id"])}
     if isinstance(message, dict) and message.get("schema") == 1 and message.get("type") in {
             "upload_claim", "upload_started", "upload_selected", "upload_failed"}:
         kind = message["type"]

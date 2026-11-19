@@ -47,11 +47,11 @@ async function processUploadRequest(chromeApi, request, report, options = {}) {
   let browserStep = "opening_studio";
   try {
     const channelId = request.channel_id;
-    const uploadUrl = `https://studio.youtube.com/channel/${channelId}/videos/upload`;
+    const studioUrl = `https://studio.youtube.com/channel/${channelId}/videos`;
     const tabs = await chromeApi.tabs.query({url:"https://studio.youtube.com/*"});
     let tab = tabs.find(item => channelFromStudioUrl(item.url) === channelId);
-    if (tab) tab = await chromeApi.tabs.update(tab.id,{url:uploadUrl,active:true});
-    else tab = await chromeApi.tabs.create({url:uploadUrl,active:true});
+    if (tab) tab = await chromeApi.tabs.update(tab.id,{active:true});
+    else tab = await chromeApi.tabs.create({url:studioUrl,active:true});
     report(`Đang mở Studio cho Channel ID ${channelId}…`);
     let evidence;
     for (let attempt = 0; attempt < 40; attempt++) {
