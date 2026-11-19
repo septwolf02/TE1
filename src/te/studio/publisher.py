@@ -281,10 +281,19 @@ class PublisherStore:
         meta["channel_id"] = record["id"]
         fingerprint = "studio-private:" + sha256(json.dumps(
             [project_id, record["id"], source["sha256"]]).encode()).hexdigest()
-        prior = next((job for job in self.data["jobs"] if job.get("fingerprint") == fingerprint), None)
+        matches = [job for job in self.data["jobs"] if job.get("fingerprint") == fingerprint]
+        if any(job.get("status") not in {"prepared", "failed_before_upload"} for job in matches):
+            raise ValueError("Tác vụ đã được bắt đầu hoặc cần kiểm tra trong Studio; không tạo lại.")
+        prior = matches[-1] if matches else None
         if prior:
-            if prior["status"] != "prepared":
+            if prior["status"] == "failed_before_upload":
+                from .studio_upload_bridge import StudioUploadBridge
+                if not StudioUploadBridge(self.config_path).retryable_failure(prior):
+                    raise ValueError("Lần thử trước chưa được xác nhận dừng trước khi chọn file; kiểm tra Studio.")
+                prior = None  # Preserve the failed job and create a new attempt record.
+            elif prior["status"] != "prepared":
                 raise ValueError("Tác vụ đã được bắt đầu hoặc cần kiểm tra trong Studio; không tạo lại.")
+        if prior:
             prior.update(metadata=meta, thumbnail_path=str(thumbnail.resolve()),
                          updated_at=now.isoformat())
             self._save()

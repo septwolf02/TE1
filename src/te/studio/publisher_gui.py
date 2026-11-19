@@ -527,8 +527,9 @@ class PublisherController:
                             if item.get("id") == self._studio_upload_job_id), None)
                 if job:
                     self.values["status"].set(job["status"])
-                    self.status.set(f"Studio Connector: {job['status']} • {job.get('last_confirmed_operation', '')}. "
-                                    "Chỉ xác nhận hoàn tất sau khi kiểm tra video Private trong Studio.")
+                    detail = job.get("error") or ("Chỉ xác nhận hoàn tất sau khi kiểm tra video Private trong Studio.")
+                    self.status.set(f"Studio Connector: {job['status']} • "
+                                    f"{job.get('last_confirmed_operation', '')}. {detail}")
                     if job["status"] in {"failed_before_upload", "needs_attention", "completed_private"}:
                         self._studio_upload_job_id = ""
                         self._refresh_upload_button()

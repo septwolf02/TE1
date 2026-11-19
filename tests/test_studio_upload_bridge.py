@@ -121,3 +121,45 @@ def test_wrong_file_receipt_marks_uncertain_without_video_id(tmp_path):
         bridge.file_selected(request["request_id"],"other.mp4",video.stat().st_size)
     stored = PublisherStore(config,recover_studio=False).latest("project")
     assert stored["status"] == "needs_attention" and stored["video_id"] == ""
+
+
+def test_pre_upload_failure_can_retry_same_mp4_with_new_job_and_attempt(tmp_path):
+    config, video, first = setup_job(tmp_path)
+    bridge = StudioUploadBridge(config)
+    request = bridge.queue(first["id"])
+    bridge.claim(request["request_id"], studio_url(), studio_url())
+    bridge.fail(request["request_id"], "missing_input", {"browser_step":"waiting_for_upload_dialog",
+        "dialog_open":False,"candidate_count":0,"rejected":[],"cdp_attached":True})
+    store = PublisherStore(config, recover_studio=False)
+    previous = next(job for job in store.data["jobs"] if job["id"] == first["id"])
+    assert previous["status"] == "failed_before_upload" and "YouTube Studio" in previous["error"]
+    new = store.prepare_studio_private("project", first["metadata"])
+    assert new["id"] != first["id"] and new["fingerprint"] == first["fingerprint"]
+    second = bridge.queue(new["id"])
+    assert second["attempt_id"] != request["attempt_id"]
+    assert next(job for job in PublisherStore(config, recover_studio=False).data["jobs"]
+                if job["id"] == first["id"])["error"] == previous["error"]
+
+
+def test_uncertain_or_unproven_pre_upload_failure_cannot_retry(tmp_path):
+    config, _, first = setup_job(tmp_path)
+    bridge = StudioUploadBridge(config)
+    request = bridge.queue(first["id"])
+    bridge.claim(request["request_id"], studio_url(), studio_url())
+    bridge.started(request["request_id"])
+    bridge.fail(request["request_id"], "chrome_disconnected")
+    with pytest.raises(ValueError, match="không tạo lại"):
+        PublisherStore(config, recover_studio=False).prepare_studio_private("project", first["metadata"])
+    config2, _, other = setup_job(tmp_path / "unproven")
+    PublisherStore(config2, recover_studio=False).update(other["id"], status="failed_before_upload")
+    with pytest.raises(ValueError, match="chưa được xác nhận"):
+        PublisherStore(config2, recover_studio=False).prepare_studio_private("project", other["metadata"])
+
+
+def test_host_rejects_malformed_upload_diagnostics(tmp_path):
+    config, _, job = setup_job(tmp_path)
+    request = StudioUploadBridge(config).queue(job["id"])
+    payload = {"type":"upload_failed","schema":1,"request_id":request["request_id"],
+               "reason":"missing_input","diagnostics":{"browser_step":"x","secret":"never"}}
+    with pytest.raises(ValueError, match="Chẩn đoán"):
+        handle(json.dumps(payload).encode(), config)

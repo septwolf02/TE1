@@ -44,6 +44,7 @@ async function processUploadRequest(chromeApi, request, report, options = {}) {
   const native = payload => nativeRequest(chromeApi, {schema:1,...payload},
     payload.type === "upload_claim" ? 300000 : timeout);
   let selected = false;
+  let browserStep = "opening_studio";
   try {
     const channelId = request.channel_id;
     const uploadUrl = `https://studio.youtube.com/channel/${channelId}/videos/upload`;
@@ -68,15 +69,18 @@ async function processUploadRequest(chromeApi, request, report, options = {}) {
       await new Promise(resolve=>setTimeout(resolve,500));
     }
     if (!evidence) throw new Error("Studio không mở đúng Channel ID trong 20 giây.");
+    browserStep = "channel_verified";
     const claimed = await native({type:"upload_claim",request_id:request.request_id,
       page_url:evidence.page_url,page_url_after:evidence.page_url_after});
     const file = {...claimed.file,channel_id:channelId};
     if (file.request_id !== request.request_id || file.channel_id !== channelId)
       throw new Error("Native Host trả về tệp cho sai yêu cầu hoặc kênh.");
     report("Đã đối chiếu Channel ID; đang tìm ô chọn MP4 Studio…");
+    browserStep = "waiting_for_upload_dialog";
     const receipt = await selectStudioFile(chromeApi,tab.id,file,async()=>{
       await native({type:"upload_started",request_id:request.request_id});
       selected = true;
+      browserStep = "selecting_file";
     });
     await native({type:"upload_selected",request_id:request.request_id,
       filename:receipt.filename,bytes:receipt.bytes});
@@ -86,8 +90,10 @@ async function processUploadRequest(chromeApi, request, report, options = {}) {
   } catch (error) {
     const reason = selected ? "chrome_disconnected" :
       /Channel ID|sai yêu cầu|sai.*kênh/.test(error.message) ? "channel_mismatch" :
-      /ô chọn/.test(error.message) ? "missing_input" : "debugger_failure";
-    try { await native({type:"upload_failed",request_id:request.request_id,reason}); }
+      error.code || (/ô chọn/.test(error.message) ? "missing_input" : "debugger_failure");
+    const diagnostics=error.diagnostics || {browser_step:browserStep,dialog_open:false,
+      candidate_count:0,rejected:[],cdp_attached:false};
+    try { await native({type:"upload_failed",request_id:request.request_id,reason,diagnostics}); }
     catch (_) { /* TE recovery conservatively marks an uncertain attempt. */ }
     throw error;
   }

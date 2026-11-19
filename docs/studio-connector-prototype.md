@@ -2,6 +2,12 @@
 
 ## Phase 4B.2B — MP4 handoff trong Connector hiện có (cần kiểm chứng Windows)
 
+### Sửa lỗi `missing_input` và thử lại sau lỗi trước upload
+
+Connector đợi tối đa 20 giây cho hộp upload xuất hiện. Nếu Studio hiển thị đúng **một** nút có tên truy cập rõ ràng **Upload videos** hoặc **Create** (kể cả tên tiếng Nhật/Việt đã hỗ trợ), Connector bấm nút đó một lần rồi kiểm tra lại. Nó chỉ chọn file input nằm trong hộp upload có chứng cứ cấu trúc; `accept` trống hoặc khác `video/mp4` vẫn được chấp nhận nếu không chỉ dành cho ảnh/âm thanh. Nhiều input phù hợp hoặc hộp upload không xuất hiện sẽ dừng **trước khi chọn tệp**. TE hiện hiển thị bước trình duyệt, trạng thái hộp upload, số input, lý do loại, trạng thái CDP và việc chọn tệp đã bắt đầu hay chưa. Không thu thập nội dung trang hoặc credential vào chẩn đoán.
+
+Nếu job là `failed_before_upload` và request cũ xác nhận chưa bắt đầu chọn tệp, bấm lại nút upload với cùng MP4 sẽ tạo job/attempt mới; lịch sử lỗi cũ được giữ. `needs_attention`, `uploading`, `processing` và mọi kết quả không rõ vẫn bị chặn thử lại. Không cần đổi tên MP4 hoặc xóa JSON. Đây là sửa lỗi theo mock; chưa xác nhận ô input thật trên Windows Studio. **Cho bản sửa này:** Reload extension tại `chrome://extensions`, tải lại tab Studio và cập nhật TE như dưới đây. **Không cần chạy lại Native Host installer** vì launcher C# và manifest không đổi; Python Host sẽ dùng mã mới sau `pip install -e '.[gui]'`.
+
 Nút **Tải thử Riêng tư qua Studio Connector** trong TE dùng tác vụ `prepared` và chỉ bật khi kênh vừa được xác minh bằng URL, MP4/thumbnail và tiêu đề hợp lệ. Sau một hộp xác nhận kênh, tên file và `PRIVATE`, TE tạo `attempt_id`, lưu yêu cầu cục bộ có thời hạn 5 phút và khóa lần thử. Service worker của **extension hiện có** kiểm tra Native Host bằng `chrome.alarms` khoảng 30 giây một lần; không cần mở Side Panel hay nhập đường dẫn. Extension mở trang upload của Channel ID đích, đọc URL Studio qua content script, và chỉ khi ID khớp mới yêu cầu Native Host trả đường dẫn MP4 đã ghi trong tác vụ. Native Host kiểm tra lại hash tệp; web page không được gọi Host hoặc chọn đường dẫn tùy ý. Extension dùng `chrome.debugger` → `DOM.setFileInputFiles` trên **một** input nhận video; nếu thiếu hoặc có nhiều input, nó dừng. Nó đối chiếu tên/kích thước file trong Chrome, rồi ghi `uploading` ở TE. Nó không bấm nút xuất bản, không đánh dấu `completed_private`, không tự gán Video ID.
 
 **Giới hạn quan trọng:** DOM upload và route `/channel/UC…/videos/upload` chưa được kiểm chứng trên YouTube Studio Windows thật. Adapter `chrome.debugger` trong extension hiện có cũng chưa được chạy trên Windows; prototype CDP riêng trước đó chỉ chứng minh lệnh Chromium. Nếu route/input khác, tác vụ sẽ dừng trước khi chọn file. Sau khi Chrome nhận MP4, kết quả và Private vẫn chưa rõ; TE yêu cầu kiểm tra Studio thủ công. Không tự thử lại khi Chrome ngắt kết nối hoặc kết quả mơ hồ. Một khóa cục bộ ngăn lần thử khác cho tới khi trạng thái được đối chiếu; không tự xóa khóa khi đã bắt đầu chọn tệp.
@@ -48,7 +54,7 @@ git pull --ff-only origin te-v1-render-test
 .\.venv\Scripts\python.exe -m pip install -e '.[gui]'
 ```
 
-Mở `chrome://extensions`, bấm **Reload** cho TE Studio Connector và tải lại tab `studio.youtube.com` để content script mới chạy. Bấm biểu tượng extension để mở Side Panel. **Ở bản 4B.2B cần chạy lại Native Host installer** để cập nhật thời hạn phản hồi khi xác thực hash MP4 lớn; dùng đúng Extension ID hiện tại:
+Mở `chrome://extensions`, bấm **Reload** cho TE Studio Connector và tải lại tab `studio.youtube.com` để content script mới chạy. Bấm biểu tượng extension để mở Side Panel. **Chỉ cần chạy Native Host installer nếu máy chưa cài bản 4B.2B hoặc launcher còn cũ**; bản sửa `missing_input` này không thay đổi launcher. Khi cần cài, dùng đúng Extension ID hiện tại:
 
 ```powershell
 cd D:\TE-Git

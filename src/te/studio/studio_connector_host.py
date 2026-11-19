@@ -25,7 +25,8 @@ def handle(payload: bytes, config_path: Path) -> dict:
                     "upload_started":{"type", "schema", "request_id"},
                     "upload_selected":{"type", "schema", "request_id", "filename", "bytes"},
                     "upload_failed":{"type", "schema", "request_id", "reason"}}[kind]
-        if set(message) != required or not isinstance(message.get("request_id"), str):
+        if (set(message) != required and not (kind == "upload_failed" and
+                set(message) == required | {"diagnostics"})) or not isinstance(message.get("request_id"), str):
             raise ValueError("Yêu cầu upload Connector có trường không hợp lệ.")
         bridge = StudioUploadBridge(config_path)
         if kind == "upload_claim":
@@ -40,7 +41,21 @@ def handle(payload: bytes, config_path: Path) -> dict:
                                          "channel_mismatch", "chrome_disconnected", "receipt_mismatch",
                                          "private_unverified"}:
                 raise ValueError("Mã lỗi upload không hợp lệ.")
-            bridge.fail(message["request_id"], message["reason"])
+            diagnostics = message.get("diagnostics", {})
+            if not isinstance(diagnostics, dict) or set(diagnostics) - {
+                    "browser_step", "dialog_open", "candidate_count", "rejected", "cdp_attached"} or \
+                    not isinstance(diagnostics.get("browser_step", ""), str) or \
+                    len(diagnostics.get("browser_step", "")) > 40 or \
+                    type(diagnostics.get("dialog_open", False)) is not bool or \
+                    type(diagnostics.get("cdp_attached", False)) is not bool or \
+                    type(diagnostics.get("candidate_count", 0)) is not int or \
+                    not 0 <= diagnostics.get("candidate_count", 0) <= 100 or \
+                    not isinstance(diagnostics.get("rejected", []), list) or \
+                    len(diagnostics.get("rejected", [])) > 10 or \
+                    any(not isinstance(value, str) or len(value) > 40
+                        for value in diagnostics.get("rejected", [])):
+                raise ValueError("Chẩn đoán upload Connector không hợp lệ.")
+            bridge.fail(message["request_id"], message["reason"], diagnostics)
         return {"ok":True}
     if isinstance(message, dict) and message == {"type": "selection_get", "schema": 1}:
         return {"ok": True, "request": StudioConnectorStore(config_path).selection_request()}

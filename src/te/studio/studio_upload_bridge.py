@@ -30,11 +30,27 @@ class StudioUploadBridge:
             raise ValueError("Yêu cầu upload Connector không hợp lệ.")
         return request
 
+    def retryable_failure(self, job: dict) -> bool:
+        request = self._read()
+        if not request or request.get("job_id") != job.get("id") or \
+                request.get("attempt_id") != job.get("attempt_id") or \
+                request.get("status") != "failed" or request.get("file_selection_started"):
+            return False
+        if self.lock_path.exists():
+            if self.lock_path.read_text(encoding="utf-8") != request["attempt_id"]:
+                return False
+            self.lock_path.unlink()  # Only this completed pre-upload attempt owns the lock.
+        return True
+
     def queue(self, job_id: str, *, now: datetime | None = None) -> dict:
         now = now or datetime.now(timezone.utc)
         existing = self._read()
         if existing and existing.get("status") in {"waiting_for_browser", "claimed", "started", "file_selected"}:
             raise ValueError("Đã có yêu cầu Connector đang chờ hoặc chưa rõ kết quả; không gửi lại.")
+        if existing and existing.get("status") == "failed" and not existing.get("file_selection_started") and \
+                self.lock_path.exists() and \
+                self.lock_path.read_text(encoding="utf-8") == existing.get("attempt_id"):
+            self.lock_path.unlink()
         store = PublisherStore(self.config_path, recover_studio=False)
         job = next((item for item in store.data["jobs"] if item.get("id") == job_id), None)
         if not job or job.get("status") != "prepared" or job.get("visibility") != "private" or \
@@ -113,7 +129,7 @@ class StudioUploadBridge:
             raise ValueError("Yêu cầu chưa xác minh kênh hoặc đã bắt đầu.")
         PublisherStore(self.config_path, recover_studio=False).update(request["job_id"],
             status="uploading", last_confirmed_operation="file_selection_started")
-        _write_json(self.path, dict(request, status="started"))
+        _write_json(self.path, dict(request, status="started", file_selection_started=True))
 
     def file_selected(self, request_id: str, filename: str, size: int) -> None:
         request = self._read()
@@ -127,14 +143,28 @@ class StudioUploadBridge:
         store.update(job["id"], status="uploading", last_confirmed_operation="browser_file_input_received")
         _write_json(self.path, dict(request, status="file_selected"))
 
-    def fail(self, request_id: str, reason: str) -> None:
+    def fail(self, request_id: str, reason: str, diagnostics: dict | None = None) -> None:
         request = self._read()
         if not request or request.get("request_id") != request_id or request.get("status") == "failed":
             return
         uncertain = request["status"] in {"started", "file_selected"}
+        messages = {"missing_input": "YouTube Studio đã mở nhưng chưa tìm được ô chọn video. Kiểm tra giao diện upload hoặc thử lại sau khi khắc phục.",
+                    "debugger_failure": "Chrome không cho Connector đọc giao diện upload; kiểm tra quyền debugger hoặc extension khác đang dùng debugger.",
+                    "channel_mismatch": "Channel ID của tab Studio không khớp kênh đã chọn trong TE.",
+                    "chrome_disconnected": "Chrome ngắt kết nối khi xử lý tệp; kiểm tra Studio trước khi thử lại."}
+        detail = messages.get(reason, str(reason))
+        diagnostics = diagnostics or {}
+        summary = (f" Bước: {diagnostics.get('browser_step', 'chưa rõ')}; "
+                   f"hộp upload: {'đã mở' if diagnostics.get('dialog_open') else 'chưa xác nhận'}; "
+                   f"input: {diagnostics.get('candidate_count', 0)}; "
+                   f"loại: {', '.join(diagnostics.get('rejected', [])) or 'không có'}; "
+                   f"CDP: {'đã gắn' if diagnostics.get('cdp_attached') else 'chưa gắn'}; "
+                   f"chọn tệp: {'đã bắt đầu' if uncertain else 'chưa bắt đầu'}.")
         PublisherStore(self.config_path, recover_studio=False).update(request["job_id"],
             status="needs_attention" if uncertain else "failed_before_upload",
-            error=str(reason)[:240], last_confirmed_operation="browser_failure")
-        _write_json(self.path, dict(request, status="failed"))
+            error=(detail + summary)[:1000], browser_diagnostics=diagnostics,
+            last_confirmed_operation="browser_failure")
+        _write_json(self.path, dict(request, status="failed", failure_reason=reason,
+                                    file_selection_started=uncertain))
         if not uncertain:
             self.lock_path.unlink(missing_ok=True)

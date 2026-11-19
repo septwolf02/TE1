@@ -1,5 +1,5 @@
 const assert=require("node:assert/strict");
-const {channelFromStudioUrl,fileInputs,selectStudioFile}=require("../studio_connector_extension/upload.js");
+const {channelFromStudioUrl,fileInputs,inspectFileInputs,selectStudioFile}=require("../studio_connector_extension/upload.js");
 Object.assign(globalThis,{channelFromStudioUrl,fileInputs,selectStudioFile});
 const {processUploadRequest}=require("../studio_connector_extension/sidepanel.js");
 
@@ -18,6 +18,17 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
   assert.equal(channelFromStudioUrl("https://evil.test/channel/"+A),"");
   assert.deepEqual(fileInputs(tree),[4]);
   assert.deepEqual(fileInputs({children:[{nodeId:3,nodeName:"INPUT",attributes:["type","file"]}]}),[]);
+  const emptyAccept=structuredClone(tree);
+  emptyAccept.children[0].shadowRoots[0].children[0].attributes=["type","file"];
+  assert.deepEqual(fileInputs(emptyAccept),[4]);
+  const unrelatedDialog=structuredClone(emptyAccept);
+  unrelatedDialog.children[0].nodeName="YTCP-THUMBNAIL-DIALOG";
+  assert.deepEqual(fileInputs(unrelatedDialog),[]);
+  assert.deepEqual(fileInputs({nodeName:"IFRAME",contentDocument:emptyAccept}),[4]);
+  assert(inspectFileInputs({nodeName:"IFRAME"}).rejected.includes("inaccessible_iframe"));
+  const imageOnly=structuredClone(tree);
+  imageOnly.children[0].shadowRoots[0].children[0].attributes=["type","file","accept","image/png"];
+  assert.equal(inspectFileInputs(imageOnly).rejected[0],"non_video_accept");
   const calls=[];
   let tabUrl=url(A), receipt={name:file.filename,size:file.bytes}, attached=false, attachFails=false;
   const chromeApi={tabs:{async get(){return {id:7,url:tabUrl}},
@@ -68,4 +79,39 @@ const event=()=>{let listener;return {addListener(fn){listener=fn},emit(value){l
   assert.deepEqual(requests.map(item=>item.type),["upload_claim","upload_failed"]);
   assert.equal(requests.at(-1).reason,"debugger_failure");
   attachFails=false;
+  let reads=0;
+  const original=chromeApi.debugger.sendCommand;
+  chromeApi.debugger.sendCommand=async(target,method,params)=>{
+    if(method==="DOM.getDocument") return {root:++reads<3?{nodeId:1,nodeName:"#document"}:emptyAccept};
+    return original(target,method,params);
+  };
+  await selectStudioFile(chromeApi,7,file,async()=>{},
+    {waitMs:1000,pollMs:0,pause:async()=>{}});
+  assert.equal(reads,3); // A dialog that appears later is accepted.
+  chromeApi.debugger.sendCommand=async(target,method,params)=>
+    method==="DOM.getDocument"?{root:{nodeId:1,nodeName:"#document"}}:original(target,method,params);
+  await assert.rejects(selectStudioFile(chromeApi,7,file,async()=>{},
+    {waitMs:0,pause:async()=>{}}),error=>error.code==="missing_input" &&
+      error.diagnostics.candidate_count===0 && error.diagnostics.cdp_attached);
+  const multiple=structuredClone(tree);
+  multiple.children[0].shadowRoots[0].children.push({nodeId:5,nodeName:"INPUT",
+    attributes:["type","file","accept","video/mp4"]});
+  chromeApi.debugger.sendCommand=async(target,method,params)=>
+    method==="DOM.getDocument"?{root:multiple}:original(target,method,params);
+  await assert.rejects(selectStudioFile(chromeApi,7,file,async()=>{},
+    {waitMs:0,pause:async()=>{}}),error=>error.code==="missing_input" &&
+      error.diagnostics.rejected.includes("ambiguous_inputs"));
+  let opened=false, clicks=0;
+  const openButton={nodeId:9,nodeName:"BUTTON",attributes:["aria-label","Upload videos"]};
+  chromeApi.debugger.sendCommand=async(target,method,params)=>{
+    if(method==="DOM.getDocument") return {root:opened?emptyAccept:
+      {nodeId:1,nodeName:"#document",children:[openButton]}};
+    if(method==="Runtime.callFunctionOn" && params.functionDeclaration.includes("this.click()")) {
+      opened=true;clicks++;return {result:{value:null}};
+    }
+    return original(target,method,params);
+  };
+  await selectStudioFile(chromeApi,7,file,async()=>{},
+    {waitMs:1000,pause:async()=>{}});
+  assert.equal(clicks,1); // An unambiguous accessible upload action opens the dialog once.
 })().catch(error=>{console.error(error);process.exitCode=1});
