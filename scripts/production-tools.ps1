@@ -1,28 +1,67 @@
 # Discover installed Windows build tools without installing anything.
-function Invoke-InnoCompilerProbe([string]$Path) {
-    $start = [Diagnostics.ProcessStartInfo]::new($Path, '/O- -')
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.RedirectStandardInput = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    $start.WorkingDirectory = [IO.Path]::GetDirectoryName($Path)
+function Invoke-InnoProbeProcess([Diagnostics.ProcessStartInfo]$Start) {
     $process = [Diagnostics.Process]::Start($start)
     try {
         $output = $process.StandardOutput.ReadToEndAsync()
         $errors = $process.StandardError.ReadToEndAsync()
-        $process.StandardInput.WriteLine("[Setup]`r`nAppName=TE Studio Probe`r`nAppVersion=1.0`r`nDefaultDirName={autopf}\TEStudioProbe")
-        $process.StandardInput.Close()
         if (!$process.WaitForExit(20000)) {
-            throw 'Compiler version probe timed out.'
+            throw 'Compiler did not exit within 20 seconds.'
         }
         if ($process.ExitCode -ne 0) {
-            throw "Compiler version probe failed (exit $($process.ExitCode)): $($errors.Result.Trim())"
+            $detail = $errors.Result.Trim()
+            if (!$detail) { $detail = $output.Result.Trim() }
+            throw "Compiler exited with code $($process.ExitCode). $detail"
         }
         return $output.Result
     } finally {
-        if (!$process.HasExited) { $process.Kill() }
-        $process.Dispose()
+        try {
+            if (!$process.HasExited) {
+                $process.Kill()
+                $null = $process.WaitForExit(5000)
+            }
+        } finally {
+            $process.Dispose()
+        }
+    }
+}
+
+function Invoke-InnoCompilerProbe([string]$Path) {
+    $tempRoot = $env:TEMP
+    if (!$tempRoot) { $tempRoot = [IO.Path]::GetTempPath() }
+    $created = $false
+    try {
+        try {
+            $probeDirectory = Join-Path $tempRoot "TE Studio ISCC Probe $([guid]::NewGuid())" -ErrorAction Stop
+            $null = [IO.Directory]::CreateDirectory($probeDirectory)
+            $created = $true
+            $probeScript = Join-Path $probeDirectory 'version probe.iss'
+            [IO.File]::WriteAllText($probeScript,
+                "[Setup]`r`nAppName=TE Studio Probe`r`nAppVersion=1.0`r`nDefaultDirName={autopf}\TEStudioProbe`r`n",
+                [Text.Encoding]::ASCII)
+        } catch {
+            throw "Cannot write Inno Setup probe under TEMP '$tempRoot'. Check that TEMP is writable. $($_.Exception.Message)"
+        }
+
+        # Use a quoted file argument for both Windows PowerShell 5.1 and PowerShell 7.
+        $start = [Diagnostics.ProcessStartInfo]::new($Path, ('/O- "{0}"' -f $probeScript))
+        $start.WorkingDirectory = $probeDirectory
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        try {
+            Invoke-InnoProbeProcess $start
+        } catch {
+            throw "Inno Setup version probe failed for '$Path' with temporary script '$probeScript'. $($_.Exception.Message)"
+        }
+    } finally {
+        if ($created) {
+            try {
+                Remove-Item -LiteralPath $probeDirectory -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-Warning "Could not remove Inno Setup probe directory '${probeDirectory}': $($_.Exception.Message)"
+            }
+        }
     }
 }
 
