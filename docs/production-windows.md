@@ -8,43 +8,42 @@ Production cài tại `%LOCALAPPDATA%\Programs\TE Studio`, độc lập với `D
 
 Publisher/Studio Connector đang thử nghiệm nên không có lối vào từ giao diện Production. Development giữ Publisher hiện có. Native Host hiện trỏ tới Python `.venv` và **không** được installer Production âm thầm đăng ký lại. Trước khi bật Publisher trên gói Production, cần một Native Host đóng gói và kiểm thử riêng.
 
-## Nguồn tài nguyên và build
+## Chuẩn bị và build trên Windows
 
-Máy **build** cần Python 3.12, PowerShell và Inno Setup 6 (`ISCC.exe`). Máy **cài** không cần Python, Git hoặc FFmpeg trong PATH. Người build cung cấp:
+Máy build cần Python 3.12 x64 có Tcl/Tk và Inno Setup 6. Script dò các vị trí cài phổ biến, Python registry và PATH, kiểm tra phiên bản và chữ ký Authenticode của nhà phát hành. Nếu thiếu, xem [Python Windows](https://www.python.org/downloads/windows/) và [Inno Setup](https://jrsoftware.org/isdl.php), kiểm tra nhà phát hành và tự quyết định cài. Script không tự cài các công cụ hệ thống. Lệnh build cài PyInstaller và các gói Python cần thiết vào `.venv-build` dùng riêng để build.
 
-- Thư mục `bin` của một FFmpeg Windows tương thích có `ffmpeg.exe`, `ffprobe.exe` và DLL đi kèm, cùng license/notices của chính bản build đó. Kiểm tra quyền phân phối và codec. NVENC vẫn cần GPU/driver tương thích; CPU fallback giữ nguyên.
-- `NotoSansCJKjp-Regular.otf` có quyền phân phối và OFL notice tương ứng. Không phân phối font lấy từ `C:\Windows\Fonts`.
-- `release-public-key.pem` Ed25519 được chủ dự án tin cậy. Khóa riêng ở ngoài repository và tốt nhất giữ offline. Xác minh fingerprint public key trước khi build; đây là gốc tin cậy của Production updates.
+Chủ dự án tạo khóa Ed25519 một lần trên máy giữ khóa, với OpenSSL đã có từ nguồn tin cậy. Tạo trong thư mục riêng và giữ file private ở ngoài Git. Các lệnh này dành cho **lần khởi tạo duy nhất**.
 
-Script so SHA-256 do người build cung cấp cho hai EXE, font và public key, rồi đóng gói bằng PyInstaller `onedir`. Các notices vào `resources/licenses`. Tcl/Tk và Python dependencies đi cùng EXE. **Chỉ build và chạy trên Windows sạch mới xác nhận** runtime, FFmpeg DLL, font/libass và codec hoạt động.
+```powershell
+$signing = Join-Path $env:LOCALAPPDATA 'TEStudio\release-signing'
+New-Item -ItemType Directory -Force $signing | Out-Null
+$private = Join-Path $signing 'release-private-key.pem'
+$public = Join-Path $signing 'release-public-key.pem'
+if ((Test-Path $private) -or (Test-Path $public)) { throw 'Signing keys already exist.' }
+openssl genpkey -algorithm Ed25519 -out $private
+if ($LASTEXITCODE -ne 0) { throw 'Key generation failed.' }
+openssl pkey -in $private -pubout -out $public
+if ($LASTEXITCODE -ne 0) { throw 'Public key export failed.' }
+openssl pkey -pubin -in $public -outform DER -out (Join-Path $signing 'release-public-key.der')
+if ($LASTEXITCODE -ne 0) { throw 'Public DER export failed.' }
+Get-FileHash -Algorithm SHA256 (Join-Path $signing 'release-public-key.der')
+```
 
-Sau cài đặt, giấy phép/phần ghi công nằm tại `%LOCALAPPDATA%\Programs\TE Studio\_internal\resources\licenses`. Người duyệt release phải kiểm tra nội dung notices tương ứng chính xác với FFmpeg binary và font đã đưa vào gói.
+Lưu bản sao khóa riêng có kiểm soát và giữ offline. Chuyển **public PEM và fingerprint DER** cho máy build qua kênh tin cậy. Máy build chỉ cần public PEM tại đường dẫn mặc định `%LOCALAPPDATA%\TEStudio\release-signing\release-public-key.pem` hoặc đường dẫn ngoài repo truyền qua `-PublicKey`. Nếu cần OpenSSL, xem [hướng dẫn của dự án OpenSSL](https://openssl-library.org/source/) hoặc nguồn phần mềm đã được tổ chức phê duyệt.
 
 ```powershell
 cd D:\TE-Git
-git fetch origin
 git switch te-v1-render-test
 git pull --ff-only origin te-v1-render-test
-
-$bin = 'D:\BuildInputs\ffmpeg\bin'
-$font = 'D:\BuildInputs\NotoSansCJKjp-Regular.otf'
-$key = 'D:\BuildInputs\release-public-key.pem'
-Get-FileHash -Algorithm SHA256 "$bin\ffmpeg.exe", "$bin\ffprobe.exe", $font, $key
-
-.\scripts\build-production.ps1 `
-  -FFmpegDir $bin `
-  -FFmpegSha256 '<64 hex đã kiểm chứng>' `
-  -FFprobeSha256 '<64 hex đã kiểm chứng>' `
-  -FFmpegLicense 'D:\BuildInputs\ffmpeg\LICENSE.txt' `
-  -FontFile $font `
-  -FontSha256 '<64 hex đã kiểm chứng>' `
-  -FontLicense 'D:\BuildInputs\OFL.txt' `
-  -SigningPublicKey $key `
-  -SigningKeySha256 '<64 hex public key được phê duyệt>' `
-  -ISCC 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+.\scripts\prepare-production.ps1
+.\scripts\build-production.ps1
 ```
 
-Script tạo `.venv-build` **chỉ trên máy build**. Đầu ra dự kiến: `D:\TE-Git\dist\installer\TE-Studio-Setup-1.0.0rc1.exe`. Không commit `dist`, `build`, `.venv-build`, khóa riêng, binaries hoặc font. `packaging/build-config.json` và `src/te/studio/version.py` phải cùng version.
+Ở bước chuẩn bị, đối chiếu fingerprint hiển thị với fingerprint chủ dự án gửi. Xem nguồn và giấy phép, rồi nhập `APPROVE` nếu đồng ý. Script dùng lại các bản trùng SHA-256 đã ghim trong cache, PATH, thư mục font Windows hoặc thư mục bổ sung truyền bằng `-InputDirectory`. Nếu cần, script tải **Gyan FFmpeg Windows x64 8.0.1 essentials** (GPLv3) từ [GyanD/codexffmpeg](https://github.com/GyanD/codexffmpeg/releases/tag/8.0.1), được [FFmpeg dẫn link](https://ffmpeg.org/download.html#build-windows), và **Noto Sans CJK JP Sans2.004** (OFL 1.1) từ [Noto CJK](https://github.com/notofonts/noto-cjk/tree/Sans2.004). Tệp có hash không khớp ở cache làm bước chuẩn bị dừng. Kiểm tra tệp báo lỗi và xóa đúng tệp cache đó để tải lại từ nguồn đã ghim.
+
+Script kiểm tra cả kho lưu trữ FFmpeg và từng tệp được dùng, cùng font và hai bộ giấy phép. Cấu hình local `packaging/vendor/build.json` lưu hash; build kiểm tra lại các tệp theo hash đã ghim trong mã nguồn và fingerprint đã phê duyệt trước khi đóng gói. Installer chỉ đưa hai EXE FFmpeg đã chọn, README của nhà phân phối và giấy phép tương ứng. Trước khi phân phối, chủ dự án cần đáp ứng nghĩa vụ cung cấp mã nguồn tương ứng cho bản FFmpeg GPLv3 và các thành phần đi kèm; README có thông tin cấu hình và mốc mã nguồn của nhà cung cấp. Font giữ nguyên OFL.
+
+Đầu ra dự kiến là `D:\TE-Git\dist\installer\TE-Studio-Setup-1.0.0rc1.exe`. Sau khi build, chạy installer bằng tài khoản Windows thường và mở shortcut **TE Studio**. Máy cài không cần Python, Git hay FFmpeg trong PATH. Thư mục build, cấu hình local, khóa và tệp tải về không đưa lên Git.
 
 ## Kiểm thử bản cài thử trên Windows sạch
 
@@ -61,12 +60,7 @@ First-run Production dò Engine cục bộ ở `127.0.0.1:50021`. Khi thiếu, *
 
 ## Ký và cập nhật Production
 
-Chỉ sau khi kiểm thử Windows đạt, tăng `APP_VERSION` và `build-config.json` lên một version ổn định như `1.0.0`, build lại và kiểm thử đúng installer đó. Chủ dự án tạo khóa Ed25519 riêng ở máy kiểm soát riêng, không commit hoặc đưa vào log CI:
-
-```powershell
-openssl genpkey -algorithm Ed25519 -out D:\Private\te-release-private.pem
-openssl pkey -in D:\Private\te-release-private.pem -pubout -out D:\BuildInputs\release-public-key.pem
-```
+Chỉ sau khi kiểm thử Windows đạt, tăng `APP_VERSION` và `build-config.json` lên một version ổn định như `1.0.0`, build lại và kiểm thử đúng installer đó. Dùng cặp khóa do chủ dự án khởi tạo ở trên. Installer RC chỉ nhúng khóa công khai để kiểm tra cập nhật.
 
 Sau khi chốt installer và release notes, chạy `scripts/sign-production-release.py --installer <exe> --version 1.0.0 --notes <notes.txt> --private-key <private.pem> --output <folder>` bằng Python build. Script chỉ tạo `release.json` và `release.json.sig`, **không upload/publish**. Sau phê duyệt thủ công, GitHub Release phải không phải draft/prerelease, tag `v<version>`, có installer và hai file ký.
 
