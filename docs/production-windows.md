@@ -45,6 +45,12 @@ Script kiểm tra cả kho lưu trữ FFmpeg và từng tệp được dùng, c�
 
 Đầu ra dự kiến là `D:\TE-Git\dist\installer\TE-Studio-Setup-1.0.0rc1.exe`. Sau khi build, chạy installer bằng tài khoản Windows thường và mở shortcut **TE Studio**. Máy cài không cần Python, Git hay FFmpeg trong PATH. Thư mục build, cấu hình local, khóa và tệp tải về không đưa lên Git.
 
+## Nhận diện ứng dụng
+
+Biểu tượng TE và timeline hiện là mẫu tạm do dự án tạo. Khi logo chính thức được duyệt, xuất thành ICO có các kích thước 16, 32, 48, 64, 128 và 256 px rồi thay `src/te/branding/te-studio.ico` và build lại. Cùng một tệp được nhúng vào EXE và installer, dùng cho shortcut và đóng gói làm tài nguyên cho cửa sổ, hộp thoại Tk và mục **Trợ giúp → Giới thiệu TE Studio**. Hộp thoại do Windows quản lý có thể dùng biểu tượng hệ thống.
+
+Trong lần kiểm thử Windows, so biểu tượng của installer, EXE, shortcut Desktop, Start Menu, Taskbar, cửa sổ và hộp thoại **Giới thiệu**. Mục **Giới thiệu** phải hiển thị đúng phiên bản trên bộ cài.
+
 ## Kiểm thử bản cài thử trên Windows sạch
 
 1. Chạy installer bằng tài khoản Windows thường. Kiểm tra Desktop/Start Menu shortcut. Đóng IDE/Python, tạm ngắt `D:\TE-Git`, rồi mở TE Studio bằng shortcut. Nếu không mở, xem `%LOCALAPPDATA%\TEStudio\diagnostics\startup.log`.

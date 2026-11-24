@@ -18,8 +18,10 @@ def main() -> None:
     with path.open("a", encoding="utf-8") as log:
         faulthandler.enable(log)
         try:
+            from te.studio.branding import set_windows_app_id
             from te.studio.gui import StudioApp
             import tkinter as tk
+            set_windows_app_id()
             root = tk.Tk()
 
             def callback_error(exc_type, exc, tb):

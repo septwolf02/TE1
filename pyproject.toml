@@ -21,7 +21,7 @@ publisher-api = ["google-api-python-client>=2.160,<3", "google-auth-oauthlib>=1.
 where = ["src"]
 
 [tool.setuptools.package-data]
-te = ["schemas/*.json"]
+te = ["schemas/*.json", "branding/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

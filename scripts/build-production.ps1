@@ -20,6 +20,7 @@ $publicKey = Join-Path $store 'release-public-key.pem'
 $ffmpegNotice = Join-Path $store 'FFmpeg-LICENSE.txt'
 $ffmpegReadme = Join-Path $store 'FFmpeg-README.txt'
 $fontNotice = Join-Path $store 'OFL.txt'
+$icon = Join-Path $root 'src\te\branding\te-studio.ico'
 $ISCC = $tools.ISCC
 $python = Join-Path $root '.venv-build\Scripts\python.exe'
 # Recreate the disposable environment from the verified Python installation.
@@ -31,7 +32,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Build dependencies failed.' }
     $entry = Join-Path $root 'packaging\te_studio_entry.py'
     $args = @('--noconfirm','--clean','--onedir','--windowed','--name','TE Studio',
-        '--contents-directory','_internal','--collect-data','te',
+        '--contents-directory','_internal','--collect-data','te','--icon',$icon,
         '--add-data',"${ffmpeg};resources/bin",
         '--add-data',"${ffprobe};resources/bin",
         '--add-data',"${font};resources/fonts",
@@ -51,6 +52,9 @@ try {
             throw "Missing bundled $name"
         }
     }
+    if (!(Test-Path (Join-Path $dist '_internal\te\branding\te-studio.ico'))) {
+        throw 'Missing bundled TE Studio branding.'
+    }
     foreach ($resource in @('fonts\NotoSansCJKjp-Regular.otf',
                             'release\release-public-key.pem')) {
         if (!(Test-Path (Join-Path $dist "_internal\resources\$resource"))) {
@@ -59,7 +63,7 @@ try {
     }
     $out = Join-Path $root 'dist\installer'
     New-Item -ItemType Directory -Force $out | Out-Null
-    & $ISCC "/DAppVersion=$version" "/DSourceDir=$dist" "/DOutputDir=$out" (Join-Path $root 'packaging\TE-Studio.iss')
+    & $ISCC "/DAppVersion=$version" "/DSourceDir=$dist" "/DOutputDir=$out" "/DAppIcon=$icon" (Join-Path $root 'packaging\TE-Studio.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup build failed.' }
     $installer = Join-Path $out "TE-Studio-Setup-$version.exe"
     if (!(Test-Path $installer)) { throw 'Inno Setup did not produce the expected installer.' }

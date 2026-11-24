@@ -29,6 +29,8 @@ from te.studio.render_queue import RenderQueue
 from te.studio.publisher_gui import PublisherController
 from te.runtime import production_build
 from te.studio.edit_lock import ProjectEditLock
+from te.studio.branding import APP_NAME, apply_window_branding, logo_photo
+from te.studio.version import APP_VERSION
 
 
 SECTIONS = tuple(SectionName)
@@ -65,6 +67,7 @@ def _write_project_open_diagnostic(config_path: Path, phase: str, error: Excepti
 class StudioApp:
     def __init__(self, root: tk.Tk, service: StudioService | None = None):
         self.root = root
+        apply_window_branding(root)
         self.service = service or StudioService()
         self.state: StudioProject | None = None
         self._edit_lock: ProjectEditLock | None = None
@@ -145,6 +148,11 @@ class StudioApp:
         outer.pack(fill="both", expand=True)
         self.body = outer
         self._group_expand = False
+        menu = tk.Menu(self.root)
+        help_menu = tk.Menu(menu, tearoff=False)
+        help_menu.add_command(label=f"Giới thiệu {APP_NAME}", command=self._show_about)
+        menu.add_cascade(label="Trợ giúp", menu=help_menu)
+        self.root.configure(menu=menu)
         self._build_header()
         script_host = ttk.Frame(outer)
         script_host.pack(fill="x")
@@ -249,6 +257,24 @@ class StudioApp:
                                                              sticky="w", pady=(2, 0))
         self.video_name.trace_add("write", lambda *_: self._dirty())
         self._refresh_channels()
+
+    def _show_about(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Giới thiệu {APP_NAME}")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        panel = ttk.Frame(dialog, padding=20)
+        panel.pack()
+        dialog.logo = logo_photo(dialog, 64)
+        ttk.Label(panel, image=dialog.logo).pack()
+        ttk.Label(panel, text=APP_NAME, font="TkHeadingFont").pack(pady=(8, 0))
+        edition = "Production" if production_build() else "Development"
+        ttk.Label(panel, text=f"{edition} · Phiên bản {APP_VERSION}").pack()
+        close = ttk.Button(panel, text="Đóng", command=dialog.destroy)
+        close.pack(pady=(14, 0))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
+        close.focus_set()
 
     def _build_management(self) -> None:
         box = self._group("Dự án và kênh")

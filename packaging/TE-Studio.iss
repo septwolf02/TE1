@@ -7,11 +7,15 @@
 #ifndef OutputDir
   #error OutputDir is required
 #endif
+#ifndef AppIcon
+  #error AppIcon is required
+#endif
 
 [Setup]
 AppId={{D1D273CB-47D1-45A9-907A-1B6B3698CB91}
 AppName=TE Studio
 AppVersion={#AppVersion}
+SetupIconFile={#AppIcon}
 DefaultDirName={localappdata}\Programs\TE Studio
 DefaultGroupName=TE Studio
 PrivilegesRequired=lowest
@@ -30,8 +34,8 @@ ArchitecturesInstallIn64BitMode=x64
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{autoprograms}\TE Studio"; Filename: "{app}\TE Studio.exe"
-Name: "{userdesktop}\TE Studio"; Filename: "{app}\TE Studio.exe"
+Name: "{autoprograms}\TE Studio"; Filename: "{app}\TE Studio.exe"; IconFilename: "{app}\TE Studio.exe"; AppUserModelID: "TEStudio.Production"
+Name: "{userdesktop}\TE Studio"; Filename: "{app}\TE Studio.exe"; IconFilename: "{app}\TE Studio.exe"; AppUserModelID: "TEStudio.Production"
 
 [Run]
 Filename: "{app}\TE Studio.exe"; Description: "Mở TE Studio"; Flags: nowait postinstall skipifsilent
