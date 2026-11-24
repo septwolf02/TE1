@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "app_version": "1.0.0rc1",
+  "python": "3.12",
+  "pyinstaller_mode": "onedir",
+  "app_name": "TE Studio",
+  "installer_prefix": "TE-Studio-Setup"
+}

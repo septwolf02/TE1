@@ -27,6 +27,8 @@ from te.studio.ai_gui import SpeakerAIController
 from te.studio.multi_voice import speech_plan
 from te.studio.render_queue import RenderQueue
 from te.studio.publisher_gui import PublisherController
+from te.runtime import production_build
+from te.studio.edit_lock import ProjectEditLock
 
 
 SECTIONS = tuple(SectionName)
@@ -65,6 +67,7 @@ class StudioApp:
         self.root = root
         self.service = service or StudioService()
         self.state: StudioProject | None = None
+        self._edit_lock: ProjectEditLock | None = None
         self.active_section = SectionName.P1
         self._loading = False
         self._save_after: str | None = None
@@ -124,7 +127,8 @@ class StudioApp:
         self.ai = SpeakerAIController(self)
         self.publisher = PublisherController(self)
         self.intro_paths = {section: tk.StringVar() for section in SECTIONS}
-        self.root.title("TE Studio — Trình biên tập")
+        self.root.title("TE Studio Production — Trình biên tập" if production_build()
+                        else "TE Studio Development — Trình biên tập")
         self.root.geometry("1400x900")
         self.root.minsize(920, 690)
         self._details: dict[str, tk.Toplevel] = {}
@@ -133,6 +137,8 @@ class StudioApp:
         self._choose_initial_project()
         self._refresh_queue()
         self.root.after(500, self._poll_queue)
+        if production_build() and not self.service.settings.get("voicevox_setup_seen"):
+            self.root.after(1000, self._show_voicevox_setup)
 
     def _build(self) -> None:
         outer = ttk.Frame(self.root, padding=8)
@@ -156,6 +162,8 @@ class StudioApp:
                  ("Phụ đề Nhật", self.subtitle_summary, "subtitles"),
                  ("Render/output settings", self.output_summary, "output"),
                  ("7. Xuất bản YouTube", self.publisher.status, "publisher"))
+        if production_build():
+            cards = cards[:-1]
         for index, (title, status, key) in enumerate(cards):
             card = ttk.LabelFrame(modules, text=title, padding=5)
             card.grid(row=index // 2, column=index % 2, sticky="ew", padx=4, pady=2)
@@ -172,6 +180,8 @@ class StudioApp:
         self._create_detail("subtitles", "Phụ đề Nhật", self._build_subtitles)
         self._create_detail("output", "Render/output settings", self._build_render_details)
         self._create_detail("queue", "Hàng đợi Render", self._build_queue)
+        # Keep internal publisher widgets for legacy project hydration, but do not
+        # expose the experimental dialog from a packaged Production build.
         self._create_detail("publisher", "7. Xuất bản YouTube", self.publisher.build)
         self.body = outer
 
@@ -232,6 +242,9 @@ class StudioApp:
                                ("Lưu", self._save_clicked),
                                ("Quản lý…", lambda: self._show_detail("management"))):
             ttk.Button(actions, text=label, command=command).pack(side="left", padx=2)
+        if production_build():
+            ttk.Button(actions, text="Kiểm tra bản cập nhật", command=self._check_production_updates).pack(
+                side="left", padx=2)
         ttk.Label(box, textvariable=self._save_status).grid(row=1, column=0, columnspan=5,
                                                              sticky="w", pady=(2, 0))
         self.video_name.trace_add("write", lambda *_: self._dirty())
@@ -453,6 +466,8 @@ class StudioApp:
         top = ttk.Frame(box)
         top.pack(fill="x")
         ttk.Button(top, text="Dò lại VOICEVOX", command=self._refresh_voice).pack(side="left")
+        if production_build():
+            ttk.Button(top, text="Cài VOICEVOX", command=self._show_voicevox_setup).pack(side="left", padx=4)
         ttk.Button(top, text="Nghe mẫu ngắn", command=self._voice_sample).pack(side="left", padx=4)
         self.voice_status = tk.StringVar(value="Có thể chỉnh sửa dự án khi VOICEVOX chưa chạy.")
         ttk.Label(top, textvariable=self.voice_status).pack(side="left", padx=8)
@@ -579,6 +594,9 @@ class StudioApp:
         ttk.Button(box, text="Mở báo cáo thời gian", command=self._open_performance_report).pack(anchor="w")
         files = ttk.Frame(box)
         files.pack(fill="x", pady=3)
+        if production_build():
+            ttk.Button(files, text="Tạo bản xem nhanh 960×540", command=self._render_preview).pack(
+                side="left", padx=4)
         for label, action in (("Mở bản xem nhanh", self._open_preview),
                               ("Mở video cuối", self._open_final),
                               ("Mở thư mục xuất", self._open_output_folder)):
@@ -843,12 +861,17 @@ class StudioApp:
 
     def _load_state(self, state: StudioProject) -> None:
         previous = self.state
+        old_lock = self.__dict__.get("_edit_lock")
+        new_lock = old_lock if old_lock and old_lock.directory == state.directory.resolve() else \
+            ProjectEditLock(state.directory)
         if self._save_after:
             self.root.after_cancel(self._save_after)
             self._save_after = None
         try:
             self._hydrate_state(state)
         except Exception:
+            if new_lock is not old_lock:
+                new_lock.close()
             if previous is not None:
                 try:
                     self._hydrate_state(previous)
@@ -857,6 +880,9 @@ class StudioApp:
             else:
                 self._clear_failed_load()
             raise
+        if old_lock is not None and new_lock is not old_lock:
+            old_lock.close()
+        self._edit_lock = new_lock
 
     def _clear_failed_load(self) -> None:
         self._loading = True
@@ -1493,6 +1519,79 @@ class StudioApp:
                 self.root.after(0, lambda: callback(value))
         Thread(target=task, daemon=True).start()
 
+    def _check_production_updates(self) -> None:
+        from te.studio.production_update import (APP_VERSION, check_for_update,
+                                                  download_verified_installer, trusted_public_key)
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Cập nhật TE Studio Production")
+        dialog.geometry("560x300")
+        dialog.transient(self.root)
+        panel = ttk.Frame(dialog, padding=14)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text=f"Phiên bản hiện tại: {APP_VERSION}").pack(anchor="w")
+        status = tk.StringVar(value="Đang kiểm tra Production Release đã ký…")
+        ttk.Label(panel, textvariable=status, wraplength=500).pack(anchor="w", pady=8)
+        notes = tk.Text(panel, height=7, wrap="word", state="disabled")
+        notes.pack(fill="both", expand=True)
+        install = ttk.Button(panel, text="Tải và cài đặt", state="disabled")
+        install.pack(anchor="e", pady=8)
+
+        def checked(release):
+            if not dialog.winfo_exists():
+                return
+            if release is None:
+                status.set("Không có bản Production mới đã được ký và chấp thuận.")
+                return
+            status.set(f"Bản mới: {release.version} • installer {release.installer_size / 1024**2:.1f} MiB")
+            notes.configure(state="normal")
+            notes.insert("1.0", release.notes)
+            notes.configure(state="disabled")
+
+            def download():
+                if self._job_running or self._queue_pending or self.queue.is_active():
+                    status.set("Hãy hoàn tất hoặc dừng Render Queue trước khi cập nhật.")
+                    return
+                if not messagebox.askyesno("Cập nhật Production",
+                    f"Tải installer đã ký cho TE Studio {release.version} và mở bộ cài?",
+                    parent=dialog):
+                    return
+                install.configure(state="disabled")
+                status.set("Đang tải và kiểm tra chữ ký/hash installer…")
+
+                def work():
+                    root = self.service.config_path.parent / "updates"
+                    return download_verified_installer(release, root)
+
+                def ready(path):
+                    if self._job_running or self._queue_pending or self.queue.is_active():
+                        status.set("Render đang chạy; installer đã tải, hãy thử lại sau.")
+                        install.configure(state="normal")
+                        return
+                    if self.state and not self._save():
+                        status.set("Không lưu được dự án; installer chưa được mở.")
+                        install.configure(state="normal")
+                        return
+                    try:
+                        subprocess.Popen([str(path)], cwd=str(path.parent))
+                    except OSError as exc:
+                        status.set(f"Không mở được installer: {exc}")
+                        install.configure(state="normal")
+                        return
+                    if self._edit_lock:
+                        self._edit_lock.close()
+                        self._edit_lock = None
+                    self.root.destroy()  # Inno Setup runs after the application exits.
+
+                self._background(work, ready)
+
+            install.configure(state="normal", command=download)
+
+        def check():
+            return check_for_update(trusted_public_key())
+
+        self._background(check, checked)
+
     def _refresh_voice(self) -> None:
         from te.project.models import TTSSettings
         current = self.state.project.tts_settings if self.state else TTSSettings(provider="voicevox")
@@ -1503,6 +1602,84 @@ class StudioApp:
             except Exception as exc:
                 raise RuntimeError("Không kết nối được VOICEVOX. Hãy mở Engine tại 127.0.0.1:50021 rồi thử lại.") from exc
         self._background(work, self._voices_loaded)
+
+    def _show_voicevox_setup(self) -> None:
+        import webbrowser
+        from te.project.models import TTSSettings
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Thiết lập VOICEVOX")
+        dialog.geometry("620x210")
+        dialog.transient(self.root)
+        panel = ttk.Frame(dialog, padding=14)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text="TE Studio dùng VOICEVOX Engine cục bộ để tạo lời Nhật.",
+                  wraplength=580).pack(anchor="w")
+        status = tk.StringVar(value="Đang kiểm tra Engine tại 127.0.0.1:50021…")
+        ttk.Label(panel, textvariable=status, wraplength=580).pack(anchor="w", pady=12)
+        buttons = ttk.Frame(panel)
+        buttons.pack(anchor="w")
+        sample = ttk.Button(buttons, text="Nghe thử", state="disabled")
+        sample.pack(side="left", padx=3)
+        speakers = []
+
+        def detect():
+            status.set("Đang dò VOICEVOX Engine…")
+            def run():
+                try:
+                    provider = VoicevoxProvider(timeout=3)
+                    found = provider.list_voices(TTSSettings(provider="voicevox"))
+                except Exception:
+                    found = []
+                def finish():
+                    if not dialog.winfo_exists():
+                        return
+                    speakers[:] = [item for item in found if item.get("styles")]
+                    if speakers:
+                        status.set(f"Đã kết nối VOICEVOX: {len(speakers)} giọng. Có thể nghe thử.")
+                        sample.configure(state="normal")
+                    else:
+                        status.set("Chưa thấy VOICEVOX Engine. Bấm Cài VOICEVOX để mở trang chính thức; "
+                                   "cài và khởi động Engine, rồi bấm Dò lại.")
+                        sample.configure(state="disabled")
+                self.root.after(0, finish)
+            Thread(target=run, daemon=True).start()
+
+        def test_voice():
+            if not speakers:
+                return
+            sample.configure(state="disabled")
+            status.set("Đang tạo mẫu giọng Nhật…")
+            def run():
+                try:
+                    speaker = speakers[0]
+                    settings = TTSSettings(provider="voicevox", voice_id=speaker["speaker_uuid"],
+                                           style=speaker["styles"][0]["name"])
+                    output = self.service.config_path.parent / "voicevox-test.wav"
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    VoicevoxProvider(timeout=20).synthesize("テスト音声です。", settings, output)
+                    import winsound
+                    winsound.PlaySound(str(output), winsound.SND_FILENAME | winsound.SND_ASYNC)
+                    result = "Đã phát mẫu giọng Nhật."
+                except Exception as exc:
+                    result = f"Không phát được mẫu: {exc}"
+                self.root.after(0, lambda: (status.set(result), sample.configure(state="normal"))
+                                if dialog.winfo_exists() else None)
+            Thread(target=run, daemon=True).start()
+
+        ttk.Button(buttons, text="Dò lại", command=detect).pack(side="left", padx=3)
+        ttk.Button(buttons, text="Cài VOICEVOX",
+                   command=lambda: webbrowser.open("https://voicevox.hiroshiba.jp/")).pack(side="left", padx=3)
+        sample.configure(command=test_voice)
+
+        def close():
+            self.service.settings["voicevox_setup_seen"] = True
+            self.service.save_settings()
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Đóng", command=close).pack(side="left", padx=3)
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        detect()
 
     def _voices_loaded(self, speakers: list[dict]) -> None:
         self.speakers = speakers
@@ -1747,7 +1924,7 @@ class StudioApp:
             "KEY image placements overlap": "Hai ảnh KEY chồng thời gian; hãy sửa thời lượng hoặc độ lệch KEY.",
             "KEY offset must keep reveal": "Độ lệch KEY đưa ảnh ra ngoài đoạn lời dẫn; hãy sửa lại.",
             "Japanese font": "Không tìm thấy phông Nhật; hãy chọn file phông trong mục giọng/phụ đề.",
-            "FFmpeg and ffprobe": "Cần cài FFmpeg và ffprobe trong PATH để xuất video.",
+            "FFmpeg and ffprobe": "Không tìm thấy FFmpeg và ffprobe. Kiểm tra bộ cài TE Studio hoặc PATH.",
             "VOICEVOX": "VOICEVOX chưa sẵn sàng hoặc giọng/kiểu giọng không hợp lệ. Hãy kiểm tra Engine rồi thử lại.",
         }
         return next((message for trigger, message in translations.items() if trigger in value), value)
@@ -1811,12 +1988,18 @@ class StudioApp:
             self.queue.cancel_current()
             self._close_after_queue()
             return
+        if self._edit_lock:
+            self._edit_lock.close()
+            self._edit_lock = None
         self.root.destroy()
 
     def _close_after_queue(self) -> None:
         if self.queue.is_active():
             self.root.after(200, self._close_after_queue)
         else:
+            if self._edit_lock:
+                self._edit_lock.close()
+                self._edit_lock = None
             self.root.destroy()
 
 

@@ -19,6 +19,7 @@ from te.project.manager import ProjectManager, _write_json
 from te.project.models import (AssignmentType, KeyPlacement, MediaCategory, MediaKind, MediaType, Project,
                                ScriptSegment, SectionName, TTSSettings, new_id)
 from te.tts.sentences import SentenceSpeechService
+from te.runtime import production_build
 from te.subtitles import split_japanese_sentences
 from te.studio.full_script_import import (FullScriptImportPlan, alignment_warnings,
                                           parse_full_script)
@@ -199,12 +200,26 @@ class StudioProject:
 class StudioService:
     def __init__(self, config_path: Path | None = None):
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".config") / "TEStudio"
-        self.config_path = Path(config_path) if config_path else base / "settings.json"
+        if config_path is not None:
+            self.config_path = Path(config_path)
+        elif production_build():
+            self.config_path = base / "production" / "settings.json"
+        else:
+            self.config_path = base / "settings.json"
         projects_root, output_root = _default_roots()
-        if self.config_path.is_file():
-            data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        legacy = base / "settings.json"
+        initial = self.config_path if self.config_path.is_file() else \
+            legacy if config_path is None and production_build() and legacy.is_file() else None
+        if initial:
+            data = json.loads(initial.read_text(encoding="utf-8"))
             if data.get("version") != STUDIO_VERSION:
-                raise ValueError("Cấu hình TE Studio không tương thích.")
+                if initial == self.config_path:
+                    raise ValueError("Cấu hình TE Studio không tương thích.")
+                data = {"version": STUDIO_VERSION, "projects_root": str(projects_root),
+                        "output_root": str(output_root), "profiles": {}, "profile_aliases": {},
+                        "render_encoder": "auto"}
+            elif initial != self.config_path:
+                data.pop("youtube_oauth_client_path", None)
         else:
             data = {"version": STUDIO_VERSION, "projects_root": str(projects_root),
                     "output_root": str(output_root), "profiles": {}, "profile_aliases": {},

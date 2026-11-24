@@ -89,7 +89,8 @@ class RenderService:
 
     @staticmethod
     def check_ffmpeg() -> dict[str, str]:
-        ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
+        from te.runtime import tool_path
+        ffmpeg, ffprobe = tool_path("ffmpeg"), tool_path("ffprobe")
         if not ffmpeg or not ffprobe:
             raise RuntimeError("FFmpeg and ffprobe must be installed and on PATH")
         version = subprocess.run([ffmpeg, "-version"], capture_output=True, text=True,
@@ -188,6 +189,10 @@ class RenderService:
             if not path.is_file():
                 raise ValueError(f"Japanese font file unavailable: {path}")
             return settings.font_family, path.resolve()
+        from te.runtime import bundled_resource
+        bundled = bundled_resource("fonts", "NotoSansCJKjp-Regular.otf")
+        if bundled and settings.font_family == "Noto Sans CJK JP":
+            return "Noto Sans CJK JP", bundled.resolve()
         windows_dirs = []
         if local_app_data := os.environ.get("LOCALAPPDATA"):
             windows_dirs.append(Path(local_app_data) / "Microsoft" / "Windows" / "Fonts")

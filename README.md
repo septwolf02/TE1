@@ -1,5 +1,7 @@
 # TE — Sports Video Editor
 
+Hạ tầng bộ cài Windows Production, VOICEVOX first-run và cập nhật có chữ ký: [docs/production-windows.md](docs/production-windows.md). `1.0.0rc1` hiện là release candidate, chưa phải bản Production đã kiểm thử.
+
 Hướng dẫn AI phân vai A/B/C/D và hai cách kết nối: [Upgrade B1](docs/ai-speaker-b1.md).
 
 Local-first Windows application for Japanese sports storytelling videos. TE provides Python 3.12 project data and local FFmpeg rendering. Fake TTS supports offline tests and VOICEVOX supports real Japanese speech through a locally running engine.

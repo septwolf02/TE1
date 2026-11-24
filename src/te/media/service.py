@@ -67,7 +67,8 @@ def _image_dimensions(path: Path) -> tuple[int | None, int | None]:
 
 
 def _video_metadata(path: Path) -> tuple[int | None, int | None, float | None]:
-    ffprobe = shutil.which("ffprobe")
+    from te.runtime import tool_path
+    ffprobe = tool_path("ffprobe")
     if ffprobe is None:
         return None, None, None
     try:
