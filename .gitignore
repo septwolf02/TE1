@@ -237,6 +237,7 @@ generated/
 *.m4a
 *.mov
 *.png
+!src/te/branding/te-studio-concept-a.png
 *.jpg
 *.jpeg
 *.webp

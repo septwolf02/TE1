@@ -47,7 +47,7 @@ Script kiểm tra cả kho lưu trữ FFmpeg và từng tệp được dùng, c�
 
 ## Nhận diện ứng dụng
 
-Biểu tượng TE và timeline hiện là mẫu tạm do dự án tạo. Khi logo chính thức được duyệt, xuất thành ICO có các kích thước 16, 32, 48, 64, 128 và 256 px rồi thay `src/te/branding/te-studio.ico` và build lại. Cùng một tệp được nhúng vào EXE và installer, dùng cho shortcut và đóng gói làm tài nguyên cho cửa sổ, hộp thoại Tk và mục **Trợ giúp → Giới thiệu TE Studio**. Hộp thoại do Windows quản lý có thể dùng biểu tượng hệ thống.
+**Concept A** là logo chính thức của TE Studio Production V1. Tệp `src/te/branding/te-studio-concept-a.png` lưu ảnh đã tách nền trình bày trên khung vuông trong suốt. Tệp `src/te/branding/te-studio.ico` chứa các kích thước 16, 32, 48, 64, 128 và 256 px. Cùng một ICO được nhúng vào EXE và installer, dùng cho shortcut và đóng gói làm tài nguyên cho cửa sổ, hộp thoại Tk và mục **Trợ giúp → Giới thiệu TE Studio**. Hộp thoại do Windows quản lý có thể dùng biểu tượng hệ thống.
 
 Trong lần kiểm thử Windows, so biểu tượng của installer, EXE, shortcut Desktop, Start Menu, Taskbar, cửa sổ và hộp thoại **Giới thiệu**. Mục **Giới thiệu** phải hiển thị đúng phiên bản trên bộ cài.
 
