@@ -12,6 +12,8 @@ Publisher/Studio Connector đang thử nghiệm nên không có lối vào từ 
 
 Máy build cần Python 3.12 x64 có Tcl/Tk và Inno Setup 6. Script dò các vị trí cài phổ biến, Python registry và PATH, kiểm tra phiên bản và chữ ký Authenticode của nhà phát hành. Nếu thiếu, xem [Python Windows](https://www.python.org/downloads/windows/) và [Inno Setup](https://jrsoftware.org/isdl.php), kiểm tra nhà phát hành và tự quyết định cài. Script không tự cài các công cụ hệ thống. Lệnh build cài PyInstaller và các gói Python cần thiết vào `.venv-build` dùng riêng để build.
 
+Với ISCC, script chỉ chạy phép dò sau khi Authenticode trả về `Valid` và danh tính nhà ký nằm trong danh sách cho phép. Chứng thư ký của installer 6.7.4 chính thức ghi `CN=Pyrsys B.V., O=Pyrsys B.V., C=NL`. Script dùng `/O-` để đọc phiên bản engine qua một phép biên dịch không xuất installer, kể cả khi Windows báo `FileVersion=0.0.0.0`. [Bản phát hành 6.7.4](https://github.com/jrsoftware/issrc/releases/tag/is-6_7_4) · [Mã nguồn ISCC 6.7.4](https://github.com/jrsoftware/issrc/blob/is-6_7_4/Projects/ISCC.dpr)
+
 Chủ dự án tạo khóa Ed25519 một lần trên máy giữ khóa, với OpenSSL đã có từ nguồn tin cậy. Tạo trong thư mục riêng và giữ file private ở ngoài Git. Các lệnh này dành cho **lần khởi tạo duy nhất**.
 
 ```powershell
